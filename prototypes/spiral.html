@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>soundfractal · spiral instrument</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px; background: #0d0f14; color: #d8dce6; font: 14px/1.4 system-ui, sans-serif; }
+  h1 { margin: 0 0 8px; font-size: 20px; letter-spacing: 1px; }
+  h1 small { color: #7a8194; font-weight: normal; font-size: 13px; }
+  h1 a { font-size: 13px; font-weight: normal; color: #6fa3ff; margin-left: 8px; }
+  button { background: #1c2030; color: #c8cde0; border: 1px solid #333a50; padding: 6px 10px; border-radius: 4px; cursor: pointer; font: inherit; }
+  button.on { background: #2d6cdf; color: #fff; border-color: #2d6cdf; }
+  .wrap { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
+  #cv { display: block; flex: none; background: #05060a; border-radius: 6px; cursor: crosshair; touch-action: none; }
+  .side { flex: 1 1 260px; max-width: 340px; background: #141824; border: 1px solid #262b3a; border-radius: 6px; padding: 10px 12px; }
+  .row { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
+  .ctl { margin: 12px 0; }
+  .ctl label { display: flex; justify-content: space-between; font-size: 12px; color: #aab3c8; }
+  .ctl label span { color: #fff; font-family: ui-monospace, Consolas, monospace; }
+  .ctl input { width: 100%; margin: 4px 0 0; }
+  .desc { font-size: 11px; color: #6d7488; }
+  #shared { margin: 10px 0 4px; font-size: 15px; color: #ffe9b0; }
+  #info { font: 12px/1.5 ui-monospace, Consolas, monospace; color: #cfd5e6; white-space: pre-wrap; min-height: 3em; }
+</style>
+<link rel="stylesheet" href="proto.css">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<h1>soundfractal <small>spiral instrument: play the spiral, watch overtones line up</small></h1>
+<nav class="pnav" aria-label="Prototypes"><a href="index.html">Maps</a><a href="timbre.html">Timbre lab</a><a href="morph.html">Morph map</a><a href="spiral.html" aria-current="page">Spiral</a><a href="melody.html">Melody</a><a href="babel.html">Mini Babel</a></nav>
+<div class="wrap">
+  <canvas id="cv"></canvas>
+  <div class="side">
+    <div id="ctls"></div>
+    <div class="row"><button id="snap" class="on">Snap to notes</button><button id="latch">Latch</button><button id="clear">Clear</button><button id="sound">Sound: on</button></div>
+    <div id="shared">shared overtones: 0</div>
+    <div id="info"></div>
+    <div class="desc">Drag on the spiral to play (multi-touch works). Shift+click or Latch to hold notes; click a held note again to release it.
+      Keys A W S E D F T G Y H U J K play C4…C5. Glowing rings = overtones of different notes landing within 12 cents of each other.</div>
+  </div>
+</div>
+
+<script src="../js/core/harmony.js"></script>
+<script>
+(function () {
+  'use strict';
+  const H = window.Harmony;
+  const C2 = H.midiToHz(36), C7 = H.midiToHz(96), TURNS = 5, TOL = 12, MAXPTR = 6, VG = 0.3;
+  const KEYS = 'awsedftgyhujk';   // C4 … C5
+  const P = { n: 12, stretch: 1, roll: 0.88, snap: true, latch: false };
+  const SLIDERS = [
+    ['n', 'Overtones', 1, 16, 1, (v) => String(v), 'how many overtones each note has'],
+    ['stretch', 'Stretch', 0.9, 1.1, 0.001, (v) => 'k^' + v.toFixed(3), 'bends overtones away from perfect ×2, ×3, ×4…'],
+    ['roll', 'Brightness', 0.3, 1, 0.01, (v) => v.toFixed(2), 'how loud the higher overtones are'],
+  ];
+  // Overtone k (0-based): ratio (k+1)^stretch, loudness roll^k.
+  const partials = (f) => Array.from({ length: P.n }, (_, k) => ({ f: f * (k + 1) ** P.stretch, a: P.roll ** k, k }));
+  const hzToMidi = (f) => 69 + 12 * Math.log2(f / 440);
+  const pcOf = (f) => ((Math.round(hzToMidi(f)) % 12) + 12) % 12;
+  const hueOf = (f) => pcOf(f) * 30;
+
+  // ---------- sidebar ----------
+  const $ = (id) => document.getElementById(id);
+  const ctls = $('ctls');
+  for (const [key, name, min, max, step, fmt, desc] of SLIDERS) {
+    const d = document.createElement('div');
+    d.className = 'ctl';
+    d.innerHTML = '<label>' + name + ' <span></span></label><input type="range" id="sl-' + key + '"><div class="desc">' + desc + '</div>';
+    const inp = d.querySelector('input'), out = d.querySelector('span');
+    Object.assign(inp, { min, max, step, value: P[key] });
+    out.textContent = fmt(P[key]);
+    inp.addEventListener('input', () => {
+      P[key] = Number(inp.value); out.textContent = fmt(P[key]);
+      if (key === 'n') rebuildTones(); else voices.forEach((v) => v.tone && v.tone.update());
+      changed();
+    });
+    ctls.appendChild(d);
+  }
+  function toggle(id, key) {
+    const b = $(id);
+    b.addEventListener('click', () => { P[key] = !P[key]; b.classList.toggle('on', P[key]); changed(); });
+  }
+  toggle('snap', 'snap'); toggle('latch', 'latch');
+  $('clear').addEventListener('click', () => { [...voices.keys()].forEach(removeVoice); changed(); });
+  const sbtn = $('sound');
+  sbtn.addEventListener('click', () => {
+    soundOn = !soundOn; sbtn.textContent = 'Sound: ' + (soundOn ? 'on' : 'off');
+    if (soundOn) ensureAudio();
+    rebuildTones();
+  });
+
+  // ---------- audio (same voice as morph.html) ----------
+  let actx = null, master = null, soundOn = true;
+  function ensureAudio() {   // called only from user-gesture handlers
+    if (!actx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      actx = new AC();
+      master = actx.createGain(); master.gain.value = 0.3; master.connect(actx.destination);
+    }
+    if (actx.state === 'suspended') actx.resume().catch(() => {});
+  }
+  const nyq = () => actx.sampleRate / 2 - 1;
+  function makeTone(f0) {
+    if (!actx || !soundOn) return null;
+    const g = actx.createGain(), t0 = actx.currentTime;
+    g.connect(master);
+    g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(VG, t0 + 0.02);
+    const oscs = [];
+    for (let k = 0; k < P.n; k++) {
+      const o = actx.createOscillator(), pg = actx.createGain();
+      o.connect(pg); pg.connect(g); oscs.push({ o, pg });
+    }
+    let f = f0;
+    const apply = (tc) => {
+      const t = actx.currentTime, sum = oscs.reduce((s, _, k) => s + P.roll ** k, 0);
+      oscs.forEach(({ o, pg }, k) => {
+        const fk = f * (k + 1) ** P.stretch, a = fk < nyq() ? P.roll ** k / sum : 0;
+        if (tc) { o.frequency.setTargetAtTime(Math.min(fk, nyq()), t, tc); pg.gain.setTargetAtTime(a, t, tc); }
+        else { o.frequency.value = Math.min(fk, nyq()); pg.gain.value = a; }
+      });
+    };
+    apply(0);
+    oscs.forEach(({ o }) => o.start());
+    return {
+      set(nf) { f = nf; apply(0.015); },
+      update() { apply(0.03); },
+      stop() {
+        const t = actx.currentTime;
+        g.gain.cancelScheduledValues(t); g.gain.setValueAtTime(g.gain.value, t); g.gain.linearRampToValueAtTime(0, t + 0.15);
+        oscs.forEach(({ o }) => o.stop(t + 0.2));
+      },
+    };
+  }
+
+  // ---------- voices ----------
+  const voices = new Map();   // id -> { f, raw, tone, latched }
+  const quant = (f) => (P.snap ? H.midiToHz(Math.round(hzToMidi(f))) : f);
+  function addVoice(id, f, latched) {
+    voices.set(id, { f, latched, tone: makeTone(f) });
+    changed();
+  }
+  function setVoice(id, f) {
+    const v = voices.get(id);
+    if (!v || Math.abs(v.f - f) < 1e-6) return;
+    v.f = f; if (v.tone) v.tone.set(f);
+    changed();
+  }
+  function removeVoice(id) {
+    const v = voices.get(id);
+    if (!v) return;
+    if (v.tone) v.tone.stop();
+    voices.delete(id);
+    changed();
+  }
+  function rebuildTones() {
+    voices.forEach((v) => { if (v.tone) v.tone.stop(); v.tone = makeTone(v.f); });
+  }
+
+  // ---------- geometry (as in index.html view D) ----------
+  const cv = $('cv'), ctx = cv.getContext('2d');
+  let S = 600;
+  function resize() {
+    const cw = document.documentElement.clientWidth - 24;
+    const room = cw >= 640 ? cw - 14 - 260 : cw;
+    S = Math.round(Math.max(260, Math.min(700, room, Math.max(320, window.innerHeight - 70))));
+    if (cw < 640) S = Math.min(S, cw);
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = cv.height = Math.round(S * dpr); cv.style.width = cv.style.height = S + 'px';
+    changed();
+  }
+  window.addEventListener('resize', resize);
+  function geom() {
+    const R = S / 2 - 26, r0 = R * 0.12;
+    return { cx: S / 2, cy: S / 2, R, r0, per: (R - r0) / TURNS };
+  }
+  function pos(f) {
+    const g = geom(), o = Math.log2(f / C2), a = 2 * Math.PI * o, rad = g.r0 + o * g.per;
+    return [g.cx + rad * Math.sin(a), g.cy - rad * Math.cos(a)];
+  }
+  const inRange = (f) => f >= C2 * 0.999 && f <= C7 * 1.001;
+  function freqAt(px, py) {   // angle -> place in octave, radius -> nearest turn (index.html probe mapping)
+    const g = geom(), dx = px - g.cx, dy = py - g.cy;
+    const frac = ((Math.atan2(dx, -dy) / (2 * Math.PI)) + 1) % 1;
+    const oEst = (Math.hypot(dx, dy) - g.r0) / g.per;
+    const o = Math.max(0, Math.min(TURNS, Math.round(oEst - frac) + frac));
+    return quant(C2 * 2 ** o);
+  }
+
+  // ---------- input ----------
+  const xy = (e) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * S / r.width, (e.clientY - r.top) * S / r.height]; };
+  cv.addEventListener('pointerdown', (e) => {
+    ensureAudio();
+    e.preventDefault();
+    const [px, py] = xy(e);
+    if (e.shiftKey || P.latch) {
+      for (const [id, v] of voices) {   // clicking a held note releases it
+        if (!v.latched) continue;
+        const [x, y] = pos(v.f);
+        if (Math.hypot(x - px, y - py) < 18) { removeVoice(id); return; }
+      }
+      addVoice('L' + Date.now() + '-' + Math.random(), freqAt(px, py), true);
+      return;
+    }
+    let n = 0; voices.forEach((_, id) => { if (id[0] === 'p') n++; });
+    if (n >= MAXPTR) return;
+    try { cv.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    addVoice('p' + e.pointerId, freqAt(px, py), false);
+  });
+  cv.addEventListener('pointermove', (e) => { if (voices.has('p' + e.pointerId)) setVoice('p' + e.pointerId, freqAt(...xy(e))); });
+  for (const t of ['pointerup', 'pointercancel', 'lostpointercapture']) cv.addEventListener(t, (e) => removeVoice('p' + e.pointerId));
+  window.addEventListener('keydown', (e) => {
+    if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+    const i = KEYS.indexOf(e.key.toLowerCase());
+    if (i < 0 || e.key.length !== 1) return;
+    ensureAudio();
+    if (!voices.has('k' + i)) addVoice('k' + i, H.midiToHz(60 + i), false);
+    e.preventDefault();
+  });
+  window.addEventListener('keyup', (e) => { const i = KEYS.indexOf(e.key.toLowerCase()); if (i >= 0 && e.key.length === 1) removeVoice('k' + i); });
+  window.addEventListener('blur', () => { voices.forEach((_, id) => { if (id[0] === 'k' || id[0] === 'p') removeVoice(id); }); });
+
+  // ---------- drawing ----------
+  function label(t, x, y, color, align) {
+    ctx.font = '11px system-ui, sans-serif'; ctx.textAlign = align || 'left';
+    const w = ctx.measureText(t).width, ox = align === 'center' ? -w / 2 : 0;
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(x + ox - 2, y - 10, w + 4, 13);
+    ctx.fillStyle = color || '#e6eaf5'; ctx.fillText(t, x, y);
+  }
+  function noteText(f) {
+    const m = hzToMidi(f), r = Math.round(m), c = Math.round((m - r) * 100);
+    return H.noteName(r) + (c ? (c > 0 ? ' +' : ' ') + c + '¢' : '');
+  }
+  function sharedRings(vs) {   // overtone pairs from different voices within TOL cents
+    const ps = vs.map((v) => partials(v.f)), rings = [];
+    for (let i = 0; i < ps.length; i++)
+      for (let j = i + 1; j < ps.length; j++)
+        for (const a of ps[i]) for (const b of ps[j]) {
+          const c = Math.abs(1200 * Math.log2(a.f / b.f));
+          if (c < TOL) rings.push({ f: Math.sqrt(a.f * b.f), s: (1 - c / TOL) * Math.sqrt(a.a * b.a), c });
+        }
+    return rings;
+  }
+  let lastInfo = '';
+  function draw(now) {
+    ctx.setTransform(cv.width / S, 0, 0, cv.height / S, 0, 0);
+    ctx.fillStyle = '#05060a'; ctx.fillRect(0, 0, S, S);
+    const { cx, cy, R, r0 } = geom();
+    ctx.lineWidth = 1;
+    for (let pc = 0; pc < 12; pc++) {
+      const a = (pc / 12) * 2 * Math.PI, s = Math.sin(a), c = Math.cos(a);
+      ctx.strokeStyle = 'hsla(' + pc * 30 + ',60%,60%,0.18)';
+      ctx.beginPath(); ctx.moveTo(cx + r0 * s, cy - r0 * c); ctx.lineTo(cx + R * s, cy - R * c); ctx.stroke();
+      label(H.noteName(pc + 60).replace(/\d+$/, ''), cx + (R + 13) * s, cy - (R + 13) * c + 4, 'hsl(' + pc * 30 + ',80%,70%)', 'center');
+    }
+    ctx.strokeStyle = 'rgba(160,170,200,0.45)';
+    ctx.beginPath();
+    for (let i = 0; i <= 600; i++) { const [x, y] = pos(C2 * 2 ** (i / 120)); if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); }
+    ctx.stroke();
+    for (let o = 0; o <= TURNS; o++) { const [x, y] = pos(C2 * 2 ** o); label('C' + (o + 2), x + 5, y + 13, '#7a8194'); }
+
+    const vs = [...voices.values()].sort((a, b) => a.f - b.f);
+    if (vs.length >= 2) {
+      ctx.beginPath();
+      vs.forEach((v, i) => { const [x, y] = pos(v.f); if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); });
+      ctx.closePath(); ctx.fillStyle = 'rgba(255,255,255,0.07)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    for (const v of vs) {   // overtone dots
+      for (const p of partials(v.f)) {
+        if (!p.k || !inRange(p.f)) continue;
+        const [x, y] = pos(p.f);
+        ctx.beginPath(); ctx.arc(x, y, 2 + 3 * Math.sqrt(p.a), 0, 2 * Math.PI);
+        ctx.fillStyle = 'hsla(' + hueOf(v.f) + ',85%,62%,' + (0.35 + 0.6 * p.a) + ')'; ctx.fill();
+      }
+    }
+    const rings = sharedRings(vs), pulse = 1 + 0.12 * Math.sin(now / 260);
+    ctx.globalCompositeOperation = 'lighter';
+    for (const r of rings) {
+      if (!inRange(r.f)) continue;
+      const [x, y] = pos(r.f), rad = (16 + 30 * r.s) * pulse;
+      const gr = ctx.createRadialGradient(x, y, 0, x, y, rad);
+      gr.addColorStop(0, 'rgba(255,240,190,' + (0.25 + 0.6 * r.s) + ')'); gr.addColorStop(1, 'rgba(255,200,120,0)');
+      ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, y, rad, 0, 2 * Math.PI); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,245,210,' + (0.25 + 0.75 * r.s) + ')'; ctx.lineWidth = 1 + 2 * r.s;
+      ctx.beginPath(); ctx.arc(x, y, 7 + 5 * r.s * pulse, 0, 2 * Math.PI); ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    for (const v of vs) {   // voice dots on top
+      const [x, y] = pos(v.f);
+      ctx.beginPath(); ctx.arc(x, y, 10, 0, 2 * Math.PI);
+      ctx.fillStyle = 'hsl(' + hueOf(v.f) + ',90%,60%)'; ctx.fill();
+      if (v.latched) { ctx.lineWidth = 2; ctx.strokeStyle = '#fff'; ctx.stroke(); }
+      label(noteText(v.f) + '  ' + v.f.toFixed(1) + ' Hz', x + 14, y - 8, '#fff');
+    }
+    updateInfo(vs, rings);
+  }
+  function updateInfo(vs, rings) {
+    const lines = [];
+    if (!vs.length) lines.push('no notes playing');
+    else lines.push('notes: ' + vs.map((v) => noteText(v.f)).join(' '));
+    for (let i = 0; i < vs.length; i++)
+      for (let j = i + 1; j < vs.length; j++) {
+        const nr = H.nearestRatio(vs[j].f / vs[i].f);
+        lines.push(noteText(vs[i].f) + '–' + noteText(vs[j].f) + ': ' +
+          (nr ? nr.p + '/' + nr.q + ' (' + (nr.cents >= 0 ? '+' : '') + nr.cents.toFixed(1) + '¢)' : 'no simple ratio'));
+      }
+    if (vs.length >= 2) lines.push('dissonance: ' + H.dissonance(vs.map((v) => v.f), P.n).toFixed(3));
+    const txt = 'shared overtones: ' + rings.length + '\n' + lines.join('\n');
+    if (txt === lastInfo) return;
+    lastInfo = txt;
+    $('shared').textContent = 'shared overtones: ' + rings.length;
+    $('info').textContent = lines.join('\n');
+  }
+
+  // ---------- loop: animate only while something is playing ----------
+  let raf = 0;
+  function frame(now) { raf = 0; draw(now); if (voices.size) changed(); }
+  function changed() { if (!raf) raf = requestAnimationFrame(frame); }
+  resize();
+})();
+</script>
+</body>
+</html>

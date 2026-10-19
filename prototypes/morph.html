@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>soundfractal · morph map</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px; background: #0d0f14; color: #d8dce6; font: 14px/1.4 system-ui, sans-serif; }
+  h1 { margin: 0 0 8px; font-size: 20px; letter-spacing: 1px; }
+  h1 small { color: #7a8194; font-weight: normal; font-size: 13px; }
+  h1 a { font-size: 13px; font-weight: normal; color: #6fa3ff; margin-left: 8px; }
+  button { background: #1c2030; color: #c8cde0; border: 1px solid #333a50; padding: 6px 10px; border-radius: 4px; cursor: pointer; font: inherit; }
+  button.on { background: #2d6cdf; color: #fff; border-color: #2d6cdf; }
+  .wrap { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
+  .stage { position: relative; flex: none; }
+  .stage canvas { position: absolute; left: 0; top: 0; }
+  #gl { background: #000; }
+  #ov { cursor: crosshair; touch-action: none; }
+  .side { flex: 1 1 260px; max-width: 320px; background: #141824; border: 1px solid #262b3a; border-radius: 6px; padding: 10px 12px; }
+  .row { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+  .ctl { margin: 12px 0; }
+  .ctl label { display: flex; justify-content: space-between; font-size: 12px; color: #aab3c8; }
+  .ctl label span { color: #fff; font-family: ui-monospace, Consolas, monospace; }
+  .ctl input { width: 100%; margin: 4px 0 0; }
+  .desc { font-size: 11px; color: #6d7488; }
+  #err { color: #f88; }
+</style>
+<link rel="stylesheet" href="proto.css">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<h1>soundfractal <small>morph map: change the sound's physics, watch harmony move</small></h1>
+<nav class="pnav" aria-label="Prototypes"><a href="index.html">Maps</a><a href="timbre.html">Timbre lab</a><a href="morph.html" aria-current="page">Morph map</a><a href="spiral.html">Spiral</a><a href="melody.html">Melody</a><a href="babel.html">Mini Babel</a></nav>
+<div class="wrap">
+  <div class="stage" id="stage"><canvas id="gl"></canvas><canvas id="ov"></canvas></div>
+  <div class="side">
+    <div class="row"><button data-m="0" class="on">Hz × Hz</button><button data-m="1">Interval × register</button></div>
+    <div class="desc" id="modeDesc"></div>
+    <div id="ctls"></div>
+    <div class="row"><button id="anim">▶ Animate</button><button id="reset">Reset</button><button id="sound">Sound: on</button></div>
+    <div class="desc">Bright = blends, dark = clashes. Click &amp; drag on the map to hear any spot.</div>
+    <div id="err"></div>
+  </div>
+</div>
+
+<script src="../js/core/harmony.js"></script>
+<script>
+(function () {
+  'use strict';
+  const H = window.Harmony;
+  const FLO = 55, OCT = 5, MAXC = 1250;   // 55 Hz … 1760 Hz; interval axis 0 … 1250 cents
+  const NOTE = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B', 'C'];
+  const DEFAULTS = { n: 6, stretch: 1, roll: 0.88, width: 0, gain: 1.5 };
+  const P = Object.assign({ mode: 0 }, DEFAULTS);
+  const SLIDERS = [
+    ['n', 'Overtones', 1, 16, 1, (v) => String(v), 'how many overtones each note has'],
+    ['stretch', 'Stretch', 0.85, 1.15, 0.001, (v) => 'k^' + v.toFixed(3), 'bends overtones away from perfect ×2, ×3, ×4…'],
+    ['roll', 'Brightness', 0.3, 1, 0.01, (v) => v.toFixed(2), 'how loud the higher overtones are'],
+    ['width', 'Roughness width', -1, 1, 0.01, (v) => '×' + (3 ** v).toFixed(2), 'how close two tones must be to clash'],
+    ['gain', 'Contrast', 0.5, 5, 0.05, (v) => v.toFixed(2), 'display only: how dark the clashes get'],
+  ];
+  const MODE_DESC = [
+    'X = first note, Y = second note (both 55–1760 Hz).',
+    'X = interval above the bottom note (unison → octave), Y = how high the bottom note is.',
+  ];
+
+  // Overtone k (0-based) of the current sound: ratio (k+1)^stretch, loudness roll^k.
+  const partials = () => Array.from({ length: P.n }, (_, k) => [(k + 1) ** P.stretch, P.roll ** k]);
+
+  // ---------- sidebar ----------
+  const inputs = {};
+  const ctls = document.getElementById('ctls');
+  for (const [key, name, min, max, step, fmt, desc] of SLIDERS) {
+    const d = document.createElement('div');
+    d.className = 'ctl';
+    d.innerHTML = '<label>' + name + ' <span></span></label><input type="range"><div class="desc">' + desc + '</div>';
+    const inp = d.querySelector('input'), out = d.querySelector('span');
+    Object.assign(inp, { min, max, step, value: P[key] });
+    inp.addEventListener('input', () => { P[key] = Number(inp.value); out.textContent = fmt(P[key]); dirty = true; });
+    inputs[key] = { inp, out, fmt };
+    out.textContent = fmt(P[key]);
+    ctls.appendChild(d);
+  }
+  function syncSliders() {
+    for (const k in inputs) { inputs[k].inp.value = P[k]; inputs[k].out.textContent = inputs[k].fmt(P[k]); }
+  }
+  document.querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => {
+    P.mode = Number(b.dataset.m);
+    document.querySelectorAll('[data-m]').forEach((x) => x.classList.toggle('on', x === b));
+    document.getElementById('modeDesc').textContent = MODE_DESC[P.mode];
+    dirty = true;
+  }));
+  document.getElementById('modeDesc').textContent = MODE_DESC[0];
+  let anim = false, animT = 0;
+  const abtn = document.getElementById('anim');
+  abtn.addEventListener('click', () => { anim = !anim; abtn.textContent = anim ? '❚❚ Pause' : '▶ Animate'; abtn.classList.toggle('on', anim); });
+  document.getElementById('reset').addEventListener('click', () => { Object.assign(P, DEFAULTS); syncSliders(); dirty = true; });
+
+  // ---------- WebGL map ----------
+  const glc = document.getElementById('gl'), ov = document.getElementById('ov'), octx = ov.getContext('2d');
+  const gl = glc.getContext('webgl', { preserveDrawingBuffer: true });
+  const FS = `
+    precision highp float;
+    uniform vec2 uRes;
+    uniform float uR[16];
+    uniform float uA[16];
+    uniform int uN;
+    uniform float uW, uGain, uMode, uSumA;
+    float pd(float f1, float a1, float f2, float a2) {
+      float s = 0.24 / (0.0207 * min(f1, f2) + 18.96) / uW;
+      float x = s * abs(f2 - f1);
+      return min(a1, a2) * (exp(-3.5 * x) - exp(-5.75 * x));
+    }
+    vec3 pal(float t) {
+      vec3 c0 = vec3(0.03, 0.03, 0.12), c1 = vec3(0.38, 0.10, 0.55), c2 = vec3(0.0, 0.75, 0.86);
+      if (t < 0.33) return mix(c0, c1, t / 0.33);
+      if (t < 0.66) return mix(c1, c2, (t - 0.33) / 0.33);
+      return mix(c2, vec3(1.0), (t - 0.66) / 0.34);
+    }
+    void main() {
+      vec2 uv = gl_FragCoord.xy / uRes;
+      float f1, f2;
+      if (uMode < 0.5) { f1 = ${FLO.toFixed(1)} * exp2(uv.x * ${OCT.toFixed(1)}); f2 = ${FLO.toFixed(1)} * exp2(uv.y * ${OCT.toFixed(1)}); }
+      else { f1 = ${FLO.toFixed(1)} * exp2(uv.y * ${OCT.toFixed(1)}); f2 = f1 * exp2(uv.x * ${(MAXC / 1200).toFixed(6)}); }
+      float d = 0.0;
+      for (int i = 0; i < 16; i++) {
+        if (i >= uN) break;
+        for (int j = 0; j < 16; j++) {
+          if (j >= uN) break;
+          d += pd(f1 * uR[i], uA[i], f2 * uR[j], uA[j]);
+        }
+      }
+      gl_FragColor = vec4(pal(1.0 - sqrt(clamp(d / (0.18 * uSumA) * uGain, 0.0, 1.0))), 1.0);
+    }`;
+  let U = null;
+  if (gl) {
+    const sh = (type, src) => {
+      const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+      return s;
+    };
+    try {
+      const prog = gl.createProgram();
+      gl.attachShader(prog, sh(gl.VERTEX_SHADER, 'attribute vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }'));
+      gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+      gl.linkProgram(prog); gl.useProgram(prog);
+      gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+      const loc = gl.getAttribLocation(prog, 'p');
+      gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+      U = {};
+      for (const n of ['uRes', 'uR', 'uA', 'uN', 'uW', 'uGain', 'uMode', 'uSumA']) U[n] = gl.getUniformLocation(prog, n);
+    } catch (e) { document.getElementById('err').textContent = 'WebGL shader error: ' + e.message; }
+  } else {
+    document.getElementById('err').textContent = 'WebGL is not available in this browser.';
+  }
+
+  function render() {
+    if (!U) return;
+    const ps = partials(), R = new Float32Array(16), A = new Float32Array(16);
+    ps.forEach(([r, a], k) => { R[k] = r; A[k] = a; });
+    gl.viewport(0, 0, glc.width, glc.height);
+    gl.uniform2f(U.uRes, glc.width, glc.height);
+    gl.uniform1fv(U.uR, R); gl.uniform1fv(U.uA, A);
+    gl.uniform1i(U.uN, P.n);
+    gl.uniform1f(U.uW, 3 ** P.width);
+    gl.uniform1f(U.uGain, P.gain);
+    gl.uniform1f(U.uMode, P.mode);
+    gl.uniform1f(U.uSumA, A.reduce((s, a) => s + a, 0));
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  // ---------- overlay: grid, labels, probe ----------
+  let S = 600;
+  function resize() {
+    const cw = document.documentElement.clientWidth - 24;
+    const room = cw >= 640 ? cw - 14 - 260 : cw;   // leave space for the sidebar beside the map on wide screens
+    S = Math.round(Math.max(280, Math.min(720, room, window.innerHeight - 70)));
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const stage = document.getElementById('stage');
+    stage.style.width = stage.style.height = S + 'px';
+    for (const c of [glc, ov]) { c.width = c.height = Math.round(S * dpr); c.style.width = c.style.height = S + 'px'; }
+    dirty = true;
+  }
+  window.addEventListener('resize', resize);
+  const freqY = (f) => S - (Math.log2(f / FLO) / OCT) * S;
+  const freqX = (f) => (Math.log2(f / FLO) / OCT) * S;
+  function label(t, x, y, align, color) {
+    octx.font = '11px system-ui, sans-serif'; octx.textAlign = align || 'left';
+    const w = octx.measureText(t).width, ox = align === 'center' ? -w / 2 : align === 'right' ? -w : 0;
+    octx.fillStyle = 'rgba(0,0,0,0.55)'; octx.fillRect(x + ox - 2, y - 10, w + 4, 13);
+    octx.fillStyle = color || '#cfd5e6'; octx.fillText(t, x, y);
+  }
+  function probeFreqs(px, py) {
+    const u = px / S, v = 1 - py / S;
+    if (P.mode === 0) return [FLO * 2 ** (u * OCT), FLO * 2 ** (v * OCT)];
+    const f1 = FLO * 2 ** (v * OCT);
+    return [f1, f1 * 2 ** (u * MAXC / 1200)];
+  }
+  function drawOverlay() {
+    octx.setTransform(ov.width / S, 0, 0, ov.height / S, 0, 0);
+    octx.clearRect(0, 0, S, S);
+    octx.strokeStyle = 'rgba(255,255,255,0.16)'; octx.lineWidth = 1;
+    for (let m = 36; m <= 96; m += 12) {
+      const f = H.midiToHz(m), y = freqY(f), name = H.noteName(m);
+      octx.beginPath(); octx.moveTo(0, y); octx.lineTo(S, y); octx.stroke();
+      label(name, 4, y - 3);
+      if (P.mode === 0) {
+        const x = freqX(f);
+        octx.beginPath(); octx.moveTo(x, 0); octx.lineTo(x, S); octx.stroke();
+        label(name, x + 3, S - 4);
+      }
+    }
+    if (P.mode === 1) {
+      for (let k = 1; k <= 12; k++) {
+        const x = (k * 100 / MAXC) * S;
+        octx.beginPath(); octx.moveTo(x, 0); octx.lineTo(x, S); octx.stroke();
+        label(NOTE[k], x, S - 4, 'center');
+      }
+    }
+    if (probe) {
+      const [x, y] = probe.pos, [f1, f2] = probe.freqs;
+      octx.strokeStyle = '#fff'; octx.lineWidth = 2;
+      octx.beginPath(); octx.arc(x, y, 10, 0, 2 * Math.PI); octx.stroke();
+      octx.beginPath(); octx.moveTo(x - 16, y); octx.lineTo(x + 16, y); octx.moveTo(x, y - 16); octx.lineTo(x, y + 16); octx.stroke();
+      const nr = H.nearestRatio(Math.max(f1, f2) / Math.min(f1, f2));
+      const t = f1.toFixed(1) + ' Hz + ' + f2.toFixed(1) + ' Hz' + (nr ? '  ≈ ' + nr.p + '/' + nr.q : '');
+      octx.font = '11px system-ui, sans-serif';
+      label(t, Math.max(4, Math.min(x + 14, S - octx.measureText(t).width - 6)), y > 30 ? y - 14 : y + 28, 'left', '#fff');
+    }
+  }
+
+  // ---------- audio + probe ----------
+  let actx = null, master = null, soundOn = true, probe = null;
+  function ensureAudio() {   // called only from user-gesture handlers
+    if (!actx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      actx = new AC();
+      master = actx.createGain(); master.gain.value = 0.3; master.connect(actx.destination);
+    }
+    if (actx.state === 'suspended') actx.resume().catch(() => {});
+  }
+  const nyq = () => actx.sampleRate / 2 - 1;
+  // One note of the current sound; gain 0.5 so two notes stay <= master level.
+  function makeTone(f0) {
+    if (!actx || !soundOn) return null;
+    const ps = partials(), sum = ps.reduce((s, p) => s + p[1], 0);
+    const g = actx.createGain(), t = actx.currentTime;
+    g.connect(master);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.5, t + 0.02);
+    const oscs = ps.map(([r, a]) => {
+      const o = actx.createOscillator(), pg = actx.createGain();
+      o.frequency.value = Math.min(f0 * r, nyq()); pg.gain.value = a / sum;
+      o.connect(pg); pg.connect(g); o.start();
+      return { o, r };
+    });
+    return {
+      set(f) { const t = actx.currentTime; oscs.forEach(({ o, r }) => o.frequency.setTargetAtTime(Math.min(f * r, nyq()), t, 0.015)); },
+      stop() {
+        const t = actx.currentTime;
+        g.gain.cancelScheduledValues(t); g.gain.setValueAtTime(g.gain.value, t); g.gain.linearRampToValueAtTime(0, t + 0.15);
+        oscs.forEach(({ o }) => o.stop(t + 0.2));
+      },
+    };
+  }
+  const xy = (e) => { const r = ov.getBoundingClientRect(); return [(e.clientX - r.left) * S / r.width, (e.clientY - r.top) * S / r.height]; };
+  function moveProbe(px, py) {
+    px = Math.max(0, Math.min(S, px)); py = Math.max(0, Math.min(S, py));
+    const freqs = probeFreqs(px, py);
+    if (!probe) probe = { tones: freqs.map((f) => makeTone(f)) };
+    probe.pos = [px, py]; probe.freqs = freqs;
+    probe.tones.forEach((t, i) => t && t.set(freqs[i]));
+    drawOverlay();
+  }
+  function stopProbe() {
+    if (!probe) return;
+    probe.tones.forEach((t) => t && t.stop());
+    probe = null;
+    drawOverlay();
+  }
+  ov.addEventListener('pointerdown', (e) => {
+    ensureAudio();
+    try { ov.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    moveProbe(...xy(e));
+  });
+  ov.addEventListener('pointermove', (e) => { if (probe) moveProbe(...xy(e)); });
+  ov.addEventListener('pointerup', stopProbe);
+  ov.addEventListener('pointercancel', stopProbe);
+  const sbtn = document.getElementById('sound');
+  sbtn.addEventListener('click', () => {
+    soundOn = !soundOn; sbtn.textContent = 'Sound: ' + (soundOn ? 'on' : 'off');
+    if (soundOn) ensureAudio(); else stopProbe();
+  });
+
+  // ---------- loop: re-render only when something changed ----------
+  let dirty = true, last = performance.now();
+  function frame(now) {
+    if (anim) {
+      animT += (now - last) / 1000;
+      P.stretch = 1 + 0.07 * Math.sin(animT * 0.7);
+      P.width = 0.6 * Math.sin(animT * 0.43);
+      syncSliders(); dirty = true;
+    }
+    last = now;
+    if (dirty) { render(); drawOverlay(); dirty = false; }
+    requestAnimationFrame(frame);
+  }
+  resize();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

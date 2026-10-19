@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>soundfractal · mini babel</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px; background: #0d0f14; color: #d8dce6; font: 14px/1.4 system-ui, sans-serif; }
+  h1 { margin: 0 0 8px; font-size: 20px; letter-spacing: 1px; }
+  h1 small { color: #7a8194; font-weight: normal; font-size: 13px; }
+  h1 a { font-size: 13px; font-weight: normal; color: #6fa3ff; margin-left: 8px; }
+  button { background: #1c2030; color: #c8cde0; border: 1px solid #333a50; padding: 6px 10px; border-radius: 4px; cursor: pointer; font: inherit; }
+  button.on { background: #2d6cdf; color: #fff; border-color: #2d6cdf; }
+  .wrap { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
+  .stage { position: relative; flex: none; }
+  #map { display: block; background: #000; cursor: crosshair; touch-action: none; }
+  .side { flex: 1 1 260px; max-width: 320px; background: #141824; border: 1px solid #262b3a; border-radius: 6px; padding: 10px 12px; }
+  .row { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+  .desc { font-size: 11px; color: #6d7488; }
+  #nick { font-size: 22px; font-weight: 600; margin: 8px 0 2px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 8px; }
+  td { padding: 1px 0; color: #aab3c8; }
+  td + td { text-align: right; color: #fff; font-family: ui-monospace, Consolas, monospace; }
+  h3 { font-size: 12px; color: #aab3c8; margin: 12px 0 4px; font-weight: 600; }
+  #favs button { font-size: 12px; padding: 3px 7px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; }
+  .legend i { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+</style>
+<link rel="stylesheet" href="proto.css">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<h1>soundfractal <small>mini babel: an infinite map of every sound one little synth can make</small></h1>
+<nav class="pnav" aria-label="Prototypes"><a href="index.html">Maps</a><a href="timbre.html">Timbre lab</a><a href="morph.html">Morph map</a><a href="spiral.html">Spiral</a><a href="melody.html">Melody</a><a href="babel.html" aria-current="page">Mini Babel</a></nav>
+<div class="wrap">
+  <div class="stage" id="stage"><canvas id="map"></canvas></div>
+  <div class="side">
+    <div class="desc" style="color:#aab3c8">Every point is a sound. Bright = tonal &amp; alive, dark = mush. Zoom forever.</div>
+    <div id="nick">—</div>
+    <div class="desc" id="where">Click the map to hear a point.</div>
+    <table id="ptab"></table>
+    <div class="row"><button id="save">★ Save</button><button id="dive">🎲 Dive</button><button id="sound">Sound: on</button></div>
+    <div class="desc">Wheel = zoom at cursor · Shift+drag or middle-drag = pan · drag = scrub · <span id="zoomtxt"></span></div>
+    <h3>Favorites</h3>
+    <div class="row" id="favs"><span class="desc">none yet</span></div>
+    <h3>Families</h3>
+    <div class="legend" id="legend"></div>
+  </div>
+</div>
+
+<script src="../js/core/harmony.js"></script>
+<script>
+(function () {
+  'use strict';
+  const H = window.Harmony;
+
+  // ---------- deterministic value noise + fbm ----------
+  // Integer hash of a lattice point (ix, iy) and a seed → [0, 1).
+  function hash(ix, iy, seed) {
+    let h = Math.imul(ix | 0, 0x27d4eb2d) ^ Math.imul(iy | 0, 0x165667b1) ^ Math.imul(seed | 0, 0x9e3779b1);
+    h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+    h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  }
+  const fade = (t) => t * t * (3 - 2 * t);
+  function vnoise(x, y, seed) {   // smooth value noise, bilinear with smoothstep easing
+    const fx = Math.floor(x), fy = Math.floor(y), ix = fx, iy = fy;   // hash() wraps to int32 consistently
+    const u = fade(x - fx), v = fade(y - fy);
+    const a = hash(ix, iy, seed), b = hash(ix + 1, iy, seed), c = hash(ix, iy + 1, seed), d = hash(ix + 1, iy + 1, seed);
+    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+  }
+  // Base: 5 octaves, lacunarity 2, gain 0.5. That alone goes smooth once you zoom past its finest
+  // octave, so "deep" octaves (constant amplitude DEEP) are added as the view gets fine enough to
+  // show them (depth = how many octaves the current zoom resolves, fractional = fade-in).
+  // Zoom in → new detail keeps appearing, forever. Result stretched around 0.5 and clamped.
+  const OCTAVES = 5, NORM = 1 / (2 - 2 * 0.5 ** OCTAVES), DEEP = 0.16;
+  function fbm(x, y, seed, depth) {
+    let s = 0, amp = 1, f = 1;
+    for (let o = 0; o < OCTAVES; o++) { s += amp * vnoise(x * f, y * f, seed * 131 + o); amp *= 0.5; f *= 2; }
+    let v = s * NORM;
+    for (let o = OCTAVES; o < depth; o++) {
+      const w = Math.min(1, depth - o);   // each deep octave also pulls 7% back toward the middle,
+      v = 0.5 + (v - 0.5) * (1 - 0.07 * w) + DEEP * w * (vnoise(x * f, y * f, seed * 131 + o) - 0.5);   // so values never drift to the edges
+      f *= 2;
+    }
+    v = (v - 0.5) * 2.6 + 0.5;   // fbm piles up near 0.5; stretch, then clamp
+    return v < 0 ? 0 : v > 1 ? 1 : v;
+  }
+
+  // ---------- synth params: (x, y) → 9 normalized values → real units ----------
+  const PARAMS = [   // [key, label, fromUnit(u), format]
+    ['pitch', 'Pitch', (u) => 110 * 8 ** u, (v) => v.toFixed(0) + ' Hz ' + H.noteName(Math.round(69 + 12 * Math.log2(v / 440)))],
+    ['overtones', 'Overtones', (u) => 1 + Math.round(15 * u), (v) => String(v)],
+    ['stretch', 'Stretch', (u) => 0.9 + 0.2 * u, (v) => 'k^' + v.toFixed(3)],
+    ['bright', 'Brightness', (u) => 0.3 + 0.7 * u, (v) => v.toFixed(2)],
+    ['attack', 'Attack', (u) => 2 * 300 ** u, (v) => v.toFixed(0) + ' ms'],
+    ['decay', 'Decay', (u) => 60 * (2500 / 60) ** u, (v) => v.toFixed(0) + ' ms'],
+    ['glide', 'Glide', (u) => -24 + 48 * u, (v) => (v > 0 ? '+' : '') + v.toFixed(1) + ' st'],
+    ['noise', 'Noise', (u) => u, (v) => Math.round(v * 100) + ' %'],
+    ['wobble', 'Wobble', (u) => 12 * u, (v) => v.toFixed(1) + ' Hz'],
+  ];
+  // depth: octaves resolved at a zoom level (finest lattice ≈ 2 grid cells); zoom 1 → base only
+  const depthAt = (zoom) => Math.log2(zoom) + 4.3;
+  function paramsAt(x, y, depth) {
+    const p = { x, y };
+    PARAMS.forEach(([k, , from], i) => { p[k] = from(fbm(x, y, i + 1, depth)); });
+    return p;
+  }
+
+  // ---------- "not noise" score, 0..1 ----------
+  const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+  function score(p) {
+    const tonality = 1 - p.noise;                                  // pure tone = 1, pure hiss = 0
+    const harmonicity = 1 - 0.75 * clamp01(Math.abs(p.stretch - 1) / 0.1);   // perfect ×1 ×2 ×3 overtones = 1
+    // liveliness: a slow swell that dies before it arrives (attack long vs. decay) sounds limp,
+    // and vibrato faster than ~8 Hz turns into a rattle.
+    const swell = clamp01((p.attack / p.decay - 0.3) / 0.9);
+    const rattle = clamp01((p.wobble - 8) / 4);
+    const liveliness = (1 - 0.7 * swell) * (1 - 0.6 * rattle);
+    // a huge glide that keeps sliding for seconds turns into a siren smear
+    const smear = clamp01(Math.abs(p.glide) / 24) * clamp01((p.decay - 400) / 1600);
+    const s = Math.pow(tonality, 0.8) * harmonicity * liveliness * (1 - 0.45 * smear);
+    return clamp01(s);
+  }
+
+  // ---------- families ----------
+  const FAM = {   // name: [hue, saturation %]
+    pluck: [42, 90], bell: [185, 85], chirp: [110, 80], zap: [310, 80], pad: [265, 70],
+    drone: [220, 80], breath: [0, 12], buzz: [12, 90], mush: [30, 22],
+  };
+  function nickname(p, s) {
+    if (s === undefined) s = score(p);
+    if (p.noise > 0.72) return 'breath';                                   // mostly hiss
+    if (s < 0.22) return 'mush';                                          // nothing clear survives
+    if (Math.abs(p.glide) > 10 && p.decay < 600) return p.glide > 0 ? 'chirp' : 'zap';   // short, big pitch sweep
+    if (p.wobble > 8.5 || (p.overtones >= 12 && p.bright > 0.85)) return 'buzz';          // rough & dense
+    if (p.attack > 120) return 'pad';                                     // slow fade-in
+    if (Math.abs(p.stretch - 1) > 0.035 && p.decay > 500) return 'bell';  // inharmonic and ringing
+    if (p.decay > 1100) return 'drone';                                   // long, steady
+    return 'pluck';                                                       // fast hit, short-ish tail
+  }
+  function famColor(name, s) {   // hue from family, lightness from score
+    const [h, sat] = FAM[name];
+    return 'hsl(' + h + ',' + sat + '%,' + (8 + 62 * s).toFixed(1) + '%)';
+  }
+  function hslRgb(h, s, l) {
+    s /= 100; l /= 100;
+    const k = (n) => (n + h / 30) % 12, a = s * Math.min(l, 1 - l);
+    const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+    return [255 * f(0), 255 * f(8), 255 * f(4)];
+  }
+
+  // ---------- view ----------
+  const BASE = 4;   // world units across the map at zoom 1
+  const view = { cx: 0, cy: 0, zoom: 1 };
+  let S = 600, dirty = true;
+  const cv = document.getElementById('map'), ctx = cv.getContext('2d');
+  const N = 160, off = document.createElement('canvas');
+  off.width = off.height = N;
+  const octx = off.getContext('2d'), img = octx.createImageData(N, N);
+  const span = () => BASE / view.zoom;
+  const toWorld = (px, py) => [view.cx + (px / S - 0.5) * span(), view.cy + (py / S - 0.5) * span()];
+  const toScreen = (wx, wy) => [((wx - view.cx) / span() + 0.5) * S, ((wy - view.cy) / span() + 0.5) * S];
+
+  function renderGrid() {
+    const sp = span(), d = img.data, dep = depthAt(view.zoom);
+    for (let j = 0; j < N; j++) {
+      for (let i = 0; i < N; i++) {
+        const p = paramsAt(view.cx + ((i + 0.5) / N - 0.5) * sp, view.cy + ((j + 0.5) / N - 0.5) * sp, dep);
+        const s = score(p), [h, sat] = FAM[nickname(p, s)];
+        const [r, g, b] = hslRgb(h, sat, 8 + 62 * s), o = (j * N + i) * 4;
+        d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = 255;
+      }
+    }
+    octx.putImageData(img, 0, 0);
+  }
+  function label(t, x, y, color) {
+    ctx.font = '12px system-ui, sans-serif';
+    const w = ctx.measureText(t).width;
+    x = Math.max(4, Math.min(x, S - w - 6));
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(x - 3, y - 12, w + 6, 16);
+    ctx.fillStyle = color || '#fff'; ctx.fillText(t, x, y);
+  }
+  const zoomStr = () => 'zoom ×' + (view.zoom < 1000 ? view.zoom.toFixed(view.zoom < 10 ? 2 : 0) : view.zoom.toExponential(1));
+  function draw() {
+    const k = cv.width / S;
+    ctx.setTransform(k, 0, 0, k, 0, 0);
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(off, 0, 0, S, S);
+    for (const f of favs) {   // small dots for favorites in view
+      const [x, y] = toScreen(f.x, f.y);
+      if (x < -5 || y < -5 || x > S + 5 || y > S + 5) continue;
+      ctx.fillStyle = '#ffd84a'; ctx.beginPath(); ctx.arc(x, y, 3, 0, 2 * Math.PI); ctx.fill();
+    }
+    if (current) {
+      const [x, y] = toScreen(current.x, current.y);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, 9, 0, 2 * Math.PI); ctx.stroke();
+      ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(x, y, 11.5, 0, 2 * Math.PI); ctx.stroke();
+      label(current.name, x + 14, y > 24 ? y - 10 : y + 26);
+    }
+    label(zoomStr(), 6, S - 8, '#cfd5e6');
+    document.getElementById('zoomtxt').textContent = zoomStr();
+  }
+  function frame() {
+    if (dirty) { renderGrid(); dirty = false; draw(); }
+    requestAnimationFrame(frame);
+  }
+  function resize() {
+    const cw = document.documentElement.clientWidth - 24;
+    const room = cw >= 640 ? cw - 14 - 260 : cw;   // sidebar beside the map on wide screens, below on narrow ones
+    S = Math.round(Math.max(260, Math.min(600, room, window.innerHeight - 70)));
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = cv.height = Math.round(S * dpr);
+    cv.style.width = cv.style.height = S + 'px';
+    dirty = true;
+  }
+  window.addEventListener('resize', resize);
+
+  // ---------- audio ----------
+  let actx = null, master = null, noiseBuf = null, soundOn = true;
+  const voices = [];
+  function ensureAudio() {   // called only from user-gesture handlers
+    if (!actx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      actx = new AC();
+      master = actx.createGain(); master.gain.value = 0.3; master.connect(actx.destination);
+      noiseBuf = actx.createBuffer(1, Math.round(actx.sampleRate * 3.2), actx.sampleRate);
+      const ch = noiseBuf.getChannelData(0);
+      for (let i = 0; i < ch.length; i++) ch[i] = Math.random() * 2 - 1;
+    }
+    if (actx.state === 'suspended') actx.resume().catch(() => {});
+  }
+  function killVoice(v) {
+    const t = actx.currentTime;
+    v.g.gain.cancelScheduledValues(t); v.g.gain.setValueAtTime(v.g.gain.value, t); v.g.gain.linearRampToValueAtTime(0, t + 0.04);
+    v.srcs.forEach((s) => { try { s.stop(t + 0.05); } catch (_) { /* already stopped */ } });
+  }
+  function playSound(p) {
+    if (!actx || !soundOn) return;
+    while (voices.length >= 6) killVoice(voices.shift());   // cap polyphony: drop the oldest
+    let A = p.attack / 1000, D = p.decay / 1000;
+    if (A + D > 3) { const k = 3 / (A + D); A *= k; D *= k; }
+    const t0 = actx.currentTime + 0.01, end = t0 + A + D, nyq = actx.sampleRate / 2 * 0.95;
+    const gl = 2 ** (p.glide / 12), srcs = [];
+    const g = actx.createGain(); g.connect(master);
+    g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(0.6, t0 + A);
+    g.gain.exponentialRampToValueAtTime(0.0005, end); g.gain.setValueAtTime(0, end + 0.01);
+    let lfoGain = null;
+    if (p.wobble > 0.5) {   // vibrato: LFO into every oscillator's detune, ±30 cents
+      const lfo = actx.createOscillator(); lfoGain = actx.createGain();
+      lfo.frequency.value = p.wobble; lfoGain.gain.value = 30;
+      lfo.connect(lfoGain); lfo.start(t0); srcs.push(lfo);
+    }
+    const tone = actx.createGain(); tone.gain.value = 1 - p.noise; tone.connect(g);
+    let sum = 0;
+    for (let k = 1; k <= p.overtones; k++) sum += p.bright ** (k - 1);
+    for (let k = 1; k <= p.overtones; k++) {
+      const f = p.pitch * k ** p.stretch;
+      if (Math.max(f, f * gl) > nyq) break;
+      const o = actx.createOscillator(), pg = actx.createGain();
+      o.frequency.setValueAtTime(f, t0); o.frequency.exponentialRampToValueAtTime(f * gl, end);
+      pg.gain.value = p.bright ** (k - 1) / sum;
+      if (lfoGain) lfoGain.connect(o.detune);
+      o.connect(pg); pg.connect(tone); o.start(t0); srcs.push(o);
+    }
+    if (p.noise > 0.01) {   // band-passed hiss around the pitch, following the glide
+      const n = actx.createBufferSource(), bp = actx.createBiquadFilter(), ng = actx.createGain();
+      n.buffer = noiseBuf; bp.type = 'bandpass'; bp.Q.value = 3;
+      bp.frequency.setValueAtTime(Math.min(p.pitch, nyq), t0); bp.frequency.exponentialRampToValueAtTime(Math.min(p.pitch * gl, nyq), end);
+      ng.gain.value = p.noise * 2.2;
+      n.connect(bp); bp.connect(ng); ng.connect(g); n.start(t0); srcs.push(n);
+    }
+    srcs.forEach((s) => s.stop(end + 0.05));
+    const v = { g, srcs };
+    voices.push(v);
+    if (srcs.length) srcs[srcs.length - 1].onended = () => { const i = voices.indexOf(v); if (i >= 0) voices.splice(i, 1); };
+  }
+
+  // ---------- play a point + sidebar ----------
+  let current = null;
+  const ptab = document.getElementById('ptab'), nickEl = document.getElementById('nick');
+  function showParams(p) {
+    nickEl.textContent = p.name; nickEl.style.color = famColor(p.name, Math.max(0.6, p.score));
+    document.getElementById('where').textContent = 'score ' + p.score.toFixed(2) + ' · at (' + p.x.toFixed(4) + ', ' + p.y.toFixed(4) + ')';
+    ptab.innerHTML = PARAMS.map(([k, lab, , fmt]) => '<tr><td>' + lab + '</td><td>' + fmt(p[k]) + '</td></tr>').join('');
+  }
+  function playAt(wx, wy) {   // what you hear = what you see at the current zoom
+    const p = paramsAt(wx, wy, depthAt(view.zoom));
+    p.score = score(p); p.name = nickname(p, p.score);
+    current = p;
+    showParams(p); playSound(p); draw();
+    return p;
+  }
+
+  // ---------- pointer: click / scrub / pan, wheel zoom ----------
+  const cellOf = (px, py) => Math.floor(px / S * N) + ',' + Math.floor(py / S * N);
+  const pos = (e) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * S / r.width, (e.clientY - r.top) * S / r.height]; };
+  let drag = null;
+  cv.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    ensureAudio();
+    try { cv.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    const [px, py] = pos(e);
+    if (e.shiftKey || e.button === 1) { drag = { pan: true, px, py, cx: view.cx, cy: view.cy }; cv.style.cursor = 'grabbing'; return; }
+    if (e.button !== 0) return;
+    drag = { pan: false, cell: cellOf(px, py), t: performance.now() };
+    playAt(...toWorld(px, py));
+  });
+  cv.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const [px, py] = pos(e);
+    if (drag.pan) {
+      view.cx = drag.cx - (px - drag.px) / S * span(); view.cy = drag.cy - (py - drag.py) / S * span();
+      dirty = true; return;
+    }
+    const cell = cellOf(px, py), now = performance.now();
+    if (cell !== drag.cell && now - drag.t >= 90) {   // scrub: new grid cell, at most one sound per 90 ms
+      drag.cell = cell; drag.t = now;
+      playAt(...toWorld(Math.max(0, Math.min(S, px)), Math.max(0, Math.min(S, py))));
+    }
+  });
+  const endDrag = () => { drag = null; cv.style.cursor = ''; };
+  cv.addEventListener('pointerup', endDrag);
+  cv.addEventListener('pointercancel', endDrag);
+  cv.addEventListener('auxclick', (e) => e.preventDefault());
+  cv.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const [px, py] = pos(e), [wx, wy] = toWorld(px, py);
+    const dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+    view.zoom *= Math.exp(-Math.max(-600, Math.min(600, dy)) * 0.0015);
+    view.zoom = Math.max(0.05, view.zoom);   // no upper limit: zoom forever (until doubles run out)
+    // keep the world point under the cursor fixed
+    view.cx = wx - (px / S - 0.5) * span(); view.cy = wy - (py / S - 0.5) * span();
+    dirty = true;
+  }, { passive: false });
+
+  // ---------- buttons: save / favorites, dive, sound ----------
+  let favs = [];
+  try { favs = JSON.parse(localStorage.getItem('babel-favs') || '[]').filter((f) => typeof f.x === 'number'); } catch (_) { favs = []; }
+  const favEl = document.getElementById('favs');
+  function renderFavs() {
+    try { localStorage.setItem('babel-favs', JSON.stringify(favs)); } catch (_) { /* storage blocked: memory only */ }
+    favEl.innerHTML = favs.length ? '' : '<span class="desc">none yet</span>';
+    favs.forEach((f, i) => {
+      const b = document.createElement('button');
+      b.textContent = '▶ ' + (i + 1) + '. ' + f.name;
+      b.style.borderColor = famColor(f.name, 0.6);
+      b.addEventListener('click', () => {
+        ensureAudio();
+        view.cx = f.x; view.cy = f.y; view.zoom = f.zoom || view.zoom; dirty = true;
+        playAt(f.x, f.y);
+      });
+      favEl.appendChild(b);
+    });
+  }
+  document.getElementById('save').addEventListener('click', () => {
+    if (!current) return;
+    if (!favs.some((f) => f.x === current.x && f.y === current.y)) favs.push({ x: current.x, y: current.y, zoom: view.zoom, name: current.name });
+    renderFavs(); draw();
+  });
+  document.getElementById('dive').addEventListener('click', () => {
+    ensureAudio();
+    const pts = [];
+    for (let i = 0; i < 200; i++) {
+      const x = (Math.random() - 0.5) * 2000, y = (Math.random() - 0.5) * 2000;
+      pts.push([score(paramsAt(x, y, depthAt(3))), x, y]);
+    }
+    pts.sort((a, b) => b[0] - a[0]);
+    const [, x, y] = pts[Math.floor(Math.random() * 8)];   // one of the top 8
+    view.cx = x; view.cy = y; view.zoom = 3; dirty = true;
+    playAt(x, y);
+  });
+  const sbtn = document.getElementById('sound');
+  sbtn.addEventListener('click', () => {
+    soundOn = !soundOn; sbtn.textContent = 'Sound: ' + (soundOn ? 'on' : 'off'); sbtn.classList.toggle('on', !soundOn);
+    if (soundOn) ensureAudio(); else if (actx) while (voices.length) killVoice(voices.shift());
+  });
+  document.getElementById('legend').innerHTML = Object.keys(FAM).map((n) => '<span><i style="background:' + famColor(n, 0.75) + '"></i>' + n + '</span>').join('');
+
+  window.Babel = { paramsAt, score, nickname, view, get current() { return current; }, get favs() { return favs; }, get voices() { return voices.length; }, get soundOn() { return soundOn; } };
+  renderFavs();
+  resize();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

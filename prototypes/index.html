@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>soundfractal</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px; background: #0d0f14; color: #d8dce6; font: 14px/1.4 system-ui, sans-serif; }
+  h1 { margin: 0 0 8px; font-size: 20px; letter-spacing: 1px; }
+  h1 small { color: #7a8194; font-weight: normal; font-size: 13px; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+  .tabs button, .controls button { background: #1c2030; color: #c8cde0; border: 1px solid #333a50; padding: 6px 10px; border-radius: 4px; cursor: pointer; font: inherit; }
+  .tabs button.on { background: #2d6cdf; color: #fff; border-color: #2d6cdf; }
+  .main { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  #cv { background: #000; border: 1px solid #262b3a; display: block; touch-action: none; max-width: 100%; cursor: crosshair; }
+  #info { flex: 1 1 220px; min-width: 200px; max-width: 420px; background: #141824; border: 1px solid #262b3a; padding: 8px 10px; border-radius: 4px; font: 12px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; }
+  .controls { display: flex; gap: 6px; align-items: center; margin: 10px 0 6px; flex-wrap: wrap; color: #7a8194; font-size: 12px; }
+  .kbwrap { overflow-x: auto; padding-bottom: 4px; }
+  #kb { position: relative; height: 130px; user-select: none; }
+  .key { position: absolute; top: 0; border: 1px solid #222; border-radius: 0 0 4px 4px; cursor: pointer; display: flex; align-items: flex-end; justify-content: center; font-size: 10px; padding-bottom: 4px; }
+  .key.w { width: 36px; height: 130px; background: #e8e8e8; color: #555; z-index: 1; }
+  .key.b { width: 24px; height: 80px; background: #181818; color: #888; z-index: 2; }
+  .key.on { color: #000; font-weight: bold; }
+</style>
+<link rel="stylesheet" href="proto.css">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<h1>soundfractal <small>where do your notes land on the harmony maps?</small></h1>
+<nav class="pnav" aria-label="Prototypes"><a href="index.html" aria-current="page">Maps</a><a href="timbre.html">Timbre lab</a><a href="morph.html">Morph map</a><a href="spiral.html">Spiral</a><a href="melody.html">Melody</a><a href="babel.html">Mini Babel</a></nav>
+<div class="tabs" id="tabs">
+  <button data-v="A" class="on">Hz × Hz</button>
+  <button data-v="B">Triad map</button>
+  <button data-v="C">Ratio fractal (Ford circles)</button>
+  <button data-v="D">Pitch spiral</button>
+</div>
+<div class="main">
+  <canvas id="cv"></canvas>
+  <div id="info"></div>
+</div>
+<div class="controls">
+  <button id="clear">Clear</button>
+  <button id="sound">Sound: on</button>
+  <span>Click keys to toggle notes. Computer keys A W S E D F T G Y H U J K = C4…C5. Click &amp; drag on the map to hear any position.</span>
+</div>
+<div class="kbwrap"><div id="kb"></div></div>
+
+<script src="../js/core/harmony.js"></script>
+<script>
+(function () {
+  'use strict';
+  const H = window.Harmony;
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const info = document.getElementById('info');
+  const active = new Set();          // MIDI numbers
+  let view = 'A';
+  let W = 600, Hh = 450;             // CSS pixel size of canvas
+
+  const hue = (m) => (((m % 12) + 12) % 12) * 30;
+  const sortedActive = () => [...active].sort((a, b) => a - b);
+
+  // ---------- palette: t in [0,1], 0 = dark blue (dissonant), 1 = white (consonant) ----------
+  function palette(t) {
+    t = Math.max(0, Math.min(1, t));
+    const stops = [[0, 8, 10, 40], [0.55, 0, 190, 220], [1, 255, 255, 255]];
+    for (let i = 1; i < stops.length; i++) {
+      if (t <= stops[i][0]) {
+        const a = stops[i - 1], b = stops[i], u = (t - a[0]) / (b[0] - a[0]);
+        return [a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u, a[3] + (b[3] - a[3]) * u];
+      }
+    }
+    return [255, 255, 255];
+  }
+
+  // Render a res×res offscreen map from fn(u, v) -> dissonance (u right, v up, both 0..1).
+  function renderMap(res, fn) {
+    const vals = new Float32Array(res * res);
+    let max = 0;
+    for (let j = 0; j < res; j++) for (let i = 0; i < res; i++) {
+      const d = fn((i + 0.5) / res, 1 - (j + 0.5) / res);
+      vals[j * res + i] = d; if (d > max) max = d;
+    }
+    const off = document.createElement('canvas');
+    off.width = off.height = res;
+    const octx = off.getContext('2d');
+    const img = octx.createImageData(res, res);
+    for (let k = 0; k < vals.length; k++) {
+      const [r, g, b] = palette(1 - Math.sqrt(vals[k] / (max || 1)));
+      img.data[k * 4] = r; img.data[k * 4 + 1] = g; img.data[k * 4 + 2] = b; img.data[k * 4 + 3] = 255;
+    }
+    octx.putImageData(img, 0, 0);
+    return off;
+  }
+
+  // Caches keyed by resolution: re-rendered only when the size changes.
+  const cache = { A: { res: 0, img: null }, B: { res: 0, img: null } };
+  function cached(key, res, fn) {
+    const c = cache[key];
+    if (c.res !== res || !c.img) { c.img = renderMap(res, fn); c.res = res; }
+    return c.img;
+  }
+
+  // Square plot area used by views A and B.
+  function plotBox() {
+    const m = 36, s = Math.min(W, Hh) - m - 12;
+    return { x: m, y: 8, s };
+  }
+  const mapRes = (s) => Math.max(80, Math.min(300, Math.round(s / 2)));
+
+  function label(text, x, y, color, align) {
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.textAlign = align || 'left';
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    const w = ctx.measureText(text).width, ox = align === 'center' ? -w / 2 : align === 'right' ? -w : 0;
+    ctx.fillRect(x + ox - 2, y - 10, w + 4, 13);
+    ctx.fillStyle = color || '#fff';
+    ctx.fillText(text, x, y);
+  }
+  function dot(x, y, r, fill) {
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI);
+    ctx.fillStyle = fill; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = '#000'; ctx.stroke();
+  }
+
+  // ---------- View A: Hz x Hz ----------
+  const FLO = 110, FHI = 1760, OCT = Math.log2(FHI / FLO);
+  function drawA() {
+    const b = plotBox();
+    const img = cached('A', mapRes(b.s), (u, v) => H.dissonance([FLO * 2 ** (u * OCT), FLO * 2 ** (v * OCT)]));
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(img, b.x, b.y, b.s, b.s);
+    const fx = (f) => b.x + (Math.log2(f / FLO) / OCT) * b.s;
+    const fy = (f) => b.y + b.s - (Math.log2(f / FLO) / OCT) * b.s;
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1;
+    for (let m = 48; m <= 84; m += 12) {
+      const f = H.midiToHz(m), x = fx(f), y = fy(f);
+      ctx.beginPath(); ctx.moveTo(x, b.y); ctx.lineTo(x, b.y + b.s); ctx.moveTo(b.x, y); ctx.lineTo(b.x + b.s, y); ctx.stroke();
+      label(H.noteName(m), x, b.y + b.s + 14, '#aab', 'center');
+      label(H.noteName(m), b.x - 4, y + 4, '#aab', 'right');
+    }
+    const ns = sortedActive();
+    for (let i = 0; i < ns.length; i++) for (let j = i + 1; j < ns.length; j++) {
+      const lo = H.midiToHz(ns[i]), hi = H.midiToHz(ns[j]);
+      const nr = H.nearestRatio(hi / lo);
+      const txt = H.noteName(ns[i]) + '+' + H.noteName(ns[j]) + ' ' + (nr ? nr.p + '/' + nr.q : '—');
+      for (const [a, c] of [[lo, hi], [hi, lo]]) {
+        const x = fx(a), y = fy(c);
+        if (x < b.x || x > b.x + b.s || y < b.y || y > b.y + b.s) continue;
+        dot(x, y, 6, 'hsl(' + hue(ns[j]) + ',90%,60%)');
+        label(txt, x + 9, y - 6);
+      }
+    }
+  }
+
+  // ---------- View B: Triad map ----------
+  const ROOT = 261.63;
+  function drawB() {
+    const b = plotBox();
+    const img = cached('B', mapRes(b.s), (u, v) =>
+      H.dissonance([ROOT, ROOT * 2 ** u, ROOT * 2 ** v]));
+    ctx.drawImage(img, b.x, b.y, b.s, b.s);
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1;
+    for (let c = 0; c <= 1200; c += 100) {
+      const x = b.x + (c / 1200) * b.s, y = b.y + b.s - (c / 1200) * b.s;
+      ctx.beginPath(); ctx.moveTo(x, b.y); ctx.lineTo(x, b.y + b.s); ctx.moveTo(b.x, y); ctx.lineTo(b.x + b.s, y); ctx.stroke();
+      if (c % 300 === 0) { label(String(c), x, b.y + b.s + 14, '#aab', 'center'); label(String(c), b.x - 4, y + 4, '#aab', 'right'); }
+    }
+    label('note 2 (cents) →', b.x + b.s - 4, b.y + b.s - 6, '#ccd', 'right');
+    label('↑ note 3 (cents)', b.x + 6, b.y + 14, '#ccd');
+    const ns = sortedActive();
+    if (ns.length < 3) { label('select 3 notes', b.x + b.s / 2, b.y + b.s / 2, '#fff', 'center'); return; }
+    const root = H.midiToHz(ns[0]);
+    const cents = (m) => 1200 * Math.log2(H.octaveReduce(H.midiToHz(m) / root));
+    const c2 = cents(ns[1]), c3 = cents(ns[2]);
+    const x = b.x + (c2 / 1200) * b.s, y = b.y + b.s - (c3 / 1200) * b.s;
+    dot(x, y, 8, 'hsl(' + hue(ns[0]) + ',90%,60%)');
+    label(ns.slice(0, 3).map(H.noteName).join(' ') + '  (' + c2.toFixed(0) + ', ' + c3.toFixed(0) + ')', x + 11, y - 8);
+  }
+
+  // ---------- View C: Ford circles ----------
+  const ford = { x0: 0.98, x1: 2.02 };
+  function fordMaxDen() {
+    const zoom = 1.04 / (ford.x1 - ford.x0);
+    return Math.max(40, Math.min(400, Math.round(40 * Math.sqrt(zoom))));
+  }
+  function drawC() {
+    const base = Hh - 24, scale = W / (ford.x1 - ford.x0);
+    const X = (v) => (v - ford.x0) * scale;
+    ctx.fillStyle = '#05060a'; ctx.fillRect(0, 0, W, Hh);
+    const maxDen = fordMaxDen();
+    const lo = Math.max(1, ford.x0 - 0.5), hi = Math.min(2, ford.x1 + 0.5);
+    let drawn = 0;
+    if (lo <= hi) {
+      for (const c of H.fordCircles(maxDen, lo, hi)) {
+        const r = c.r * scale, x = X(c.x);
+        if (r < 0.5 || x + r < 0 || x - r > W || base - 2 * r > Hh) continue;
+        ctx.beginPath(); ctx.arc(x, base - r, r, 0, 2 * Math.PI);
+        ctx.fillStyle = 'hsl(' + ((c.q * 47) % 360) + ',70%,55%)'; ctx.fill();
+        if (r > 3) { ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.stroke(); }
+        if (r > 14) { ctx.fillStyle = '#000'; ctx.font = Math.min(16, r / 2.5) + 'px system-ui'; ctx.textAlign = 'center'; ctx.fillText(c.p + '/' + c.q, x, base - r + 4); }
+        drawn++;
+      }
+    }
+    ctx.strokeStyle = '#888'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, base); ctx.lineTo(W, base); ctx.stroke();
+    const ns = sortedActive();
+    for (let i = 0; i < ns.length; i++) for (let j = i + 1; j < ns.length; j++) {
+      const r = H.octaveReduce(H.midiToHz(ns[j]) / H.midiToHz(ns[i]));
+      const x = X(r);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, base); ctx.stroke();
+      const nr = H.nearestRatio(r);
+      const txt = H.noteName(ns[i]) + '+' + H.noteName(ns[j]) + (nr ? ' ' + nr.p + '/' + nr.q : ' —');
+      if (nr) {
+        const cr = scale / (2 * nr.q * nr.q), cx = X(nr.p / nr.q);
+        ctx.beginPath(); ctx.arc(cx, base - cr, cr, 0, 2 * Math.PI);
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
+      }
+      label(txt, x + 4, 14 + ((i * 7 + j) % 6) * 15);
+    }
+    label('ratio ' + ford.x0.toFixed(4) + ' … ' + ford.x1.toFixed(4) + '   maxDen ' + maxDen + '   circles ' + drawn + '   (wheel = zoom, shift+drag = pan, drag = listen)', 6, Hh - 6, '#aab');
+  }
+  cv.addEventListener('wheel', (e) => {
+    if (view !== 'C') return;
+    e.preventDefault();
+    const rect = cv.getBoundingClientRect();
+    const mx = ford.x0 + ((e.clientX - rect.left) / rect.width) * (ford.x1 - ford.x0);
+    const k = Math.exp(e.deltaY * 0.0015);
+    const span = Math.max(1e-5, Math.min(2, (ford.x1 - ford.x0) * k));
+    const t = (mx - ford.x0) / (ford.x1 - ford.x0);
+    ford.x0 = mx - t * span; ford.x1 = ford.x0 + span;
+    draw();
+  }, { passive: false });
+  // Pointer: drag = listen to the map position (all views); shift/middle-drag = pan (Ford view).
+  let drag = null, probe = null;
+  const canvasXY = (e) => {
+    const rect = cv.getBoundingClientRect();
+    return [(e.clientX - rect.left) * W / rect.width, (e.clientY - rect.top) * Hh / rect.height];
+  };
+  cv.addEventListener('pointerdown', (e) => {
+    try { cv.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    if (view === 'C' && (e.shiftKey || e.button === 1)) {
+      drag = { x: e.clientX, x0: ford.x0, x1: ford.x1 };
+      return;
+    }
+    ensureAudio();
+    moveProbe(...canvasXY(e));
+  });
+  cv.addEventListener('pointermove', (e) => {
+    if (drag) {
+      const rect = cv.getBoundingClientRect();
+      const dv = ((e.clientX - drag.x) / rect.width) * (drag.x1 - drag.x0);
+      ford.x0 = drag.x0 - dv; ford.x1 = drag.x1 - dv;
+      draw();
+    } else if (probe) moveProbe(...canvasXY(e));
+  });
+  const endDrag = () => { drag = null; stopProbe(); };
+  cv.addEventListener('pointerup', endDrag);
+  cv.addEventListener('pointercancel', endDrag);
+
+  // Frequencies that a canvas position "means" in the current view, or null if outside the map.
+  function probeFreqs(px, py) {
+    if (view === 'A' || view === 'B') {
+      const b = plotBox(), u = (px - b.x) / b.s, v = 1 - (py - b.y) / b.s;
+      if (u < 0 || u > 1 || v < 0 || v > 1) return null;
+      return view === 'A' ? [FLO * 2 ** (u * OCT), FLO * 2 ** (v * OCT)] : [ROOT, ROOT * 2 ** u, ROOT * 2 ** v];
+    }
+    if (view === 'C') {
+      const r = ford.x0 + (px / W) * (ford.x1 - ford.x0);
+      return r < 1 || r > 2 ? null : [ROOT, ROOT * r];
+    }
+    const g = spiralGeom(), dx = px - g.cx, dy = py - g.cy;
+    const frac = ((Math.atan2(dx, -dy) / (2 * Math.PI)) + 1) % 1;
+    const oEst = (Math.hypot(dx, dy) - g.r0) / g.per;
+    const o = Math.max(0, Math.min(5, Math.round(oEst - frac) + frac));   // nearest spiral turn
+    return [C2 * 2 ** o];
+  }
+
+  // ---------- View D: Pitch spiral ----------
+  const C2 = H.midiToHz(36), C3 = H.midiToHz(48);
+  function spiralGeom() {
+    const R = Math.min(W, Hh) / 2 - 24, r0 = R * 0.12;
+    return { cx: W / 2, cy: Hh / 2, R, r0, per: (R - r0) / 5 };
+  }
+  function drawD() {
+    ctx.fillStyle = '#05060a'; ctx.fillRect(0, 0, W, Hh);
+    const { cx, cy, R, r0, per } = spiralGeom();
+    const pos = (f) => {
+      const o = Math.log2(f / C2), a = 2 * Math.PI * Math.log2(f / C3), rad = r0 + o * per;
+      return [cx + rad * Math.sin(a), cy - rad * Math.cos(a)];
+    };
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    for (let pc = 0; pc < 12; pc++) {
+      const a = (pc / 12) * 2 * Math.PI;
+      ctx.beginPath(); ctx.moveTo(cx + r0 * Math.sin(a), cy - r0 * Math.cos(a));
+      ctx.lineTo(cx + R * Math.sin(a), cy - R * Math.cos(a)); ctx.stroke();
+      label(H.noteName(pc + 60).replace(/\d+$/, ''), cx + (R + 12) * Math.sin(a), cy - (R + 12) * Math.cos(a) + 4, 'hsl(' + pc * 30 + ',80%,70%)', 'center');
+    }
+    ctx.strokeStyle = 'rgba(160,170,200,0.45)';
+    ctx.beginPath();
+    for (let i = 0; i <= 600; i++) { const [x, y] = pos(C2 * 2 ** (i / 120)); if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); }
+    ctx.stroke();
+    const ns = sortedActive();
+    if (ns.length >= 2) {
+      ctx.beginPath();
+      ns.forEach((m, i) => { const [x, y] = pos(H.midiToHz(m)); if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); });
+      ctx.closePath(); ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    for (const m of ns) {
+      const f = H.midiToHz(m);
+      for (let k = 2; k <= 8; k++) {
+        if (f * k > C2 * 32) break;
+        const [x, y] = pos(f * k);
+        ctx.beginPath(); ctx.arc(x, y, 3.5, 0, 2 * Math.PI);
+        ctx.fillStyle = 'hsla(' + hue(m) + ',85%,60%,0.85)'; ctx.fill();
+      }
+    }
+    for (const m of ns) {
+      const [x, y] = pos(H.midiToHz(m));
+      dot(x, y, 9, 'hsl(' + hue(m) + ',90%,60%)');
+      label(H.noteName(m), x + 12, y - 8);
+    }
+  }
+
+  function draw() {
+    ctx.setTransform(cv.width / W, 0, 0, cv.height / Hh, 0, 0);
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, Hh);
+    ({ A: drawA, B: drawB, C: drawC, D: drawD })[view]();
+    if (probe) drawProbe();
+  }
+
+  function drawProbe() {
+    const [x, y] = probe.pos;
+    ctx.beginPath(); ctx.arc(x, y, 10, 0, 2 * Math.PI);
+    ctx.lineWidth = 2; ctx.strokeStyle = '#fff'; ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x - 16, y); ctx.lineTo(x + 16, y); ctx.moveTo(x, y - 16); ctx.lineTo(x, y + 16); ctx.stroke();
+    const nearest = (f) => H.noteName(Math.round(69 + 12 * Math.log2(f / 440)));
+    let txt = probe.freqs.map((f) => f.toFixed(1) + ' Hz (' + nearest(f) + ')').join(' + ');
+    if (probe.freqs.length >= 2) {
+      const [f0, f1] = probe.freqs;
+      const nr = H.nearestRatio(Math.max(f0, f1) / Math.min(f0, f1));
+      txt += nr ? '  ≈ ' + nr.p + '/' + nr.q : '';
+      txt += '  diss ' + H.dissonance(probe.freqs).toFixed(3);
+    }
+    label(txt, Math.min(x + 14, W - ctx.measureText(txt).width - 8), y > 30 ? y - 14 : y + 28, '#fff');
+  }
+
+  function resize() {
+    const avail = Math.max(260, (document.documentElement.clientWidth || window.innerWidth) - 24);
+    W = Math.min(800, avail);
+    Hh = Math.max(260, Math.min(600, Math.round(W * 0.75), window.innerHeight - 260));
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(Hh * dpr);
+    cv.style.width = W + 'px'; cv.style.height = Hh + 'px';
+    draw();
+  }
+  window.addEventListener('resize', resize);
+
+  // ---------- Info panel ----------
+  function updateInfo() {
+    const ns = sortedActive();
+    if (!ns.length) { info.textContent = 'No notes active.\nClick keys below (or type A W S E D …).'; return; }
+    const lines = ['Notes:'];
+    for (const m of ns) lines.push('  ' + H.noteName(m).padEnd(4) + H.midiToHz(m).toFixed(2) + ' Hz');
+    if (ns.length >= 2) {
+      lines.push('', 'Pairs (high/low, nearest p/q, error):');
+      for (let i = 0; i < ns.length; i++) for (let j = i + 1; j < ns.length; j++) {
+        const r = H.midiToHz(ns[j]) / H.midiToHz(ns[i]);
+        const nr = H.nearestRatio(r);
+        lines.push('  ' + (H.noteName(ns[i]) + '-' + H.noteName(ns[j])).padEnd(8) + r.toFixed(4).padStart(8) + '  ' +
+          (nr ? (nr.p + '/' + nr.q).padEnd(6) + (nr.cents >= 0 ? '+' : '') + nr.cents.toFixed(1) + '¢' : '—'));
+      }
+    }
+    lines.push('', 'Total dissonance: ' + H.dissonance(ns.map(H.midiToHz)).toFixed(3));
+    info.textContent = lines.join('\n');
+  }
+
+  // ---------- Audio ----------
+  let actx = null, master = null, soundOn = true;
+  const voices = new Map();
+  function ensureAudio() {   // called only from user-gesture handlers
+    if (!actx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      actx = new AC();
+      master = actx.createGain(); master.gain.value = 0.3; master.connect(actx.destination);
+    }
+    if (actx.state === 'suspended') actx.resume().catch(() => {});
+  }
+  const voiceLevel = () => 1 / Math.max(1, voices.size);
+  function startVoice(m) {
+    if (!actx || voices.has(m)) return;
+    const f = H.midiToHz(m), ps = H.partials(f, 6);
+    const sum = ps.reduce((s, p) => s + p.a, 0);
+    const g = actx.createGain(); g.gain.value = 0; g.connect(master);
+    const oscs = ps.filter((p) => p.f < actx.sampleRate / 2).map((p) => {
+      const o = actx.createOscillator(), pg = actx.createGain();
+      o.type = 'sine'; o.frequency.value = p.f; pg.gain.value = p.a / sum;
+      o.connect(pg); pg.connect(g); o.start(); return o;
+    });
+    voices.set(m, { g, oscs });
+    const t = actx.currentTime;
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(voiceLevel(), t + 0.02);
+    rebalance(m);
+  }
+  function stopVoice(m) {
+    const v = voices.get(m);
+    if (!v) return;
+    voices.delete(m);
+    const t = actx.currentTime;
+    v.g.gain.cancelScheduledValues(t); v.g.gain.setValueAtTime(v.g.gain.value, t);
+    v.g.gain.linearRampToValueAtTime(0, t + 0.15);
+    v.oscs.forEach((o) => o.stop(t + 0.2));
+    rebalance();
+  }
+  // Keep the sum of voice gains <= 1 (so total <= master 0.3).
+  function rebalance(skip) {
+    const t = actx.currentTime, lvl = voiceLevel();
+    voices.forEach((v, m) => { if (m !== skip) v.g.gain.setTargetAtTime(lvl, t, 0.01); });
+  }
+  // Probe voice: one additive tone per frequency, glides while dragging.
+  function moveProbe(px, py) {
+    const freqs = probeFreqs(px, py);
+    if (!freqs) { stopProbe(); return; }
+    if (probe && probe.freqs.length !== freqs.length) stopProbe();
+    if (!probe) {
+      probe = { freqs, pos: [px, py], g: null, tones: [] };
+      if (actx && soundOn) {
+        const g = actx.createGain(), t = actx.currentTime;
+        g.connect(master);
+        g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(1 / (freqs.length + voices.size), t + 0.02);
+        probe.g = g;
+        probe.tones = freqs.map((f) => {
+          const ps = H.partials(f, 6), sum = ps.reduce((s, p) => s + p.a, 0);
+          return ps.map((p, k) => {
+            const o = actx.createOscillator(), pg = actx.createGain();
+            o.frequency.value = Math.min(p.f, actx.sampleRate / 2 - 1); pg.gain.value = p.a / sum;
+            o.connect(pg); pg.connect(g); o.start();
+            return { o, k: k + 1 };
+          });
+        });
+      }
+    }
+    probe.freqs = freqs; probe.pos = [px, py];
+    if (probe.g) {
+      const t = actx.currentTime;
+      probe.tones.forEach((tone, i) => tone.forEach(({ o, k }) =>
+        o.frequency.setTargetAtTime(Math.min(freqs[i] * k, actx.sampleRate / 2 - 1), t, 0.01)));
+    }
+    draw();
+  }
+  function stopProbe() {
+    if (!probe) return;
+    if (probe.g) {
+      const t = actx.currentTime, g = probe.g.gain;
+      g.cancelScheduledValues(t); g.setValueAtTime(g.value, t); g.linearRampToValueAtTime(0, t + 0.15);
+      probe.tones.forEach((tone) => tone.forEach(({ o }) => o.stop(t + 0.2)));
+    }
+    probe = null;
+    draw();
+  }
+
+  function syncAudio() {
+    if (!actx) return;
+    for (const m of [...voices.keys()]) if (!soundOn || !active.has(m)) stopVoice(m);
+    if (soundOn) for (const m of active) startVoice(m);
+  }
+
+  // ---------- Keyboard ----------
+  const kb = document.getElementById('kb');
+  const keyEls = new Map();
+  const isBlack = (m) => [1, 3, 6, 8, 10].includes(m % 12);
+  let wi = 0;
+  for (let m = 48; m <= 71; m++) {
+    const el = document.createElement('div');
+    el.className = 'key ' + (isBlack(m) ? 'b' : 'w');
+    if (isBlack(m)) el.style.left = (wi * 36 - 12) + 'px';
+    else { el.style.left = (wi * 36) + 'px'; wi++; }
+    el.textContent = m % 12 === 0 ? H.noteName(m) : '';
+    el.title = H.noteName(m);
+    el.addEventListener('pointerdown', (e) => { e.preventDefault(); toggle(m); });
+    kb.appendChild(el); keyEls.set(m, el);
+  }
+  kb.style.width = (wi * 36 + 1) + 'px';
+
+  const KEYMAP = { a: 60, w: 61, s: 62, e: 63, d: 64, f: 65, t: 66, g: 67, y: 68, h: 69, u: 70, j: 71, k: 72 };
+  window.addEventListener('keydown', (e) => {
+    if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+    const m = KEYMAP[e.key.toLowerCase()];
+    if (m !== undefined) { e.preventDefault(); toggle(m); }
+  });
+
+  function toggle(m) {
+    ensureAudio();
+    if (active.has(m)) active.delete(m); else active.add(m);
+    update();
+  }
+  function update() {
+    keyEls.forEach((el, m) => {
+      const on = active.has(m);
+      el.classList.toggle('on', on);
+      el.style.background = on ? 'hsl(' + hue(m) + ',85%,' + (isBlack(m) ? 45 : 65) + '%)' : '';
+    });
+    syncAudio(); updateInfo(); draw();
+  }
+
+  document.getElementById('clear').addEventListener('click', () => { active.clear(); update(); });
+  const sbtn = document.getElementById('sound');
+  sbtn.addEventListener('click', () => {
+    soundOn = !soundOn; sbtn.textContent = 'Sound: ' + (soundOn ? 'on' : 'off');
+    if (soundOn) ensureAudio();
+    syncAudio();
+  });
+  document.getElementById('tabs').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    view = b.dataset.v;
+    document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('on', x === b));
+    cv.style.cursor = 'crosshair';
+    draw();
+  });
+
+  resize();
+  updateInfo();
+})();
+</script>
+</body>
+</html>

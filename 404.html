@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#0b0d12">
+<title>Visual Harmonics</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<script>
+  // GitHub Pages serves this for any unknown path. Send the visitor to the app: first try the project-site
+  // root (/<repo>/), and if that is also missing (a user site), fall back to the domain root.
+  (function () {
+    var parts = location.pathname.split('/').filter(Boolean);
+    var tried = /(^|[?&])nf=1/.test(location.search);
+    var base = !tried && parts.length > 1 ? '/' + parts[0] + '/' : '/';
+    location.replace(base + 'index.html' + (tried || base === '/' ? '' : '?nf=1') + location.hash);
+  })();
+</script>
+<style>body{background:#0b0d12;color:#d8dce6;font:15px system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0}a{color:#6fa3ff}</style>
+</head>
+<body>
+<p>Page not found. <a href="index.html">Open Visual Harmonics</a></p>
+</body>
+</html>

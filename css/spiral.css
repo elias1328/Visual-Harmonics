@@ -1,0 +1,64 @@
+/* spiral experiment styles (owned by the spiral builder) */
+.sp .vh-canvas-box canvas { box-shadow: 0 10px 50px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(38, 43, 58, 0.6); }
+.sp-pop {
+  position: absolute; left: 50%; bottom: 82px; transform: translateX(-50%); z-index: 6;
+  display: flex; gap: 4px; padding: 5px; max-width: calc(100% - 16px); overflow-x: auto; scrollbar-width: none;
+  background: rgba(20, 24, 36, 0.94); border: 1px solid var(--line); border-radius: 14px;
+  backdrop-filter: blur(8px); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  animation: sp-pop-in 180ms ease;
+}
+.sp-pop[hidden] { display: none; }
+.sp-pop::-webkit-scrollbar { display: none; }
+@keyframes sp-pop-in { from { opacity: 0; transform: translate(-50%, 6px); } }
+.sp-chip {
+  flex: none; display: flex; flex-direction: column; align-items: center; gap: 1px; min-width: 52px; padding: 6px 8px;
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius); cursor: pointer; color: var(--text);
+  transition: background var(--ease), border-color var(--ease);
+}
+.sp-chip:hover { background: var(--surface-2); }
+.sp-chip b { font-size: 14px; font-weight: 600; }
+.sp-chip small { font-size: 10px; color: var(--muted); }
+.sp-chip[aria-pressed="true"] { background: rgba(111, 163, 255, 0.16); border-color: rgba(111, 163, 255, 0.5); }
+.sp-chip[aria-pressed="true"] b { color: var(--accent); }
+.sp-shared { color: #ffe9b0; font-size: 15px; margin: 4px 0; }
+@media (max-width: 460px) {
+  .sp-chip { min-width: 44px; padding: 5px 5px; }
+  .sp-chip small { display: none; }
+}
+
+.sp-latch[aria-pressed="true"] { background: rgba(255, 196, 90, 0.22); border-color: rgba(255, 196, 90, 0.85); box-shadow: 0 0 0 1px rgba(255, 196, 90, 0.4) inset; }
+.sp-latch[aria-pressed="true"] .lb, .sp-latch[aria-pressed="true"] .ic { color: #ffd37a; }
+.sp-latchnote { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 5; padding: 3px 10px; font-size: 12px; color: #ffd37a;
+  background: rgba(20, 24, 36, 0.85); border: 1px solid rgba(255, 196, 90, 0.5); border-radius: 999px; pointer-events: none; }
+.sp-latchnote[hidden] { display: none; }
+.sp-reset { margin-left: 8px; padding: 0 6px; font-size: 14px; line-height: 18px; color: var(--accent); background: transparent;
+  border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+.sp-reset:hover { background: var(--surface-2); }
+.sp .vh-caption .sp-meter { pointer-events: auto; cursor: help; color: var(--text); border-bottom: 1px dotted var(--muted); }
+
+/* "→ Melody": sends the sounding chord to Melody's inbox; sits on the caption row, right side */
+.sp-send {
+  position: absolute; right: 16px; bottom: 78px; z-index: 6; display: flex; align-items: center; gap: 8px;
+  padding: 3px 4px 3px 3px; background: rgba(20, 24, 36, 0.9); border: 1px solid var(--line); border-radius: 999px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4); animation: sp-pop-in-r 180ms ease;
+}
+.sp-send[hidden] { display: none; }
+@keyframes sp-pop-in-r { from { opacity: 0; transform: translateY(4px); } }
+.sp-send-btn {
+  font: 600 12px/1 var(--font); color: #0b0d12; background: var(--accent); border: 1px solid var(--accent);
+  border-radius: 999px; padding: 6px 11px; cursor: pointer; white-space: nowrap; transition: background var(--ease), opacity var(--ease);
+}
+.sp-send-btn:hover { background: #8ab6ff; }
+.sp-send-btn:focus-visible { outline: 2px solid var(--glow, #9ff); outline-offset: 2px; }
+.sp-send-btn[aria-disabled="true"] { background: transparent; color: var(--muted); border-color: var(--line); cursor: not-allowed; }
+.sp-send-inst { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--muted); cursor: pointer; padding-right: 6px; white-space: nowrap; }
+.sp-send-inst input { margin: 0; accent-color: var(--accent); }
+.sp-send-inst:focus-within { color: var(--text); }
+@media (min-width: 761px) { .sp.sp-sending:not(.vh-pushed) > .vh-caption { right: 330px; } }
+@media (min-width: 900px) {   /* Settings open: the caption row is too short, so the pill moves to the top-left corner */
+  .vh-exp.vh-pushed > .sp-send { right: auto; left: 16px; bottom: auto; top: 10px; }
+}
+@media (max-width: 760px) {   /* not enough room beside the caption: float above the canvas's top edge instead */
+  .sp-send { right: auto; left: 50%; bottom: auto; top: 40px; transform: translateX(-50%); }
+  @keyframes sp-pop-in-r { from { opacity: 0; } }
+}

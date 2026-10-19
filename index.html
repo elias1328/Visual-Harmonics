@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Visual Harmonics: free, open experiments for seeing harmony, calculated from the sound itself.">
+<meta name="theme-color" content="#0b0d12">
+<title>Visual Harmonics</title>
+<meta property="og:title" content="Visual Harmonics">
+<meta property="og:description" content="Free, open experiments for seeing harmony: every instrument gets its own map of which notes fit, calculated from its overtones.">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/melody.css">
+<link rel="stylesheet" href="css/babel.css">
+<link rel="stylesheet" href="css/spiral.css">
+</head>
+<body>
+<header class="vh-top">
+  <a class="vh-brand" href="#melody" aria-label="Visual Harmonics">
+    <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">
+      <circle cx="13" cy="13" r="11.5" fill="none" stroke="#262b3a" stroke-width="1.5"/>
+      <path d="M13 13m-2 0a2 2 0 1 1 4 0a4 4 0 1 1-8 0a6 6 0 1 1 12 0a8 8 0 1 1-16 0" fill="none" stroke="#6fa3ff" stroke-width="1.6" stroke-linecap="round"/>
+      <circle cx="21" cy="13" r="1.8" fill="#9ff"/>
+    </svg>
+    <span>Visual Harmonics</span>
+  </a>
+  <nav class="vh-tabs" id="tabs" aria-label="Experiments"></nav>
+  <div class="vh-top-right"><button class="vh-text-btn" id="aboutBtn" type="button" aria-haspopup="dialog" title="About Visual Harmonics">About</button></div>
+</header>
+<div class="vh-banner" id="banner" role="status" hidden><span></span><button type="button" class="vh-banner-x" aria-label="Dismiss this note">✕</button></div>
+<main class="vh-stage" id="stage" tabindex="-1"></main>
+
+<dialog class="vh-about" id="about" aria-labelledby="aboutTitle">
+  <h2 id="aboutTitle">Visual Harmonics</h2>
+  <p>Which notes sound good together depends on the sound playing them. Every real sound is a stack of overtones, and when the overtones of two notes rub against each other, we hear roughness.</p>
+  <p>Here harmony is <b>calculated from the sound itself</b>: we measure each instrument's overtones and compute, for every pitch, how smoothly it blends. Nothing is looked up in a music-theory table, so a bell, a piano and a sine wave each get their own map of what fits.</p>
+  <p>Visual Harmonics is <b>free &amp; open source</b>. Play, break things, and look inside.</p>
+  <p class="vh-credits">Credits: dissonance model after Plomp &amp; Levelt and W. A. Sethares.
+    Orchestral samples: VS Chamber Orchestra: Community Edition by Versilian Studios / Sam Gossner &amp; Ivy Audio / Simon Dalzell (CC0), vis.versilstudios.net/vsco-community.html.
+    Instruments marked “local” are on this computer only and are not published.</p>
+  <form method="dialog"><button class="vh-btn" type="submit">Close</button></form>
+</dialog>
+
+<script src="js/core/harmony.js"></script>
+<script src="js/core/store.js"></script>
+<script src="js/core/analyze.js"></script>
+<script src="js/core/audio.js"></script>
+<script src="js/core/sounds.js"></script>
+<script src="js/core/fx.js"></script>
+<script src="js/app.js"></script>
+<!-- Melody: core modules (A1), then Wave B parts (separate files, see js/exp/melody/MELODY.md), then main (registers) -->
+<script src="js/exp/melody/model.js"></script>
+<script src="js/exp/melody/bands.js"></script>
+<script src="js/exp/melody/view.js"></script>
+<script src="js/exp/melody/engine.js"></script>
+<script src="js/exp/melody/tools.js"></script>
+<script src="js/exp/melody/ui.js"></script>
+<script src="js/exp/melody/tools-edit.js"></script>
+<script src="js/exp/melody/sound.js"></script>
+<script src="js/exp/melody/export.js"></script>
+<script src="js/exp/melody/generate.js"></script>
+<script src="js/exp/melody/onboard.js"></script>
+<script src="js/exp/melody/main.js"></script>
+<script src="js/exp/babel.js"></script>
+<script src="js/exp/spiral.js"></script>
+<script src="js/exp/lab.js"></script>
+<script>VH.app.start();</script>
+</body>
+</html>

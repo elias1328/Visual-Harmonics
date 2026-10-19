@@ -1,0 +1,102 @@
+/* babel experiment styles (owned by the babel builder) */
+/* Muted biome colours (read by babel.js; brightness on the map is texture). */
+.vh-exp[data-exp="babel"] {
+  --bb-strings: #b39a5c; --bb-metal: #7590b3; --bb-wood: #a3654d; --bb-air: #79b3b8;
+  --bb-voice: #b07a9b; --bb-machine: #8577ba; --bb-nature: #6fa06a; --bb-texture: #8f9099;
+}
+.bb-wrap { position: relative; flex: none; }
+.bb-wrap canvas { position: absolute; left: 0; top: 0; }
+.bb-wrap .bb-ov { pointer-events: none; box-shadow: none; }
+
+.bb-tier {
+  display: inline-block; font: 600 10px/1 var(--font); letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 3px 6px 2px; border-radius: 999px; border: 1px solid currentColor; vertical-align: 1px; white-space: nowrap;
+}
+.bb-tier.t-common { color: #9aa2b5; border-color: #3a4152; }
+.bb-tier.t-uncommon { color: #7fd49a; }
+.bb-tier.t-rare { color: #6fc3ff; }
+.bb-tier.t-epic { color: #d3a6ff; background: rgba(160, 90, 255, 0.14); }
+.bb-tier.t-legendary { color: #f2d98a; background: rgba(242, 217, 138, 0.1); }
+
+.bb-nick { font-size: 20px; font-weight: 600; margin: 4px 0 2px; line-height: 1.3; }
+.bb-nick .bb-tier { margin-right: 4px; }
+.vh-table tr.bb-ing td { color: #e9d9ff; }
+.vh-table tr.bb-ing td + td { color: #e9d9ff; }
+/* a gem's halo: the neighbour carries a trace of it (wording only; never where it is) */
+.vh-table tr.bb-aura td + td { color: #efe3b8; font-style: italic; }
+
+.bb-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; max-height: 260px; overflow-y: auto; }
+.bb-item { display: flex; align-items: center; gap: 4px; font-size: 13px; padding: 3px 0; border-bottom: 1px solid rgba(38, 43, 58, 0.6); }
+.bb-item-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bb-item .vh-desc { display: inline; margin: 0; font-size: 11px; }
+.vh-btn.bb-mini { padding: 3px 8px; min-width: 30px; font-size: 13px; }
+
+.bb-legend span { display: inline-flex; align-items: center; margin: 2px 8px 2px 0; font-size: 12px; color: #aab3c8; }
+.bb-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
+.bb-legend .vh-desc { margin: 8px 0 3px; }
+.bb-legend .bb-tier { margin: 2px 2px 2px 0; }
+
+.bb-toast {
+  position: absolute; left: 50%; top: 14px; z-index: 8; transform: translate(-50%, -8px); max-width: calc(100% - 32px);
+  background: rgba(20, 24, 36, 0.94); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 14px;
+  font-size: 13px; color: var(--text); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  opacity: 0; pointer-events: none; transition: opacity 200ms ease, transform 200ms ease;
+}
+.bb-toast.show { opacity: 1; transform: translate(-50%, 0); }
+.bb-toast.epic { border-color: rgba(197, 139, 255, 0.7); }
+.bb-toast.rare { border-color: rgba(143, 208, 255, 0.5); }
+.bb-toast .bb-sub { color: var(--muted); font-size: 12px; }
+.bb-toast.legendary { border-color: #f2d98a; color: #fff4d8; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5); }
+.bb-toast.legendary.show { animation: bb-pop 600ms ease; }
+.bb-toast.saved { border-color: rgba(111, 163, 255, 0.6); }
+@keyframes bb-pop { 0% { transform: translate(-50%, 0) scale(0.85); } 60% { transform: translate(-50%, 0) scale(1.06); } 100% { transform: translate(-50%, 0) scale(1); } }
+
+.bb-save {
+  position: absolute; left: 50%; bottom: 84px; z-index: 6; transform: translateX(-50%); width: min(360px, calc(100% - 32px));
+  display: flex; gap: 6px; padding: 6px; background: rgba(20, 24, 36, 0.96); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+.bb-save input {
+  flex: 1; min-width: 0; font: 14px var(--font); color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px;
+}
+.bb-save input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.vh-caption .bb-tier { font-size: 9px; padding: 2px 5px 1px; }
+@media (prefers-reduced-motion: reduce) { .bb-toast, .bb-toast.legendary.show { transition: none; animation: none; } }
+.bb-save[hidden] { display: none; }
+
+/* tier legend: the "why" */
+.bb-tiers { display: grid; grid-template-columns: auto 1fr; gap: 5px 8px; margin: 4px 0 8px; align-items: baseline; }
+.bb-tiers dt { margin: 0; }
+.bb-tiers dd { margin: 0; font-size: 12px; color: #aab3c8; line-height: 1.35; }
+.vh-caption .bb-hover { color: #aab3c8; }
+
+/* gem collection */
+.bb-gems { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 8px 0 4px; }
+.bb-gem {
+  position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  min-height: 64px; padding: 6px 4px; border: 1px dashed var(--line); border-radius: 8px; color: #4a5164;
+  text-align: center; font-size: 10px; line-height: 1.2; overflow: hidden;
+}
+.bb-gem .g { font-size: 18px; line-height: 1; }
+.bb-gem .n { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.bb-gem:not(.found) .n { font-style: italic; color: #565e72; }
+.bb-gem.found { border: 1px solid rgba(242, 217, 138, 0.35); background: rgba(242, 217, 138, 0.05); color: #f2d98a; padding: 0; gap: 0; }
+.bb-gem-play {
+  flex: 1; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  background: none; border: 0; color: inherit; cursor: pointer; padding: 6px 4px 2px; font-size: 11px; border-radius: 8px 8px 0 0;
+}
+.bb-gem-play:hover { background: rgba(242, 217, 138, 0.08); }
+.bb-gem.found .n { color: var(--text); }
+.bb-gem.found .vh-btn.bb-mini { margin: 2px 0 5px; padding: 1px 8px; font-size: 11px; min-width: 0; }
+@media (max-width: 420px) { .bb-gems { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+
+/* "Use in Melody" action inside the save toast (the toast itself ignores the pointer) */
+.bb-toast .bb-toast-act { margin: 0 0 0 10px; padding: 4px 10px; font-size: 12px; vertical-align: 1px; color: #fff;
+  background: rgba(111, 163, 255, 0.2); border-color: rgba(111, 163, 255, 0.7); }
+.bb-toast.show .bb-toast-act { pointer-events: auto; }
+.bb-toast .bb-toast-act:hover { background: rgba(111, 163, 255, 0.34); }
+.vh-btn.bb-mini { white-space: nowrap; }
+/* saved sounds carry four actions: name on its own line, actions under it */
+.bb-saved .bb-item { flex-wrap: wrap; row-gap: 3px; padding: 5px 0; }
+.bb-saved .bb-item-t { flex: 1 1 100%; }

@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>soundfractal · melody</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px; background: #0d0f14; color: #d8dce6; font: 14px/1.4 system-ui, sans-serif; }
+  h1 { margin: 0 0 8px; font-size: 20px; letter-spacing: 1px; }
+  h1 small { color: #7a8194; font-weight: normal; font-size: 13px; }
+  h1 a { font-size: 13px; font-weight: normal; color: #6fa3ff; margin-left: 8px; }
+  button { background: #1c2030; color: #c8cde0; border: 1px solid #333a50; padding: 6px 10px; border-radius: 4px; cursor: pointer; font: inherit; }
+  button.on { background: #2d6cdf; color: #fff; border-color: #2d6cdf; }
+  .wrap { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
+  .stage { flex: none; max-width: 100%; }
+  #cv { display: block; cursor: crosshair; touch-action: none; background: #000; }
+  .side { flex: 1 1 260px; max-width: 320px; background: #141824; border: 1px solid #262b3a; border-radius: 6px; padding: 10px 12px; }
+  .row { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+  .ctl { margin: 10px 0; }
+  .ctl label { display: flex; justify-content: space-between; font-size: 12px; color: #aab3c8; }
+  .ctl label span { color: #fff; font-family: ui-monospace, Consolas, monospace; }
+  .ctl input { width: 100%; margin: 4px 0 0; }
+  .desc { font-size: 11px; color: #6d7488; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+  #read { font: 12px/1.6 ui-monospace, Consolas, monospace; background: #0d0f14; border: 1px solid #262b3a; border-radius: 4px; padding: 6px 8px; margin: 8px 0; min-height: 70px; }
+  #play { min-width: 82px; }
+</style>
+<link rel="stylesheet" href="proto.css">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<h1>soundfractal <small>melody: draw a tune on the harmony map</small></h1>
+<nav class="pnav" aria-label="Prototypes"><a href="index.html">Maps</a><a href="timbre.html">Timbre lab</a><a href="morph.html">Morph map</a><a href="spiral.html">Spiral</a><a href="melody.html" aria-current="page">Melody</a><a href="babel.html">Mini Babel</a></nav>
+<div class="wrap">
+  <div class="stage" id="stage"><canvas id="cv"></canvas></div>
+  <div class="side">
+    <div class="row"><button id="play">▶ Play</button><button id="loop" class="on">Loop</button><button id="drone" class="on">Drone</button><button id="snap">Snap to bright</button></div>
+    <div class="row" id="layers"></div>
+    <div class="row"><button id="clr">Clear layer</button><button id="clrAll">Clear all</button></div>
+    <div id="read">stopped · Space = play/stop</div>
+    <div id="ctls"></div>
+    <div class="desc">X = time (4 bars), Y = pitch C3–C6. Bright bands = notes that fit that bar's chord. Click a chord above the map to change it; drag on the map to draw.</div>
+  </div>
+</div>
+
+<script src="../js/core/harmony.js"></script>
+<script>
+(function () {
+  'use strict';
+  const H = window.Harmony;
+  const N = 200, BARS = 4, LO = 48, HI = 84, SPAN = HI - LO, R = 301, HDR = 30;
+  const CHORDS = [['C', 0, [0, 4, 7]], ['Dm', 2, [0, 3, 7]], ['Em', 4, [0, 3, 7]], ['F', 5, [0, 4, 7]],
+    ['G', 7, [0, 4, 7]], ['Am', 9, [0, 3, 7]], ['Bdim', 11, [0, 3, 6]]];
+  const NATURAL = [1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1];
+  const COLORS = ['#ff6b6b', '#ffc93c', '#7dff8a'];
+  const P = { n: 6, stretch: 1, roll: 0.88, bar: 2 };
+  const bars = [0, 5, 3, 4];                       // C, Am, F, G
+  const layers = [0, 1, 2].map(() => new Float32Array(N).fill(NaN));   // midi (fractional) per time slot; NaN = silence
+  let active = 0, snap = false, loop = true, droneOn = true, playing = false, phase = 0;
+
+  // ---------- harmony math ----------
+  let PS = [];   // overtone k: [ratio (k+1)^stretch, amp roll^k]
+  const updPartials = () => { PS = Array.from({ length: P.n }, (_, k) => [(k + 1) ** P.stretch, P.roll ** k]); };
+  const chordMidis = (b) => { const [, root, iv] = CHORDS[bars[b]]; return iv.map((i) => LO + root + i); };
+  // Dissonance of pitch m against bar b's chord (chord-internal pairs are constant per bar, so skipped).
+  function diss(m, b) {
+    const f = H.midiToHz(m);
+    let d = 0;
+    for (const cm of chordMidis(b)) {
+      const fc = H.midiToHz(cm);
+      for (const [ri, ai] of PS) for (const [rj, aj] of PS) d += H.pairDissonance(f * ri, ai, fc * rj, aj);
+    }
+    return d;
+  }
+  const D = [], V = [], mn = [], mx = [];   // raw dissonance, displayed 0..1 roughness
+  const rowMidi = (r) => LO + r / (R - 1) * SPAN;
+  const off = document.createElement('canvas'); off.width = BARS; off.height = R;
+  function pal(t) {
+    const c0 = [0.03, 0.03, 0.12], c1 = [0.38, 0.10, 0.55], c2 = [0.0, 0.75, 0.86], c3 = [1, 1, 1];
+    const mix = (a, b, u) => a.map((v, i) => v + (b[i] - v) * u);
+    return t < 0.33 ? mix(c0, c1, t / 0.33) : t < 0.66 ? mix(c1, c2, (t - 0.33) / 0.33) : mix(c2, c3, (t - 0.66) / 0.34);
+  }
+  function computeBg() {
+    updPartials();
+    const img = off.getContext('2d').createImageData(BARS, R);
+    for (let b = 0; b < BARS; b++) {
+      const col = D[b] = new Float32Array(R);
+      for (let r = 0; r < R; r++) col[r] = diss(rowMidi(r), b);
+      // Roughness grows toward the low register; compare each row with its ±7-semitone neighbourhood
+      // so bands read evenly, then normalise per bar.
+      const v = V[b] = new Float32Array(R), w = Math.round(7 / SPAN * (R - 1));
+      for (let r = 0; r < R; r++) {
+        let lo = Infinity, hi = -Infinity;
+        for (let q = Math.max(0, r - w); q <= Math.min(R - 1, r + w); q++) { lo = Math.min(lo, col[q]); hi = Math.max(hi, col[q]); }
+        v[r] = 0.75 * (col[r] - lo) / ((hi - lo) || 1) + 0.25 * col[r];
+      }
+      mn[b] = Math.min(...v); mx[b] = Math.max(...v);
+      for (let r = 0; r < R; r++) {
+        v[r] = (v[r] - mn[b]) / ((mx[b] - mn[b]) || 1);
+        const c = pal(1 - v[r] ** 0.75), o = ((R - 1 - r) * BARS + b) * 4;
+        img.data[o] = c[0] * 255; img.data[o + 1] = c[1] * 255; img.data[o + 2] = c[2] * 255; img.data[o + 3] = 255;
+      }
+    }
+    off.getContext('2d').putImageData(img, 0, 0);
+    dirty = true;
+  }
+  // Consonance as shown on the map (0 = darkest, 1 = brightest in this bar), interpolated between rows.
+  const consonance = (m, b) => {
+    const rf = Math.max(0, Math.min(R - 1, (m - LO) / SPAN * (R - 1))), r = Math.min(R - 2, Math.floor(rf)), u = rf - r;
+    return 1 - (V[b][r] * (1 - u) + V[b][r + 1] * u) ** 0.75;
+  };
+  // Nearest local dissonance minimum in bar b's column within ±1.5 semitones, refined to 1 cent.
+  function snapMidi(m, b) {
+    const col = D[b], rf = (m - LO) / SPAN * (R - 1), w = 1.5 / SPAN * (R - 1);
+    let best = -1;
+    for (let r = Math.max(1, Math.ceil(rf - w)); r <= Math.min(R - 2, Math.floor(rf + w)); r++)
+      if (col[r] <= col[r - 1] && col[r] <= col[r + 1] && (best < 0 || Math.abs(r - rf) < Math.abs(best - rf))) best = r;
+    if (best < 0) return m;
+    let bm = rowMidi(best), bd = Infinity;
+    for (let c = -13; c <= 13; c++) {
+      const t = rowMidi(best) + c / 100, d = diss(t, b);
+      if (t >= LO && t <= HI && d < bd) { bd = d; bm = t; }
+    }
+    return bm;
+  }
+
+  // ---------- sidebar ----------
+  const SLIDERS = [
+    ['n', 'Overtones', 1, 16, 1, (v) => String(v), true],
+    ['stretch', 'Stretch', 0.9, 1.1, 0.001, (v) => 'k^' + v.toFixed(3), true],
+    ['roll', 'Brightness', 0.3, 1, 0.01, (v) => v.toFixed(2), true],
+    ['bar', 'Tempo', 1, 4, 0.1, (v) => v.toFixed(1) + ' s/bar', false],
+  ];
+  let bgDirty = false;
+  const ctls = document.getElementById('ctls');
+  for (const [key, name, min, max, step, fmt, timbre] of SLIDERS) {
+    const d = document.createElement('div');
+    d.className = 'ctl'; d.id = 'c-' + key;
+    d.innerHTML = '<label>' + name + ' <span></span></label><input type="range">';
+    const inp = d.querySelector('input'), out = d.querySelector('span');
+    Object.assign(inp, { min, max, step, value: P[key] });
+    out.textContent = fmt(P[key]);
+    inp.addEventListener('input', () => {
+      P[key] = Number(inp.value); out.textContent = fmt(P[key]);
+      if (timbre) { bgDirty = true; updPartials(); voices.forEach((v) => v.timbre()); }
+    });
+    ctls.appendChild(d);
+  }
+  const lbox = document.getElementById('layers'), lbtns = [];
+  COLORS.forEach((c, i) => {
+    const b = document.createElement('button');
+    b.innerHTML = '<span class="sw" style="background:' + c + '"></span>Layer ' + (i + 1);
+    b.addEventListener('click', () => { active = i; lbtns.forEach((x, j) => x.classList.toggle('on', j === i)); dirty = true; });
+    lbox.appendChild(b); lbtns.push(b);
+  });
+  lbtns[0].classList.add('on');
+  const toggle = (id, fn) => { const b = document.getElementById(id); b.addEventListener('click', () => b.classList.toggle('on', fn())); };
+  toggle('snap', () => (snap = !snap));
+  toggle('loop', () => (loop = !loop));
+  toggle('drone', () => (droneOn = !droneOn));
+  document.getElementById('clr').addEventListener('click', () => { layers[active].fill(NaN); dirty = true; });
+  document.getElementById('clrAll').addEventListener('click', () => { layers.forEach((l) => l.fill(NaN)); dirty = true; });
+
+  // ---------- audio ----------
+  let actx = null, master = null;
+  const voices = [], layerV = [], droneV = [];
+  function ensureAudio() {   // called only from user-gesture handlers
+    if (!actx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      actx = new AC();
+      master = actx.createGain(); master.gain.value = 0.3; master.connect(actx.destination);
+      // Persistent voices: 3 melody layers (≤0.22 each) + 3 drone notes (≤0.09 each) → sum ≤ 0.93 before master.
+      for (let i = 0; i < 3; i++) layerV.push(makeVoice(0.22));
+      for (let i = 0; i < 3; i++) droneV.push(makeVoice(0.09));
+    }
+    if (actx.state === 'suspended') actx.resume().catch(() => {});
+  }
+  const nyq = () => actx.sampleRate / 2 - 1;
+  // A continuous additive voice: 16 oscillators created once; unused overtones are muted. Glides via setTargetAtTime.
+  function makeVoice(level) {
+    const g = actx.createGain(); g.gain.value = 0; g.connect(master);
+    const oscs = Array.from({ length: 16 }, () => {
+      const o = actx.createOscillator(), pg = actx.createGain();
+      pg.gain.value = 0; o.connect(pg); pg.connect(g); o.start();
+      return { o, pg, r: 1 };
+    });
+    const v = {
+      f: 220, on: false, level,
+      timbre() {
+        const t = actx.currentTime, sum = PS.reduce((s, p) => s + p[1], 0);
+        oscs.forEach((x, k) => { x.r = PS[k] ? PS[k][0] : k + 1; x.pg.gain.setTargetAtTime(PS[k] ? PS[k][1] / sum : 0, t, 0.02); });
+        v.setF(v.f, 0.01);
+      },
+      setF(f, tc = 0.015) {
+        v.f = f; const t = actx.currentTime;
+        oscs.forEach((x) => x.o.frequency.setTargetAtTime(Math.min(f * x.r, nyq()), t, tc));
+      },
+      amp(on) { if (on === v.on) return; v.on = on; g.gain.setTargetAtTime(on ? level : 0, actx.currentTime, 0.01); },   // ~30 ms fade
+      pluck() { if (!v.on) return; const t = actx.currentTime; g.gain.setTargetAtTime(level * 0.3, t, 0.008); g.gain.setTargetAtTime(level, t + 0.03, 0.05); },
+      g,
+    };
+    voices.push(v); v.timbre();
+    return v;
+  }
+
+  // ---------- canvas ----------
+  const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+  let W = 800, MH = 500, dpr = 1, dirty = true;
+  function resize() {
+    const cw = document.documentElement.clientWidth - 24;
+    const room = cw >= 640 ? cw - 14 - 270 : cw;
+    W = Math.round(Math.max(240, Math.min(900, room)));
+    MH = Math.round(Math.max(220, Math.min(W * 0.62, 560, window.innerHeight - 110)));
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = Math.round(W * dpr); cv.height = Math.round((MH + HDR) * dpr);
+    cv.style.width = W + 'px'; cv.style.height = (MH + HDR) + 'px';
+    dirty = true;
+  }
+  window.addEventListener('resize', resize);
+  const yOf = (m) => HDR + (HI - m) / SPAN * MH;
+  const mOf = (y) => Math.max(LO, Math.min(HI, HI - (y - HDR) / MH * SPAN));
+  const xOf = (i) => (i + 0.5) / N * W;
+  function label(t, x, y, color) {
+    ctx.font = '11px system-ui, sans-serif'; ctx.textAlign = 'left';
+    const w = ctx.measureText(t).width;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(x - 2, y - 10, w + 4, 13);
+    ctx.fillStyle = color || '#cfd5e6'; ctx.fillText(t, x, y);
+  }
+  function draw() {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, MH + HDR);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(off, 0, 0, BARS, R, 0, HDR, W, MH);
+    const bw = W / BARS, curBar = playing ? Math.floor(phase * BARS) : -1;
+    // chord header strip
+    for (let b = 0; b < BARS; b++) {
+      ctx.fillStyle = b === curBar ? '#2a3a66' : '#141824'; ctx.fillRect(b * bw, 0, bw, HDR);
+      ctx.strokeStyle = '#333a50'; ctx.strokeRect(b * bw + 0.5, 0.5, bw - 1, HDR - 1);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 14px system-ui, sans-serif'; ctx.textAlign = 'center';
+      const name = CHORDS[bars[b]][0], notes = chordMidis(b).map((m) => H.noteName(m).replace(/\d/, '')).join(' ');
+      ctx.fillText(W >= 520 ? name + '  ' : name, b * bw + bw / 2 - (W >= 520 ? 22 : 0), 20);
+      if (W >= 520) { ctx.font = '11px system-ui, sans-serif'; ctx.fillStyle = '#8a93ab'; ctx.fillText(notes, b * bw + bw / 2 + 22, 20); }
+    }
+    // pitch grid
+    for (let m = LO; m <= HI; m++) {
+      const pc = m % 12, y = Math.round(yOf(m)) + 0.5;
+      ctx.strokeStyle = pc === 0 ? 'rgba(255,255,255,0.32)' : NATURAL[pc] ? 'rgba(255,255,255,0.13)' : 'rgba(255,255,255,0.05)';
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+      if (pc === 0) label(H.noteName(m), 4, m === HI ? y + 12 : y - 3);
+    }
+    // beat + bar lines
+    for (let k = 1; k < BARS * 4; k++) {
+      const x = Math.round(k * W / (BARS * 4)) + 0.5;
+      ctx.strokeStyle = k % 4 ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.4)';
+      ctx.beginPath(); ctx.moveTo(x, HDR); ctx.lineTo(x, HDR + MH); ctx.stroke();
+    }
+    // melody layers (active one on top)
+    ctx.lineJoin = ctx.lineCap = 'round';
+    for (const L of [0, 1, 2].filter((i) => i !== active).concat(active)) {
+      const s = layers[L];
+      ctx.beginPath();
+      for (let i = 0; i < N; i++) {
+        if (isNaN(s[i])) continue;
+        const x = xOf(i), y = yOf(s[i]);
+        if (i > 0 && !isNaN(s[i - 1])) ctx.lineTo(x, y); else { ctx.moveTo(x - 1, y); ctx.lineTo(x, y); }
+      }
+      ctx.globalAlpha = L === active ? 1 : 0.6;
+      ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = L === active ? 6 : 5; ctx.stroke();
+      ctx.strokeStyle = COLORS[L]; ctx.lineWidth = L === active ? 3 : 2; ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    // playback cursor
+    if (playing) {
+      const x = phase * W, i = Math.min(N - 1, Math.floor(phase * N));
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, HDR + MH); ctx.stroke();
+      layers.forEach((s, L) => {
+        if (isNaN(s[i])) return;
+        ctx.fillStyle = COLORS[L]; ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(x, yOf(s[i]), 6, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+      });
+    }
+  }
+
+  // ---------- drawing + chord header ----------
+  let pen = null;   // { i, m } last point while drawing
+  const xy = (e) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * (MH + HDR) / r.height]; };
+  function penTo(x, y) {
+    const i = Math.max(0, Math.min(N - 1, Math.floor(x / W * N))), m = mOf(y), s = layers[active];
+    const from = pen ? pen.i : i, m0 = pen ? pen.m : m, step = i >= from ? 1 : -1;
+    for (let k = from; ; k += step) {
+      const u = i === from ? 1 : (k - from) / (i - from), mm = m0 + (m - m0) * u;
+      s[k] = snap ? snapMidi(mm, Math.floor(k * BARS / N)) : mm;
+      if (k === i) break;
+    }
+    pen = { i, m }; dirty = true;
+  }
+  cv.addEventListener('pointerdown', (e) => {
+    const [x, y] = xy(e);
+    if (y < HDR) {
+      const b = Math.max(0, Math.min(BARS - 1, Math.floor(x / W * BARS)));
+      bars[b] = (bars[b] + 1) % CHORDS.length; droneBar = -1; computeBg();
+      return;
+    }
+    try { cv.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    pen = null; penTo(x, y);
+  });
+  cv.addEventListener('pointermove', (e) => { if (pen) penTo(...xy(e)); });
+  cv.addEventListener('pointerup', () => { pen = null; });
+  cv.addEventListener('pointercancel', () => { pen = null; });
+
+  // ---------- playback ----------
+  const pbtn = document.getElementById('play'), read = document.getElementById('read');
+  let droneBar = -1, lastT = performance.now();
+  function setPlaying(on) {
+    if (on) { ensureAudio(); phase = 0; droneBar = -1; }
+    else { voices.forEach((v) => v.amp(false)); read.textContent = 'stopped · Space = play/stop'; }
+    playing = on; pbtn.textContent = on ? '■ Stop' : '▶ Play'; pbtn.classList.toggle('on', on); dirty = true;
+  }
+  pbtn.addEventListener('click', () => setPlaying(!playing));
+  document.addEventListener('keydown', (e) => {
+    if (e.code !== 'Space' || e.repeat) return;
+    e.preventDefault();
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    setPlaying(!playing);
+  });
+  function tick() {
+    const i = Math.min(N - 1, Math.floor(phase * N)), b = Math.floor(phase * BARS);
+    if (actx) {
+      if (b !== droneBar) {
+        droneBar = b;
+        chordMidis(b).forEach((m, k) => { droneV[k].setF(H.midiToHz(m), 0.02); droneV[k].pluck(); });
+      }
+      droneV.forEach((v) => v.amp(droneOn));
+    }
+    let html = 'bar ' + (b + 1) + ' · <b>' + CHORDS[bars[b]][0] + '</b>';
+    layers.forEach((s, L) => {
+      const m = s[i], on = !isNaN(m);
+      if (actx) { if (on) layerV[L].setF(H.midiToHz(m)); layerV[L].amp(on); }
+      let txt = '—';
+      if (on) {
+        const k = Math.round(m), c = Math.round((m - k) * 100);
+        txt = (H.noteName(k) + (c ? (c > 0 ? '+' : '') + c + '¢' : '')).padEnd(8) + ' cons ' + consonance(m, b).toFixed(2);
+      }
+      html += '<br><span class="sw" style="background:' + COLORS[L] + '"></span>' + txt;
+    });
+    read.innerHTML = html;
+  }
+  function frame(now) {
+    const dt = Math.min(0.1, (now - lastT) / 1000); lastT = now;
+    if (bgDirty) { bgDirty = false; computeBg(); }
+    if (playing) {
+      phase += dt / (BARS * P.bar);
+      if (phase >= 1) { if (loop) phase %= 1; else { setPlaying(false); phase = 0; } }
+      if (playing) tick();
+      dirty = true;
+    }
+    if (dirty) { draw(); dirty = false; }
+    requestAnimationFrame(frame);
+  }
+  window.__mel = { layers, bars, D, V, mn, mx, diss, snapMidi, consonance, P, get phase() { return phase; }, get actx() { return actx; }, voices };
+  resize();
+  computeBg();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>soundfractal · timbre lab</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px; background: #0d0f14; color: #d8dce6; font: 14px/1.4 system-ui, sans-serif; }
+  h1 { margin: 0 0 8px; font-size: 20px; letter-spacing: 1px; }
+  h1 small { color: #7a8194; font-weight: normal; font-size: 13px; }
+  h1 a { font-size: 13px; font-weight: normal; color: #6fa3ff; margin-left: 8px; }
+  button { background: #1c2030; color: #c8cde0; border: 1px solid #333a50; padding: 6px 10px; border-radius: 4px; cursor: pointer; font: inherit; }
+  button.on { background: #2d6cdf; color: #fff; border-color: #2d6cdf; }
+  .row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 8px 0; }
+  .hint { color: #7a8194; font-size: 12px; margin: 10px 0 4px; }
+  .hint b { color: #c8cde0; }
+  canvas { display: block; background: #05060a; border: 1px solid #262b3a; touch-action: none; max-width: 100%; cursor: crosshair; }
+  #summary { color: #9aa3b8; font-size: 12px; }
+  #keys button { font: 12px/1.3 ui-monospace, Consolas, monospace; min-width: 64px; }
+</style>
+<link rel="stylesheet" href="proto.css">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<h1>soundfractal <small>timbre lab: shape a sound, watch its harmony re-form</small></h1>
+<nav class="pnav" aria-label="Prototypes"><a href="index.html">Maps</a><a href="timbre.html" aria-current="page">Timbre lab</a><a href="morph.html">Morph map</a><a href="spiral.html">Spiral</a><a href="melody.html">Melody</a><a href="babel.html">Mini Babel</a></nav>
+<div class="row" id="presets"></div>
+<div class="hint"><b>1 · The sound.</b> Each dot is an overtone: left/right = its pitch (× the note), up/down = its loudness. Drag dots, click empty space to add, double-click to remove.</div>
+<canvas id="ed"></canvas>
+<div class="hint"><b>2 · Its harmony landscape.</b> Two notes of this sound, the second one sliding up to an octave above. Valleys = they blend. Drag the ball to play; let go and it rolls into the nearest valley.</div>
+<canvas id="land"></canvas>
+<div class="row"><button id="sound">Sound: on</button><span id="summary"></span></div>
+<div class="row" id="keys"></div>
+
+<script src="../js/core/harmony.js"></script>
+<script>
+(function () {
+  'use strict';
+  const H = window.Harmony;
+  const ROOT = 261.63, MAXC = 1250, N = 500;
+  const PHI = (1 + Math.sqrt(5)) / 2;
+  const range = (n) => Array.from({ length: n }, (_, i) => i);
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const NOTE = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B', 'C'];
+
+  // Each preset is a list of overtones [ratio to the note, loudness 0..1].
+  const PRESETS = {
+    'String': () => range(8).map((k) => [k + 1, 0.88 ** k]),
+    'Pure sine': () => [[1, 1]],
+    'Clarinet': () => range(7).map((k) => [2 * k + 1, 1 / (2 * k + 1)]),
+    'Bell': () => [[0.5, 0.6], [1, 1], [1.2, 0.7], [1.5, 0.5], [2, 0.8], [2.5, 0.4], [3, 0.3], [4.2, 0.2]],
+    'Stretched piano': () => range(8).map((k) => [(k + 1) * Math.sqrt(1 + 0.004 * (k + 1) ** 2), 0.85 ** k]),
+    'Golden (φ)': () => range(6).map((k) => [PHI ** k, 0.8 ** k]),
+    'Random gong': () => [[1, 1], ...range(6).map(() => [1 + Math.random() * 9, 0.2 + Math.random() * 0.6])],
+  };
+
+  let parts = [], tgt = new Float32Array(N), cur = new Float32Array(N), valleys = [];
+
+  // Dissonance between two notes of this timbre, for intervals 0..MAXC cents (normalized to 0..1).
+  function curveFor(ps) {
+    const out = new Float32Array(N);
+    let max = 0;
+    for (let i = 0; i < N; i++) {
+      const r = 2 ** ((i / (N - 1)) * MAXC / 1200);
+      let d = 0;
+      for (const [ra, aa] of ps) for (const [rb, ab] of ps) d += H.pairDissonance(ROOT * ra, aa, ROOT * r * rb, ab);
+      out[i] = d; if (d > max) max = d;
+    }
+    for (let i = 0; i < N; i++) out[i] /= max || 1;
+    return out;
+  }
+  // Local minima that are clearly lower than the ground around them.
+  function findValleys(c) {
+    const v = [];
+    for (let i = 0; i < N; i++) {
+      let isMin = true;
+      for (let j = Math.max(0, i - 6); j <= Math.min(N - 1, i + 6); j++) if (c[j] < c[i]) { isMin = false; break; }
+      if (!isMin || (v.length && i - v[v.length - 1] <= 6)) continue;
+      const L = i > 0 ? Math.max(...c.slice(Math.max(0, i - 60), i)) : Infinity;
+      const R = i < N - 1 ? Math.max(...c.slice(i + 1, Math.min(N, i + 61))) : Infinity;
+      if (Math.min(L, R) - c[i] > 0.03) v.push(i);
+    }
+    return v;
+  }
+  const idxC = (i) => (i / (N - 1)) * MAXC;
+  const ratioLabel = (c) => { const nr = H.nearestRatio(2 ** (c / 1200), 32, 20); return nr ? nr.p + '/' + nr.q : '—'; };
+
+  let presetName = 'String';
+  function setParts(ps, name) {
+    parts = ps;
+    presetName = name || null;
+    document.querySelectorAll('#presets button').forEach((b) => b.classList.toggle('on', b.textContent === presetName));
+    tgt = curveFor(parts);
+    const nv = findValleys(tgt);
+    if (nv.join() !== valleys.join()) { valleys = nv; rebuildKeys(); }
+  }
+
+  // ---------- canvases ----------
+  const ed = document.getElementById('ed'), ectx = ed.getContext('2d');
+  const land = document.getElementById('land'), lctx = land.getContext('2d');
+  let EW = 800, EH = 170, LW = 800, LH = 300;
+  function resize() {
+    const w = Math.min(900, Math.max(280, document.documentElement.clientWidth - 24));
+    EW = LW = w; LH = Math.round(clamp(w * 0.38, 220, 320));
+    const dpr = window.devicePixelRatio || 1;
+    for (const [cv, h] of [[ed, EH], [land, LH]]) {
+      cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+      cv.style.width = w + 'px'; cv.style.height = h + 'px';
+    }
+  }
+  window.addEventListener('resize', resize);
+  const xy = (cv, e, w, h) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * w / r.width, (e.clientY - r.top) * h / r.height]; };
+  function text(c, s, x, y, color, align) {
+    c.font = '11px system-ui, sans-serif'; c.textAlign = align || 'left';
+    c.fillStyle = color || '#fff'; c.fillText(s, x, y);
+  }
+
+  // ---------- 1 · overtone editor ----------
+  const ELO = -1, EHI = 4;   // log2 ratio range: 0.5 … 16
+  const exX = (r) => 24 + (Math.log2(r) - ELO) / (EHI - ELO) * (EW - 40);
+  const exR = (x) => clamp(2 ** (ELO + (x - 24) / (EW - 40) * (EHI - ELO)), 0.5, 16);
+  const eyY = (a) => EH - 22 - a * (EH - 40);
+  const eyA = (y) => clamp((EH - 22 - y) / (EH - 40), 0.02, 1);
+  const pHue = (i) => (i * 47 + 190) % 360;
+
+  function drawEd() {
+    const c = ectx;
+    c.setTransform(ed.width / EW, 0, 0, ed.height / EH, 0, 0);
+    c.fillStyle = '#05060a'; c.fillRect(0, 0, EW, EH);
+    c.lineWidth = 1;
+    for (let k = 1; k <= 16; k++) {
+      const x = exX(k);
+      c.strokeStyle = 'rgba(255,255,255,' + (k <= 8 ? 0.14 : 0.07) + ')';
+      c.beginPath(); c.moveTo(x, 14); c.lineTo(x, EH - 22); c.stroke();
+      if ([1, 2, 3, 4, 5, 6, 8, 12, 16].includes(k)) text(c, '×' + k, x, EH - 7, '#6d7488', 'center');
+    }
+    text(c, 'faint lines = "perfect" harmonics', EW - 8, 11, '#565d70', 'right');
+    c.strokeStyle = '#444b60'; c.beginPath(); c.moveTo(0, EH - 22); c.lineTo(EW, EH - 22); c.stroke();
+    parts.forEach(([r, a], i) => {
+      const x = exX(r), y = eyY(a), col = 'hsl(' + pHue(i) + ',85%,62%)';
+      c.strokeStyle = col; c.lineWidth = 3;
+      c.beginPath(); c.moveTo(x, EH - 22); c.lineTo(x, y); c.stroke();
+      c.beginPath(); c.arc(x, y, 7, 0, 2 * Math.PI); c.fillStyle = col; c.fill();
+      c.lineWidth = 2; c.strokeStyle = '#000'; c.stroke();
+      if (edDrag === i) text(c, '×' + r.toFixed(3), x + 10, y - 8);
+    });
+  }
+
+  let edDrag = null, edTone = null;
+  const hitPart = (x, y) => parts.findIndex(([r, a]) => Math.hypot(exX(r) - x, eyY(a) - y) < 12);
+  ed.addEventListener('pointerdown', (e) => {
+    ensureAudio();
+    const [x, y] = xy(ed, e, EW, EH);
+    let i = hitPart(x, y);
+    if (i < 0) {
+      if (parts.length >= 12) return;
+      setParts([...parts, [exR(x), eyA(y)]]);
+      i = parts.length - 1;
+    }
+    edDrag = i;
+    try { ed.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    edTone = makeTone(ROOT, parts);
+  });
+  ed.addEventListener('pointermove', (e) => {
+    if (edDrag === null) return;
+    const [x, y] = xy(ed, e, EW, EH);
+    setParts(parts.map((p, k) => (k === edDrag ? [exR(x), eyA(y)] : p)));
+    if (edTone) edTone.set(ROOT, parts);
+  });
+  const edEnd = () => { edDrag = null; if (edTone) edTone.stop(); edTone = null; };
+  ed.addEventListener('pointerup', edEnd);
+  ed.addEventListener('pointercancel', edEnd);
+  ed.addEventListener('dblclick', (e) => {
+    const i = hitPart(...xy(ed, e, EW, EH));
+    if (i >= 0 && parts.length > 1) setParts(parts.filter((_, k) => k !== i));
+  });
+
+  // ---------- 2 · harmony landscape ----------
+  const LM = { l: 12, r: 12, t: 26, b: 34 };
+  const lx = (c) => LM.l + (c / MAXC) * (LW - LM.l - LM.r);
+  const lc = (x) => clamp(((x - LM.l) / (LW - LM.l - LM.r)) * MAXC, 0, MAXC);
+  const ly = (d) => LH - LM.b - d * (LH - LM.t - LM.b);
+  const val = (c) => {
+    const f = (clamp(c, 0, MAXC) / MAXC) * (N - 1), i = Math.floor(f), j = Math.min(N - 1, i + 1);
+    return cur[i] + (cur[j] - cur[i]) * (f - i);
+  };
+
+  function drawLand() {
+    const c = lctx;
+    c.setTransform(land.width / LW, 0, 0, land.height / LH, 0, 0);
+    c.fillStyle = '#05060a'; c.fillRect(0, 0, LW, LH);
+    c.lineWidth = 1;
+    for (let k = 0; k <= 12; k++) {
+      const x = lx(k * 100);
+      c.strokeStyle = 'rgba(255,255,255,0.07)';
+      c.beginPath(); c.moveTo(x, LM.t); c.lineTo(x, LH - LM.b); c.stroke();
+      text(c, NOTE[k], x, LH - 18, '#6d7488', 'center');
+    }
+    text(c, 'second note (first note = C)', LW - LM.r, LH - 4, '#565d70', 'right');
+    text(c, '↑ clashes', LM.l + 2, 14, '#8a5c9a');
+    // terrain
+    const grad = c.createLinearGradient(0, LM.t, 0, LH - LM.b);
+    grad.addColorStop(0, 'hsl(305,55%,42%)'); grad.addColorStop(0.6, 'hsl(240,55%,28%)'); grad.addColorStop(1, 'hsl(200,70%,18%)');
+    c.beginPath(); c.moveTo(lx(0), LH - LM.b);
+    for (let i = 0; i < N; i++) c.lineTo(lx(idxC(i)), ly(cur[i]));
+    c.lineTo(lx(MAXC), LH - LM.b); c.closePath();
+    c.fillStyle = grad; c.fill();
+    c.beginPath();
+    for (let i = 0; i < N; i++) (i ? c.lineTo : c.moveTo).call(c, lx(idxC(i)), ly(cur[i]));
+    c.strokeStyle = 'hsl(190,90%,70%)'; c.lineWidth = 2; c.stroke();
+    // valleys
+    for (const i of valleys) {
+      const cc = idxC(i), x = lx(cc), y = ly(val(cc));
+      c.beginPath(); c.arc(x, y, 4, 0, 2 * Math.PI); c.fillStyle = 'hsl(160,90%,60%)'; c.fill();
+      text(c, ratioLabel(cc), x, y + 15, 'hsl(160,80%,75%)', 'center');
+    }
+    // ball
+    if (ball) {
+      const x = lx(ball.c), y = ly(val(ball.c)) - 9;
+      c.beginPath(); c.arc(x, y, 9, 0, 2 * Math.PI);
+      c.fillStyle = '#fff'; c.shadowColor = '#9ff'; c.shadowBlur = 14; c.fill(); c.shadowBlur = 0;
+      text(c, Math.round(ball.c) + '¢ ≈ ' + ratioLabel(ball.c), clamp(x, 40, LW - 40), y - 15, '#fff', 'center');
+    }
+  }
+
+  let ball = null, pair = null, settleTimer = null;
+  function startPair(c) {
+    stopPair(); clearTimeout(settleTimer);
+    const a = makeTone(ROOT, parts), b = makeTone(ROOT * 2 ** (c / 1200), parts);
+    pair = a && b ? { a, b } : null;
+  }
+  function stopPair(rel) { if (pair) { pair.a.stop(rel); pair.b.stop(rel); pair = null; } }
+  const setPair = (c) => { if (pair) pair.b.set(ROOT * 2 ** (c / 1200)); };
+
+  land.addEventListener('pointerdown', (e) => {
+    ensureAudio();
+    try { land.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    const c = lc(xy(land, e, LW, LH)[0]);
+    ball = { c, v: 0, mode: 'drag', last: c, slow: 0, t: 0 };
+    startPair(c);
+  });
+  land.addEventListener('pointermove', (e) => {
+    if (!ball || ball.mode !== 'drag') return;
+    const c = lc(xy(land, e, LW, LH)[0]);
+    ball.v = (c - ball.last) * 0.5; ball.last = ball.c = c;
+    setPair(c);
+  });
+  const landEnd = () => { if (ball && ball.mode === 'drag') { ball.mode = 'roll'; ball.slow = 0; ball.t = 0; } };
+  land.addEventListener('pointerup', landEnd);
+  land.addEventListener('pointercancel', landEnd);
+
+  function pluck(c) {
+    ensureAudio();
+    ball = { c, v: 0, mode: 'idle' };
+    startPair(c);
+    settleTimer = setTimeout(() => stopPair(0.6), 700);
+  }
+
+  // ---------- valley keys + summary ----------
+  function rebuildKeys() {
+    const box = document.getElementById('keys');
+    box.textContent = '';
+    for (const i of valleys) {
+      const c = idxC(i), b = document.createElement('button');
+      b.textContent = ratioLabel(c) + ' · ' + Math.round(c) + '¢';
+      b.title = 'play C + this valley';
+      b.addEventListener('click', () => pluck(c));
+      box.appendChild(b);
+    }
+    document.getElementById('summary').textContent =
+      'This sound has ' + valleys.length + ' valley' + (valleys.length === 1 ? '' : 's') + ', its own "scale" (buttons below):';
+  }
+
+  // ---------- audio ----------
+  let actx = null, master = null, soundOn = true;
+  function ensureAudio() {   // called only from user-gesture handlers
+    if (!actx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      actx = new AC();
+      master = actx.createGain(); master.gain.value = 0.3; master.connect(actx.destination);
+    }
+    if (actx.state === 'suspended') actx.resume().catch(() => {});
+  }
+  const nyq = () => actx.sampleRate / 2 - 1;
+  // One note of the current timbre; gain 0.5 so two notes stay <= master level.
+  function makeTone(f0, ps) {
+    if (!actx || !soundOn) return null;
+    const g = actx.createGain(), t = actx.currentTime;
+    g.connect(master);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.5, t + 0.02);
+    const sum = ps.reduce((s, p) => s + p[1], 0) || 1;
+    const oscs = ps.map(([r, a]) => {
+      const o = actx.createOscillator(), pg = actx.createGain();
+      o.frequency.value = Math.min(f0 * r, nyq()); pg.gain.value = a / sum;
+      o.connect(pg); pg.connect(g); o.start();
+      return { o, pg };
+    });
+    let cur = ps;
+    return {
+      set(f, ps2) {
+        const t = actx.currentTime;
+        if (ps2) cur = ps2;
+        const s = cur.reduce((acc, p) => acc + p[1], 0) || 1;
+        oscs.forEach(({ o, pg }, k) => {
+          const p = cur[k]; if (!p) return;
+          o.frequency.setTargetAtTime(Math.min(f * p[0], nyq()), t, 0.015);
+          if (ps2) pg.gain.setTargetAtTime(p[1] / s, t, 0.02);
+        });
+      },
+      stop(rel = 0.15) {
+        const t = actx.currentTime;
+        g.gain.cancelScheduledValues(t); g.gain.setValueAtTime(g.gain.value, t);
+        g.gain.linearRampToValueAtTime(0, t + rel);
+        oscs.forEach(({ o }) => o.stop(t + rel + 0.05));
+      },
+    };
+  }
+  const sbtn = document.getElementById('sound');
+  sbtn.addEventListener('click', () => {
+    soundOn = !soundOn; sbtn.textContent = 'Sound: ' + (soundOn ? 'on' : 'off');
+    if (soundOn) ensureAudio(); else { stopPair(); if (edTone) edTone.stop(); edTone = null; }
+  });
+
+  // ---------- presets ----------
+  const pbox = document.getElementById('presets');
+  for (const name of Object.keys(PRESETS)) {
+    const b = document.createElement('button');
+    b.textContent = name;
+    b.addEventListener('click', () => {
+      ensureAudio();
+      setParts(PRESETS[name](), name);
+      const t = makeTone(ROOT, parts);
+      if (t) setTimeout(() => t.stop(0.5), 400);
+    });
+    pbox.appendChild(b);
+  }
+
+  // ---------- animation: landscape morphs toward target, ball rolls downhill ----------
+  function frame() {
+    for (let i = 0; i < N; i++) cur[i] += (tgt[i] - cur[i]) * 0.15;
+    if (ball && ball.mode === 'roll') {
+      const slope = (val(ball.c + 2) - val(ball.c - 2)) / 4;
+      ball.v = ball.v * 0.9 - slope * 60;
+      ball.c = clamp(ball.c + ball.v, 0, MAXC);
+      setPair(ball.c);
+      ball.slow = Math.abs(ball.v) < 0.3 ? ball.slow + 1 : 0;
+      if (ball.slow > 15 || ++ball.t > 300) {
+        ball.mode = 'idle';
+        settleTimer = setTimeout(() => stopPair(0.6), 500);
+      }
+    }
+    drawEd(); drawLand();
+    requestAnimationFrame(frame);
+  }
+
+  resize();
+  setParts(PRESETS['String'](), 'String');
+  cur.set(tgt);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

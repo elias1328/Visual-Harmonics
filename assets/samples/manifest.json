@@ -1,0 +1,1400 @@
+{
+ "version": 1,
+ "instruments": [
+  {
+   "id": "upright-piano",
+   "name": "Upright Piano",
+   "family": "keys",
+   "play": "hit",
+   "release": 0.4,
+   "loud": 0.775,
+   "zones": [
+    {
+     "url": "assets/samples/upright-piano/G1.mp3",
+     "rootMidi": 31,
+     "gain": 0.585
+    },
+    {
+     "url": "assets/samples/upright-piano/C2.mp3",
+     "rootMidi": 36,
+     "gain": 0.905
+    },
+    {
+     "url": "assets/samples/upright-piano/G2.mp3",
+     "rootMidi": 43,
+     "gain": 1.062
+    },
+    {
+     "url": "assets/samples/upright-piano/G3.mp3",
+     "rootMidi": 55,
+     "gain": 1.173
+    },
+    {
+     "url": "assets/samples/upright-piano/C4.mp3",
+     "rootMidi": 60,
+     "gain": 0.884
+    },
+    {
+     "url": "assets/samples/upright-piano/C5.mp3",
+     "rootMidi": 72,
+     "gain": 0.945
+    },
+    {
+     "url": "assets/samples/upright-piano/G5.mp3",
+     "rootMidi": 79,
+     "gain": 1.856
+    },
+    {
+     "url": "assets/samples/upright-piano/G6.mp3",
+     "rootMidi": 91,
+     "gain": 3.472
+    }
+   ],
+   "spectrum": [
+    [
+     1.001,
+     1
+    ],
+    [
+     2,
+     0.827
+    ],
+    [
+     2.998,
+     0.077
+    ],
+    [
+     4.003,
+     0.055
+    ],
+    [
+     5.01,
+     0.109
+    ],
+    [
+     6.019,
+     0.048
+    ],
+    [
+     7.034,
+     0.057
+    ],
+    [
+     8.052,
+     0.076
+    ]
+   ],
+   "quality": "good",
+   "notes": "Acoustic upright piano (VSCO-2-CE Upright Nr. 1), soft touch. In tune; stretched upper partials."
+  },
+  {
+   "id": "pizz-strings",
+   "name": "Pizzicato Strings",
+   "family": "plucked",
+   "play": "hit",
+   "release": 0.3,
+   "loud": 6.546,
+   "zones": [
+    {
+     "url": "assets/samples/pizz-strings/C2.mp3",
+     "rootMidi": 36,
+     "gain": 0.679
+    },
+    {
+     "url": "assets/samples/pizz-strings/C3.mp3",
+     "rootMidi": 48,
+     "gain": 2.492
+    },
+    {
+     "url": "assets/samples/pizz-strings/E3.mp3",
+     "rootMidi": 52,
+     "gain": 4
+    },
+    {
+     "url": "assets/samples/pizz-strings/A3.mp3",
+     "rootMidi": 57,
+     "gain": 1.531
+    },
+    {
+     "url": "assets/samples/pizz-strings/B3.mp3",
+     "rootMidi": 59,
+     "gain": 0.345
+    },
+    {
+     "url": "assets/samples/pizz-strings/D4.mp3",
+     "rootMidi": 62,
+     "gain": 1.364
+    },
+    {
+     "url": "assets/samples/pizz-strings/E4.mp3",
+     "rootMidi": 64,
+     "gain": 0.789
+    },
+    {
+     "url": "assets/samples/pizz-strings/G4.mp3",
+     "rootMidi": 67,
+     "gain": 0.521
+    }
+   ],
+   "spectrum": [
+    [
+     0.999,
+     1
+    ],
+    [
+     2.004,
+     0.473
+    ],
+    [
+     3.004,
+     0.627
+    ],
+    [
+     3.997,
+     0.18
+    ],
+    [
+     5.006,
+     0.056
+    ]
+   ],
+   "quality": "ok",
+   "notes": "Pizzicato strings from mixed sections (cello/viola section and solo violin). Short, 0.5-2.6 s."
+  },
+  {
+   "id": "harp",
+   "name": "Concert Harp",
+   "family": "plucked",
+   "play": "hit",
+   "release": 0.8,
+   "loud": 1.824,
+   "zones": [
+    {
+     "url": "assets/samples/harp/D2.mp3",
+     "rootMidi": 38,
+     "gain": 2.64
+    },
+    {
+     "url": "assets/samples/harp/A2.mp3",
+     "rootMidi": 45,
+     "gain": 1.094
+    },
+    {
+     "url": "assets/samples/harp/G3.mp3",
+     "rootMidi": 55,
+     "gain": 0.591
+    },
+    {
+     "url": "assets/samples/harp/D4.mp3",
+     "rootMidi": 62,
+     "gain": 0.651
+    },
+    {
+     "url": "assets/samples/harp/A4.mp3",
+     "rootMidi": 69,
+     "gain": 0.921
+    },
+    {
+     "url": "assets/samples/harp/E5.mp3",
+     "rootMidi": 76,
+     "gain": 0.423
+    },
+    {
+     "url": "assets/samples/harp/D6.mp3",
+     "rootMidi": 86,
+     "gain": 1.921
+    },
+    {
+     "url": "assets/samples/harp/A6.mp3",
+     "rootMidi": 93,
+     "gain": 3.643
+    }
+   ],
+   "spectrum": [
+    [
+     1,
+     1
+    ],
+    [
+     1.999,
+     0.209
+    ],
+    [
+     3,
+     0.338
+    ],
+    [
+     5.005,
+     0.065
+    ]
+   ],
+   "quality": "good",
+   "notes": "Concert harp (VSCO-2-CE KSHarp). Clean, long ring, tuning within 19 c."
+  },
+  {
+   "id": "upright-b-soft",
+   "name": "Upright Piano B (soft)",
+   "family": "keys",
+   "play": "hit",
+   "release": 0.4,
+   "loud": 1.635,
+   "zones": [
+    {
+     "url": "assets/samples/upright-b-soft/F1.mp3",
+     "rootMidi": 29,
+     "gain": 0.572
+    },
+    {
+     "url": "assets/samples/upright-b-soft/Cs2.mp3",
+     "rootMidi": 37,
+     "gain": 0.374
+    },
+    {
+     "url": "assets/samples/upright-b-soft/A2.mp3",
+     "rootMidi": 45,
+     "gain": 0.542
+    },
+    {
+     "url": "assets/samples/upright-b-soft/F3.mp3",
+     "rootMidi": 53
+    },
+    {
+     "url": "assets/samples/upright-b-soft/Cs4.mp3",
+     "rootMidi": 61,
+     "gain": 1.264
+    },
+    {
+     "url": "assets/samples/upright-b-soft/A4.mp3",
+     "rootMidi": 69,
+     "gain": 1.437
+    },
+    {
+     "url": "assets/samples/upright-b-soft/F5.mp3",
+     "rootMidi": 77,
+     "gain": 4
+    }
+   ],
+   "spectrum": [
+    [
+     1,
+     1
+    ],
+    [
+     2,
+     0.565
+    ],
+    [
+     3,
+     0.166
+    ],
+    [
+     4.006,
+     0.046
+    ],
+    [
+     5.017,
+     0.019
+    ],
+    [
+     6.034,
+     0.017
+    ],
+    [
+     7.055,
+     0.023
+    ]
+   ],
+   "quality": "good",
+   "notes": "Second upright piano (VSCO-2-CE Upright Piano), quieter take. Mellow, long decay."
+  },
+  {
+   "id": "upright-b-loud",
+   "name": "Upright Piano B (loud)",
+   "family": "keys",
+   "play": "hit",
+   "release": 0.4,
+   "loud": 1.317,
+   "zones": [
+    {
+     "url": "assets/samples/upright-b-loud/A1.mp3",
+     "rootMidi": 33,
+     "gain": 0.428
+    },
+    {
+     "url": "assets/samples/upright-b-loud/F2.mp3",
+     "rootMidi": 41,
+     "gain": 0.473
+    },
+    {
+     "url": "assets/samples/upright-b-loud/Cs3.mp3",
+     "rootMidi": 49,
+     "gain": 0.586
+    },
+    {
+     "url": "assets/samples/upright-b-loud/A3.mp3",
+     "rootMidi": 57,
+     "gain": 1.486
+    },
+    {
+     "url": "assets/samples/upright-b-loud/F4.mp3",
+     "rootMidi": 65,
+     "gain": 0.831
+    },
+    {
+     "url": "assets/samples/upright-b-loud/Cs5.mp3",
+     "rootMidi": 73,
+     "gain": 1.255
+    },
+    {
+     "url": "assets/samples/upright-b-loud/A5.mp3",
+     "rootMidi": 81,
+     "gain": 4
+    },
+    {
+     "url": "assets/samples/upright-b-loud/F6.mp3",
+     "rootMidi": 89,
+     "gain": 4
+    }
+   ],
+   "spectrum": [
+    [
+     0.999,
+     1
+    ],
+    [
+     2,
+     0.735
+    ],
+    [
+     3.001,
+     0.137
+    ],
+    [
+     4.007,
+     0.17
+    ],
+    [
+     5.018,
+     0.053
+    ],
+    [
+     6.034,
+     0.104
+    ],
+    [
+     7.052,
+     0.048
+    ],
+    [
+     8.075,
+     0.014
+    ]
+   ],
+   "quality": "good",
+   "notes": "Second upright piano (VSCO-2-CE Upright Piano), louder take. Brighter than the soft set."
+  },
+  {
+   "id": "low-strings",
+   "name": "Low Strings Sustain",
+   "family": "strings",
+   "play": "glide",
+   "release": 0.6,
+   "loud": 1.165,
+   "zones": [
+    {
+     "url": "assets/samples/low-strings/Fs1.mp3",
+     "rootMidi": 30,
+     "loopStart": 0.64707,
+     "loopEnd": 2.1388,
+     "gain": 2.415
+    },
+    {
+     "url": "assets/samples/low-strings/E2.mp3",
+     "rootMidi": 40,
+     "loopStart": 1.83803,
+     "loopEnd": 3.46671,
+     "gain": 1.123
+    },
+    {
+     "url": "assets/samples/low-strings/B2.mp3",
+     "rootMidi": 47,
+     "loopStart": 1.02039,
+     "loopEnd": 2.89814,
+     "gain": 0.362
+    },
+    {
+     "url": "assets/samples/low-strings/F3.mp3",
+     "rootMidi": 53,
+     "loopStart": 2.80524,
+     "loopEnd": 3.31422
+    },
+    {
+     "url": "assets/samples/low-strings/Gs3.mp3",
+     "rootMidi": 56,
+     "loopStart": 1.14392,
+     "loopEnd": 2.95964
+    },
+    {
+     "url": "assets/samples/low-strings/E4.mp3",
+     "rootMidi": 64,
+     "loopStart": 1.32467,
+     "loopEnd": 2.28243,
+     "gain": 0.736
+    },
+    {
+     "url": "assets/samples/low-strings/B4.mp3",
+     "rootMidi": 71,
+     "loopStart": 1.66574,
+     "loopEnd": 3.86776,
+     "gain": 1.168
+    },
+    {
+     "url": "assets/samples/low-strings/G5.mp3",
+     "rootMidi": 79,
+     "loopStart": 1.55984,
+     "loopEnd": 1.99821,
+     "gain": 0.526
+    }
+   ],
+   "spectrum": [
+    [
+     1.003,
+     0.282
+    ],
+    [
+     2.001,
+     1
+    ],
+    [
+     3.006,
+     0.1
+    ],
+    [
+     3.989,
+     0.289
+    ],
+    [
+     5.003,
+     0.347
+    ],
+    [
+     5.987,
+     0.095
+    ],
+    [
+     6.996,
+     0.198
+    ],
+    [
+     7.961,
+     0.039
+    ],
+    [
+     8.956,
+     0.049
+    ],
+    [
+     9.997,
+     0.099
+    ],
+    [
+     10.948,
+     0.036
+    ],
+    [
+     11.941,
+     0.027
+    ],
+    [
+     13.964,
+     0.048
+    ],
+    [
+     14.959,
+     0.025
+    ],
+    [
+     15.923,
+     0.018
+    ],
+    [
+     17.958,
+     0.021
+    ]
+   ],
+   "quality": "good",
+   "notes": "Low bowed strings (cello section and solo contrabass sustains). Slow swell, warm."
+  },
+  {
+   "id": "contrabass",
+   "name": "Solo Contrabass",
+   "family": "strings",
+   "play": "glide",
+   "release": 0.5,
+   "loud": 2.887,
+   "zones": [
+    {
+     "url": "assets/samples/contrabass/E1.mp3",
+     "rootMidi": 28,
+     "loopStart": 1.98327,
+     "loopEnd": 3.31798,
+     "gain": 1.907
+    },
+    {
+     "url": "assets/samples/contrabass/G1.mp3",
+     "rootMidi": 31,
+     "loopStart": 1.11828,
+     "loopEnd": 3.13871,
+     "gain": 2.222
+    },
+    {
+     "url": "assets/samples/contrabass/C2.mp3",
+     "rootMidi": 36,
+     "loopStart": 1.31431,
+     "loopEnd": 1.65156,
+     "gain": 1.066
+    },
+    {
+     "url": "assets/samples/contrabass/Fs2.mp3",
+     "rootMidi": 42,
+     "loopStart": 1.64687,
+     "loopEnd": 2.74943,
+     "gain": 0.942
+    },
+    {
+     "url": "assets/samples/contrabass/A2.mp3",
+     "rootMidi": 45,
+     "loopStart": 0.82678,
+     "loopEnd": 2.72678,
+     "gain": 0.25
+    },
+    {
+     "url": "assets/samples/contrabass/Gs3.mp3",
+     "rootMidi": 56,
+     "loopStart": 1.2573,
+     "loopEnd": 1.53655,
+     "gain": 0.542
+    }
+   ],
+   "spectrum": [
+    [
+     1,
+     1
+    ],
+    [
+     1.999,
+     0.532
+    ],
+    [
+     3.001,
+     0.646
+    ],
+    [
+     4.002,
+     0.255
+    ],
+    [
+     5.001,
+     0.065
+    ],
+    [
+     6.014,
+     0.027
+    ],
+    [
+     6.995,
+     0.087
+    ],
+    [
+     8,
+     0.037
+    ],
+    [
+     8.999,
+     0.033
+    ],
+    [
+     11.001,
+     0.04
+    ],
+    [
+     12.03,
+     0.028
+    ],
+    [
+     13.996,
+     0.03
+    ],
+    [
+     16.964,
+     0.037
+    ],
+    [
+     18.035,
+     0.028
+    ],
+    [
+     21.037,
+     0.058
+    ],
+    [
+     22.045,
+     0.036
+    ]
+   ],
+   "quality": "good",
+   "notes": "Solo contrabass sustain. Tuning within 3 c."
+  },
+  {
+   "id": "solo-violin",
+   "name": "Solo Violin",
+   "family": "strings",
+   "play": "glide",
+   "release": 0.5,
+   "loud": 1.127,
+   "zones": [
+    {
+     "url": "assets/samples/solo-violin/G3.mp3",
+     "rootMidi": 55,
+     "loopStart": 1.50091,
+     "loopEnd": 2.01116,
+     "gain": 0.905
+    },
+    {
+     "url": "assets/samples/solo-violin/C4.mp3",
+     "rootMidi": 60,
+     "loopStart": 0.49952,
+     "loopEnd": 2.48726,
+     "gain": 0.439
+    },
+    {
+     "url": "assets/samples/solo-violin/A4.mp3",
+     "rootMidi": 69,
+     "loopStart": 0.44163,
+     "loopEnd": 1.36408,
+     "gain": 1.117
+    },
+    {
+     "url": "assets/samples/solo-violin/E5.mp3",
+     "rootMidi": 76,
+     "loopStart": 0.29045,
+     "loopEnd": 0.62816,
+     "gain": 1.205
+    },
+    {
+     "url": "assets/samples/solo-violin/C6.mp3",
+     "rootMidi": 84,
+     "loopStart": 2.01347,
+     "loopEnd": 2.35905,
+     "gain": 0.871
+    },
+    {
+     "url": "assets/samples/solo-violin/G6.mp3",
+     "rootMidi": 91,
+     "loopStart": 1.38558,
+     "loopEnd": 2.68934,
+     "gain": 1.448
+    }
+   ],
+   "spectrum": [
+    [
+     0.998,
+     0.924
+    ],
+    [
+     2.007,
+     1
+    ],
+    [
+     2.988,
+     0.297
+    ],
+    [
+     3.975,
+     0.185
+    ],
+    [
+     5.004,
+     0.972
+    ],
+    [
+     5.954,
+     0.138
+    ],
+    [
+     7.01,
+     0.281
+    ],
+    [
+     8.02,
+     0.232
+    ],
+    [
+     9,
+     0.287
+    ],
+    [
+     10.01,
+     0.382
+    ],
+    [
+     11.018,
+     0.19
+    ],
+    [
+     12.027,
+     0.06
+    ],
+    [
+     12.947,
+     0.047
+    ],
+    [
+     13.886,
+     0.04
+    ],
+    [
+     14.954,
+     0.033
+    ],
+    [
+     16.864,
+     0.032
+    ]
+   ],
+   "quality": "good",
+   "notes": "Solo violin with vibrato. Tuning within 18 c (vibrato spread)."
+  },
+  {
+   "id": "mixed-brass",
+   "name": "Mixed Low Brass",
+   "family": "brass",
+   "play": "glide",
+   "release": 0.3,
+   "loud": 0.77,
+   "zones": [
+    {
+     "url": "assets/samples/mixed-brass/A1.mp3",
+     "rootMidi": 33,
+     "loopStart": 1.5854,
+     "loopEnd": 1.98601,
+     "gain": 0.57
+    },
+    {
+     "url": "assets/samples/mixed-brass/C2.mp3",
+     "rootMidi": 36,
+     "loopStart": 0.75687,
+     "loopEnd": 3.09878,
+     "gain": 0.666
+    },
+    {
+     "url": "assets/samples/mixed-brass/F2.mp3",
+     "rootMidi": 41,
+     "loopStart": 1.38937,
+     "loopEnd": 3.11884,
+     "gain": 4
+    },
+    {
+     "url": "assets/samples/mixed-brass/F3.mp3",
+     "rootMidi": 53,
+     "loopStart": 0.21823,
+     "loopEnd": 0.45946,
+     "gain": 1.191
+    },
+    {
+     "url": "assets/samples/mixed-brass/As3.mp3",
+     "rootMidi": 58,
+     "loopStart": 0.58302,
+     "loopEnd": 2.97658,
+     "gain": 0.612
+    },
+    {
+     "url": "assets/samples/mixed-brass/D4.mp3",
+     "rootMidi": 62,
+     "loopStart": 1.66719,
+     "loopEnd": 3.93585,
+     "gain": 1.262
+    },
+    {
+     "url": "assets/samples/mixed-brass/G4.mp3",
+     "rootMidi": 67,
+     "loopStart": 1.86059,
+     "loopEnd": 2.93923,
+     "gain": 2.445
+    },
+    {
+     "url": "assets/samples/mixed-brass/A5.mp3",
+     "rootMidi": 81,
+     "loopStart": 1.7844,
+     "loopEnd": 3.81603,
+     "gain": 0.862
+    }
+   ],
+   "spectrum": [
+    [
+     1,
+     0.485
+    ],
+    [
+     2,
+     0.652
+    ],
+    [
+     3,
+     1
+    ],
+    [
+     4.001,
+     0.224
+    ],
+    [
+     5.001,
+     0.078
+    ],
+    [
+     6,
+     0.013
+    ]
+   ],
+   "quality": "ok",
+   "notes": "Low brass from several instruments (tuba, horn, trombone, trumpet). Timbre changes between zones."
+  },
+  {
+   "id": "organ-quiet",
+   "name": "Pipe Organ (quiet stop)",
+   "family": "organ",
+   "play": "glide",
+   "release": 0.5,
+   "loud": 1.363,
+   "zones": [
+    {
+     "url": "assets/samples/organ-quiet/C2.mp3",
+     "rootMidi": 36,
+     "loopStart": 1.53154,
+     "loopEnd": 3.97571,
+     "gain": 4
+    },
+    {
+     "url": "assets/samples/organ-quiet/Fs2.mp3",
+     "rootMidi": 42,
+     "loopStart": 0.748,
+     "loopEnd": 1.44209,
+     "gain": 4
+    },
+    {
+     "url": "assets/samples/organ-quiet/C3.mp3",
+     "rootMidi": 48,
+     "loopStart": 1.18537,
+     "loopEnd": 3.67907,
+     "gain": 0.497
+    },
+    {
+     "url": "assets/samples/organ-quiet/Fs3.mp3",
+     "rootMidi": 54,
+     "loopStart": 1.0632,
+     "loopEnd": 3.33206,
+     "gain": 0.25
+    },
+    {
+     "url": "assets/samples/organ-quiet/C4.mp3",
+     "rootMidi": 60,
+     "loopStart": 1.722,
+     "loopEnd": 3.78703,
+     "gain": 1.081
+    },
+    {
+     "url": "assets/samples/organ-quiet/Fs4.mp3",
+     "rootMidi": 66,
+     "loopStart": 1.23263,
+     "loopEnd": 3.5805,
+     "gain": 0.469
+    },
+    {
+     "url": "assets/samples/organ-quiet/C5.mp3",
+     "rootMidi": 72,
+     "loopStart": 2.82469,
+     "loopEnd": 4.03311,
+     "gain": 1.256
+    },
+    {
+     "url": "assets/samples/organ-quiet/Fs5.mp3",
+     "rootMidi": 78,
+     "loopStart": 0.43583,
+     "loopEnd": 0.69406,
+     "gain": 0.93
+    }
+   ],
+   "spectrum": [
+    [
+     1,
+     1
+    ],
+    [
+     3.001,
+     0.056
+    ]
+   ],
+   "quality": "good",
+   "notes": "Pipe organ, quiet stopped flue stop (odd harmonics). Steady, no vibrato."
+  },
+  {
+   "id": "organ-loud",
+   "name": "Pipe Organ (full)",
+   "family": "organ",
+   "play": "glide",
+   "release": 0.5,
+   "loud": 0.764,
+   "zones": [
+    {
+     "url": "assets/samples/organ-loud/C2.mp3",
+     "rootMidi": 36,
+     "loopStart": 0.5937,
+     "loopEnd": 2.40615,
+     "gain": 0.788
+    },
+    {
+     "url": "assets/samples/organ-loud/Fs2.mp3",
+     "rootMidi": 42,
+     "loopStart": 1.18692,
+     "loopEnd": 1.48871,
+     "gain": 0.868
+    },
+    {
+     "url": "assets/samples/organ-loud/Fs3.mp3",
+     "rootMidi": 54,
+     "loopStart": 0.90823,
+     "loopEnd": 3.39245
+    },
+    {
+     "url": "assets/samples/organ-loud/C4.mp3",
+     "rootMidi": 60,
+     "loopStart": 0.87637,
+     "loopEnd": 3.2568,
+     "gain": 0.827
+    },
+    {
+     "url": "assets/samples/organ-loud/Fs4.mp3",
+     "rootMidi": 66,
+     "loopStart": 1.02644,
+     "loopEnd": 2.67256,
+     "gain": 1.341
+    },
+    {
+     "url": "assets/samples/organ-loud/C5.mp3",
+     "rootMidi": 72,
+     "loopStart": 2.06499,
+     "loopEnd": 4.34265,
+     "gain": 1.18
+    },
+    {
+     "url": "assets/samples/organ-loud/Fs5.mp3",
+     "rootMidi": 78,
+     "loopStart": 1.35664,
+     "loopEnd": 3.6702,
+     "gain": 2.227
+    }
+   ],
+   "spectrum": [
+    [
+     0.999,
+     1
+    ],
+    [
+     2.001,
+     0.369
+    ],
+    [
+     3,
+     0.24
+    ],
+    [
+     4.004,
+     0.212
+    ],
+    [
+     5.008,
+     0.062
+    ],
+    [
+     6.01,
+     0.15
+    ],
+    [
+     7.012,
+     0.049
+    ],
+    [
+     8.004,
+     0.175
+    ],
+    [
+     9.015,
+     0.047
+    ],
+    [
+     10.017,
+     0.034
+    ],
+    [
+     11.982,
+     0.062
+    ],
+    [
+     16.007,
+     0.025
+    ],
+    [
+     23.964,
+     0.026
+    ]
+   ],
+   "quality": "ok",
+   "notes": "Pipe organ, full registration with a 16' rank. Upper zones carry a strong sub-octave."
+  },
+  {
+   "id": "flute",
+   "name": "Concert Flute",
+   "family": "woodwind",
+   "play": "glide",
+   "release": 0.25,
+   "loud": 1.041,
+   "zones": [
+    {
+     "url": "assets/samples/flute/A4.mp3",
+     "rootMidi": 69,
+     "loopStart": 1.16367,
+     "loopEnd": 2.95438,
+     "gain": 2.425
+    },
+    {
+     "url": "assets/samples/flute/C5.mp3",
+     "rootMidi": 72,
+     "loopStart": 1.93923,
+     "loopEnd": 2.28889,
+     "gain": 1.83
+    },
+    {
+     "url": "assets/samples/flute/E5.mp3",
+     "rootMidi": 76,
+     "loopStart": 1.42662,
+     "loopEnd": 3.66612,
+     "gain": 1.135
+    },
+    {
+     "url": "assets/samples/flute/A5.mp3",
+     "rootMidi": 81,
+     "loopStart": 1.79406,
+     "loopEnd": 2.33449
+    },
+    {
+     "url": "assets/samples/flute/C6.mp3",
+     "rootMidi": 84,
+     "loopStart": 1.72841,
+     "loopEnd": 3.88705,
+     "gain": 0.586
+    },
+    {
+     "url": "assets/samples/flute/E6.mp3",
+     "rootMidi": 88,
+     "loopStart": 0.99025,
+     "loopEnd": 2.96853,
+     "gain": 0.504
+    },
+    {
+     "url": "assets/samples/flute/A6.mp3",
+     "rootMidi": 93,
+     "loopStart": 2.09864,
+     "loopEnd": 4.38857,
+     "gain": 0.321
+    }
+   ],
+   "spectrum": [
+    [
+     1,
+     1
+    ],
+    [
+     2.006,
+     0.206
+    ],
+    [
+     3.015,
+     0.141
+    ],
+    [
+     3.98,
+     0.018
+    ],
+    [
+     5.034,
+     0.014
+    ]
+   ],
+   "quality": "good",
+   "notes": "Concert flute, sustained. Tuning within 3 c. Pure, breathy."
+  },
+  {
+   "id": "marimba",
+   "name": "Marimba",
+   "family": "mallets",
+   "play": "hit",
+   "release": 1,
+   "loud": 0.766,
+   "zones": [
+    {
+     "url": "assets/samples/marimba/C3.mp3",
+     "rootMidi": 48,
+     "gain": 1.568
+    },
+    {
+     "url": "assets/samples/marimba/F4.mp3",
+     "rootMidi": 65,
+     "gain": 0.902
+    },
+    {
+     "url": "assets/samples/marimba/C5.mp3",
+     "rootMidi": 72
+    }
+   ],
+   "spectrum": [
+    [
+     1,
+     1
+    ]
+   ],
+   "quality": "ok",
+   "notes": "Marimba, three zones only (C3-C5). Pure, woody fundamental."
+  },
+  {
+   "id": "xylophone",
+   "name": "Xylophone",
+   "family": "mallets",
+   "play": "hit",
+   "release": 0.6,
+   "loud": 1.165,
+   "zones": [
+    {
+     "url": "assets/samples/xylophone/G5.mp3",
+     "rootMidi": 79
+    },
+    {
+     "url": "assets/samples/xylophone/C6.mp3",
+     "rootMidi": 84,
+     "gain": 0.66
+    },
+    {
+     "url": "assets/samples/xylophone/G6.mp3",
+     "rootMidi": 91
+    },
+    {
+     "url": "assets/samples/xylophone/C7.mp3",
+     "rootMidi": 96,
+     "gain": 1.896
+    },
+    {
+     "url": "assets/samples/xylophone/G7.mp3",
+     "rootMidi": 103,
+     "gain": 0.654
+    }
+   ],
+   "spectrum": [
+    [
+     1,
+     1
+    ],
+    [
+     2.883,
+     0.052
+    ],
+    [
+     3.756,
+     0.01
+    ]
+   ],
+   "quality": "ok",
+   "notes": "Xylophone, G5-G7. Tuned 9-20 c sharp, short and bright."
+  },
+  {
+   "id": "glockenspiel",
+   "name": "Glockenspiel",
+   "family": "mallets",
+   "play": "hit",
+   "release": 1,
+   "loud": 0.947,
+   "zones": [
+    {
+     "url": "assets/samples/glockenspiel/G4.mp3",
+     "rootMidi": 67,
+     "gain": 1.625
+    },
+    {
+     "url": "assets/samples/glockenspiel/C5.mp3",
+     "rootMidi": 72,
+     "gain": 0.69
+    },
+    {
+     "url": "assets/samples/glockenspiel/G5.mp3",
+     "rootMidi": 79,
+     "gain": 0.607
+    },
+    {
+     "url": "assets/samples/glockenspiel/C6.mp3",
+     "rootMidi": 84,
+     "gain": 0.722
+    },
+    {
+     "url": "assets/samples/glockenspiel/G6.mp3",
+     "rootMidi": 91,
+     "gain": 2.09
+    },
+    {
+     "url": "assets/samples/glockenspiel/C7.mp3",
+     "rootMidi": 96,
+     "gain": 2.055
+    }
+   ],
+   "spectrum": [
+    [
+     1,
+     1
+    ]
+   ],
+   "quality": "ok",
+   "notes": "Glockenspiel, G4-C7. Consistently 12-18 c sharp; short ring."
+  },
+  {
+   "id": "tremolo-strings",
+   "name": "Tremolo Strings",
+   "family": "strings",
+   "play": "glide",
+   "release": 0.5,
+   "loud": 2.57,
+   "zones": [
+    {
+     "url": "assets/samples/tremolo-strings/Gs2.mp3",
+     "rootMidi": 44,
+     "loopStart": 0.9595,
+     "loopEnd": 1.64941,
+     "gain": 0.33
+    },
+    {
+     "url": "assets/samples/tremolo-strings/C3.mp3",
+     "rootMidi": 48,
+     "loopStart": 1.19769,
+     "loopEnd": 2.47762,
+     "gain": 1.153
+    },
+    {
+     "url": "assets/samples/tremolo-strings/F3.mp3",
+     "rootMidi": 53,
+     "loopStart": 0.23723,
+     "loopEnd": 0.68884,
+     "gain": 0.903
+    },
+    {
+     "url": "assets/samples/tremolo-strings/C4.mp3",
+     "rootMidi": 60,
+     "loopStart": 1.05018,
+     "loopEnd": 3.21113,
+     "gain": 1.848
+    },
+    {
+     "url": "assets/samples/tremolo-strings/E4.mp3",
+     "rootMidi": 64,
+     "loopStart": 1.81782,
+     "loopEnd": 4.11354,
+     "gain": 1.121
+    },
+    {
+     "url": "assets/samples/tremolo-strings/G4.mp3",
+     "rootMidi": 67,
+     "loopStart": 1.03789,
+     "loopEnd": 2.39494,
+     "gain": 3.164
+    },
+    {
+     "url": "assets/samples/tremolo-strings/E5.mp3",
+     "rootMidi": 76,
+     "loopStart": 3.06481,
+     "loopEnd": 4.47805,
+     "gain": 0.846
+    },
+    {
+     "url": "assets/samples/tremolo-strings/G5.mp3",
+     "rootMidi": 79,
+     "loopStart": 1.94322,
+     "loopEnd": 3.28882,
+     "gain": 0.641
+    }
+   ],
+   "spectrum": [
+    [
+     1,
+     1
+    ],
+    [
+     2.016,
+     0.381
+    ],
+    [
+     3,
+     0.31
+    ],
+    [
+     4.01,
+     0.49
+    ],
+    [
+     4.974,
+     0.283
+    ],
+    [
+     6.021,
+     0.188
+    ],
+    [
+     7.026,
+     0.12
+    ],
+    [
+     8.023,
+     0.155
+    ],
+    [
+     9.007,
+     0.196
+    ],
+    [
+     10.003,
+     0.079
+    ],
+    [
+     11.181,
+     0.085
+    ],
+    [
+     12.166,
+     0.081
+    ],
+    [
+     12.959,
+     0.033
+    ],
+    [
+     13.922,
+     0.024
+    ],
+    [
+     14.949,
+     0.03
+    ],
+    [
+     17.031,
+     0.016
+    ]
+   ],
+   "quality": "ok",
+   "notes": "String tremolo from mixed sections (contrabass/cello/violin). Restless, shimmering."
+  }
+ ]
+}
