@@ -4,7 +4,7 @@ Melody is split into classic scripts. They share `window.VH.melody` (no ES modul
 
 | file | role |
 |---|---|
-| `model.js` | constants, song model, `serialize`/`parse` (with v1 migration), chord helpers → `VH.melody.model` |
+| `model.js` | constants, song model, time signatures, chord regions, sections + arrangement, `serialize`/`parse` (with migrations) → `VH.melody.model` |
 | `bands.js` | harmony map (mixed spectra) → `M.bands` |
 | `view.js` | canvas geometry and drawing → `M.view` |
 | `engine.js` | transport, buses, voices, backing → `M.engine` |
@@ -39,10 +39,13 @@ VH.melody.parts.push((M) => {
 `M.song` is the **live object**. It is *replaced* on undo/redo/load, so always read `M.song` again; never keep a reference to it.
 
 ```
-{ key: 0..11, mode: 'major'|'minor', bars: 4|8|16, bpm: 40..200 (4/4, bar = 4 beats),
-  chords: [[root 0..11, 'maj'|'min'|'dim'|'aug'|'sus2'|'sus4'|'7'|'maj7'|'m7'] | null, ...]  (length = bars),
+{ key: 0..11, mode: 'major'|'minor', bpm: 40..200 (quarter notes per minute, song-wide),
+  // the CURRENT SECTION's content (see Sections):
+  bars: 1..16, ts: '2/4'|'3/4'|'4/4'|'5/4'|'6/8'|'7/8'|'12/8',
+  chords: [{ at: t16 within the section, chord: [root 0..11, 'maj'|'min'|'dim'|'aug'|'sus2'|'sus4'|'7'|'maj7'|'m7'] | null }, ...],
+  sections: [{ id, name, color '#rrggbb', rep 1..8, data }], cur: index of the section shown,
   layers: [{ id 'l1'|'l2'|..., name, color '#rrggbb', sound (VH.sounds id), mode 'line'|'notes', vol 0..1, mute, solo,
-             lines: [{ id 's1'|'s2'|.., v: Float32Array(bars*48) of midi or NaN }]   (line strokes, 48 samples per bar; see below),
+             lines: [{ id 's1'|'s2'|.., v: Float32Array(tot16*3) of midi or NaN }]   (line strokes, 3 samples per sixteenth; see below),
              notes: [{ s: start sixteenth, d: length in sixteenths, m: midi (float) }] }, ...]   (1..8 layers),
   backing: { sound, vol 0..1, on, style: 'drone'|'strum'|'arp'|'pulse'|'broken',
              styleOpts?: { arp: { rate, pattern, oct, gate }, strum: { speed, dir }, pulse: { rate, gate }, broken: { pattern } } },
@@ -54,7 +57,7 @@ VH.melody.parts.push((M) => {
 
 - **Line strokes.** A layer's line is a list of strokes that may overlap in time (polyphonic within the layer); a stroke
   may hold several runs. Stroke ids are stable (vibrato is keyed by them) and empty strokes are dropped on every commit.
-  Serialized (schema `v: 3`) as `lines: [{ id, segs }]`. Songs saved before strokes (v1 / v2, one `line` of segments) parse
+  Serialized (since schema `v: 3`) as `lines: [{ id, segs }]`. Songs saved before strokes (v1 / v2, one `line` of segments) parse
   into stroke `s1` (`S.migratedLines` > 0; the autosave is written back as v3), their vibrato `{ l }` into `{ s: { s1 } }`.
   Helpers on `M.model`: `strokes(l)`, `addStroke(l, len)`, `nextStrokeId(l)`, `pruneStrokes(l)`, `lineAt(l, i)` -> `[{ id, m }]`,
   `hasLine(l)`, `lineRuns(l)`, `MAX_STROKES` = 8. `layer.line` is a legacy accessor (not serialized): stroke #1's samples;
@@ -62,11 +65,48 @@ VH.melody.parts.push((M) => {
 - **Layer ids** are stable. They are unique within the song and kept by undo/redo, autosave and share links. `M.addLayer` takes `max + 1`.
   - Songs saved before ids existed get `l1..lN` in layer order when parsed (`S.migratedIds` > 0 then). An old autosave is saved back in the new format.
   - Part data may be keyed by id, or by index and kept aligned with `'layerRemoved'`. B1's `ext.edit.vib` and B2's `fx.layers` are index-keyed and shift there.
-- Pitch range: `model.LO` = 48 (C3) to `model.HI` = 84 (C6). Time unit: the **sixteenth** (`model.SPB` = 16 per bar). Line samples: `model.LPB` = 48 per bar.
+- Pitch range: `model.LO` = 48 (C3) to `model.HI` = 84 (C6). Time unit: the **sixteenth**; line samples: 3 per sixteenth.
+  The bar length follows the section's time signature: use `md.spb(S)` (sixteenths per bar), `md.lpb(S)` (line samples
+  per bar), `md.tot16(S)` (section length), `md.barAt(S, t16)`, `md.barsOf(S)`, `md.beatGrid(S, half)`, `md.tsOf(S)`
+  (`{ n, d, spb, beats, half, compound }`; 6/8 + 12/8 beat in dotted quarters, 7/8 is 2+2+3). `model.SPB` = 16 /
+  `model.LPB` = 48 remain as the 4/4 values for old callers only. `secPerBar(S)` follows the meter.
+- **Chord regions.** `S.chords` holds chord *events*, sorted, with one at every bar start; more events split a bar, so a
+  bar can hold several chords and a region never crosses a bar line. Region i = `[chords[i].at, md.regionEnd(S, i))`.
+  Helpers: `regionAt(S, t16)`, `regionChord(S, i)`, `chordAt(S, t16)`, `regions(S)` -> `[{ i, a, z, chord, bar }]`,
+  `barChords(S)` (one per bar, the older view), `splitAt(S, t16)`, `mergeAt(S, i)`, `normChords(S)`. **Every API that
+  took a bar for chords / bands now takes a region index** (`M.setChord(r, ch)`, `engine.previewChord(r)`,
+  `M.bands.column / consonance / snap / snapPure / fitCtx / cross(.., r, L)`, `bandExtras(r, L)`, beforeCommit
+  `cx.chords`); while no bar is split, region index == bar index. `M.splitChord(t16)` / `M.mergeChord(r)` (one undo
+  step each; a merge auto-fits the merged region).
 - `fx`, `drums` and `ext` must stay plain JSON. They survive autosave, share links and undo.
 - `backing.styleOpts` holds each backing style's own sub-settings (sound.js: `NS.sound.styleOptsOf(S, style)` validates and fills defaults; missing = the original fixed patterns). It is serialized only when set, so older songs serialize unchanged. Live playback, the WAV render (`NS.sound.offline`) and the MIDI export (`NS.sound.barEvents`) all read it.
 - Notes may carry extra runtime fields such as `sel: true` (B1 selection; the view draws it with a white outline). Those fields are **not** serialized.
 - Model helpers (`M.model`): `nextLayerId(layers)`, `assignIds(layers)`, `chordMidis(ch)`, `chordName(ch, names)`, `namesOf(S)`, `scaleOf(S)`, `diatonic(S)`, `secPerBar(S)`, `secPer16(S)`, `layerGain(S, i)` (0 when muted or not soloed), `serialize(S, full)`, `parse(obj)`, `newLayer(i, opts, bars)`, `COLORS`, `MAX_LAYERS` = 8, `QUALS`.
+
+## Sections + arrangement
+
+- A song is a list of **sections** in play order (`S.sections`), each with its own bars, time signature, chords, loop
+  region, layer content (strokes + notes, by layer id), drum pattern (`S.drums` minus `vol`) and vibrato (`ext.edit.vib`).
+  Tempo, key, instruments, mixer and fx are song-wide. The live fields above are the shown section (`S.cur`); the
+  others' content lives in `sections[k].data` (`md.selectSection` swaps; `md.sectionSong(S, k)` gives any section as a
+  standalone song; `md.arrangement(S)` -> passes `[{ k, r, a, n }]`; `md.songTot(S)`; `md.flatten(S, { only? })` lays the
+  arrangement end to end for export, with `S.flat = { tot, bars: [{ a, n, b, ts, drums }], ts: [{ at, ts }] }`).
+- Actions (each one undo step): `M.addSection(dup)` (after the shown one; a new one gets tonic chords, no notes, the same
+  meter, bars and groove), `M.deleteSection(k)`, `M.moveSection(from, to)`, `M.renameSection(k, name)`,
+  `M.recolorSection(k, color)`, `M.setRepeat(k, 1..8)`, `M.setTimeSig(ts)` (content keeps its place in each bar; emits
+  `'timeSig'` before its commit so parts adapt, e.g. the drum steps), `M.setBars(1..16)`. `M.selectSection(k)` shows a
+  section (no undo step). Undo / redo restore the section shown with the snapshot.
+- Playback: `M.playMode` 'section' (loop the shown section / its loop region) | 'song' (`M.setPlayMode`, VH.store
+  `melody.playMode`): Play runs the arrangement from the shown section; at a section end `M.nextPass()` switches the
+  section shown and the engine restarts its schedulers at the new downbeat (`engine.pass` = the arrangement item).
+- Count-in (Settings > Song > Count-in, VH.store `melody.countIn`): Play first clicks one bar (x/4 quarters, x/8 eighths,
+  accent on 1); `engine.counting`, `engine.countLog` = `[[audio time, level 2|1|0]]`.
+- UI (ui.js): the **arrangement strip** is a top lane above the chord header (`view.addLane(el, { top: true })`): Section /
+  Song, one block per section (click = show; click the shown one = menu: name, color, repeat, duplicate, delete; drag =
+  reorder), "+" (new / duplicate). One 28 px row that scrolls sideways.
+- Serialized (schema `v: 4`): top-level content = the shown section; `sections: [{ id, name, color, rep, ...content of
+  the others }]`, `cur`; chords `[[at, root, q] | [at]]`. Older songs and share links migrate to one section "A"
+  (`S.migratedSections`; the autosave is written back as v4).
 
 ## Editing and undo
 
@@ -87,7 +127,7 @@ Actions, each of which commits:
 - `M.setChord(bar, ch|null, { extra(song)? })` (also previews the chord)
   - `extra` may edit more of the song in the same undo step.
   - It commits with `{ chords: [bar], source: 'chord' }`, so auto-fit (B1) can turn it into 'Chord + fit'.
-- `M.setBars(n)`
+- `M.setBars(n)` (1..16, current section; new bars repeat the chords and splits of the bars before them)
 - `M.setLoopRegion([a, b] | null)`: one undo step ('Loop bars 2–3' / 'Clear loop region'); clears the cue; when playing outside the new region it seeks to its start.
 - `M.replaceSong(obj, label?, prep?)`: replace the whole song (serialized form). With `label` it is one undo step; without, no step (first-visit demo). `prep(song)` may edit the new song before it is recorded (its sounds and bands are ready).
 - `M.newSong()` ('New song' step), `M.loadDemo(label?)` (onboard.js).
@@ -117,12 +157,15 @@ Sounds:
 | `'sounds'` | none | sound library changed (resolved sounds and bands refreshed) |
 | `'tools'` / `'tool'` | none | tool list or current tool changed |
 | `'seek'` | `(t16)` | `engine.seek`: playhead moved (playing) or the cue was set (stopped) |
+| `'section'` | `(k)` | the section shown changed, or sections were added / removed / reordered / renamed |
+| `'pass'` | `(p)` | Song playback moved to arrangement item p |
+| `'timeSig'` | `(ts)` | `M.setTimeSig`, before its commit (adapt part data in the same undo step) |
 | `'unmount'` | none | before parts' `destroy` |
 
 Tick info `t`:
 
 ```
-{ now (performance.now ms), pos16, prevPos16, wrapped (looped this frame), bar, lineIndex, phase 0..1,
+{ now (performance.now ms), pos16, prevPos16, wrapped (looped this frame), bar, region (chord region), pass, lineIndex, phase 0..1,
   cont16 (continuous play time in sixteenths since Play: never jumps on loops or seeks), seekId (changes on Play / seek),
   seekCont16 (cont16 at that Play / seek), loopA16, loopB16 (the looped range: region or whole song),
   ctxTime, secPer16, timeOf(t16) -> AudioContext time of sixteenth t16 (for precise scheduling with opts.when) }
@@ -153,7 +196,12 @@ backing voice ─► backingBus() ──┼─► sumBus() ─► [insert chain]
   - For any other context they return a separate bus set, built once per context, with gains from the song mix and `master` into that context's `VH.audio` output.
 - The engine sets the bus gains from vol/mute/solo/backing/master. Call `engine.applyMix()` after changing those fields yourself.
 - `engine.setInsert({ input, output } | null)`: put an FX chain (`VH.fx.chain(...)`) between sum and master. Pass `null` to remove it. Disconnect your nodes in `destroy`.
-- `engine.setBacking(impl | null)` replaces the default drone. `impl = { onBar(bar, midis|null, info), stop(rel) }`, where `info = { now, ctxTime, secPerBar }`.
+- `engine.setBacking(impl | null)` replaces the default drone. `impl = { onBar(bar, midis|null, info), stop(rel) }`, called per
+  **chord region**, where `info = { now, ctxTime, secPerBar, region, a16, z16, secs }`.
+- Backing styles (sound.js `backingEvents(style, midis, sec16, opts, bar, { ts, a, len })`) follow the meter: pulse on the
+  beats (6/8 in dotted quarters), broken bass / chord on the beats, arpeggios on the bar grid; a region starting between
+  onsets re-strikes the pattern there. `regionEvents(S, r)` (MIDI). Drum steps = sixteenths per bar (`presetPat(id, ts)`:
+  3/4 waltz, 6/8 + 12/8 compound, others a generic groove; `drums.ts` = the meter a pattern was made for).
   - Play into `engine.backingBus()` and respect `M.song.backing.on`.
   - Use `M.backingSound()`.
   - `stop` must silence everything.
@@ -229,7 +277,7 @@ Vibrato store (B1): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, to, cents, 
   Intonation [Advanced] "Pure intonation", `VH.store` `melody.pureIntonation`, off by default) restores the exact band
   maxima (`M.bands.snapPure`) for Snap, Line ends, Select-move, auto-fit and 🎲 Melody. `peaks()` and the ghost path stay
   exact band maxima (a visual guide).
-- `M.bands.fitCtx(bar, L)` -> `{ cons (per semitone LO..HI), thr (the bar's 60th percentile), c(m), isChord(m), isKey(m),
+- `M.bands.fitCtx(r, L)` (r = chord region) -> `{ cons (per semitone LO..HI), thr (the bar's 60th percentile), c(m), isChord(m), isKey(m),
   fits(m), score(n, from, dir, prev), best(p, dir, prev) }` or null without a chord: the shared rules of the ET snaps,
   auto-fit and the generator. `fits` = chord tone, or key tone with consonance >= thr. `best` keeps p's semitone when it
   fits, else picks a fitting semitone within ±2 that keeps the melodic direction (dir, relative to the fitted previous
@@ -271,7 +319,7 @@ Vibrato store (B1): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, to, cents, 
 
   | tab | sections (order) |
   |---|---|
-  | Song | Song: key, bars, tempo, loop (10) · Generate (45) · How to read it (90, collapsed) |
+  | Song | Song: key, bars + time signature (shown section), tempo, loop, count-in (10) · Generate (45) · How to read it (90, collapsed) |
   | Sound | Instrument tone (22) · Backing (25) · Backing style + its sub-settings (26) · Effects (35) · Play feel (45, collapsed) · samples note (85) |
   | Mix | Mixer (10): layer rows, backing, part rows (`mixer.addRow`), master |
   | Edit | Grid & snap (10) · Editing (30) · Undo & clear (50) · Harmony map (60) |
@@ -289,8 +337,11 @@ Vibrato store (B1): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, to, cents, 
     activate(), deactivate() }
   ```
 
-  `p = { e, x, y, t16, midi, bar, layer, inHeader }`. Clicks on the chord header never reach tools: there a click on the
-  chord name opens the picker, a click on empty strip space seeks (`view.headerHit(x, y)` -> 'name' | 'empty' | 'x'),
+  `p = { e, x, y, t16, midi, bar, region, layer, inHeader }`. Clicks on the chord header never reach tools: there a click on
+  the chord name opens the picker for that region, a click on empty strip space seeks (`view.hdrAt(x, y)` -> `{ kind:
+  'name' | 'empty' | 'x' | 'edge' | 'plus', region, at }`), a "+" at a beat boundary (hover near the strip's bottom)
+  splits the chord, the grip between two chords drags the boundary (snaps to beats, Shift half-beats; dropped on the
+  next / previous boundary = merge; `M.tools.edgeSnap / edgeTo / edgeDone`), right-click = Split here / Merge / Change chord,
   a drag across the strip sets a whole-bar loop region (drawn as a band; its ✕ clears it), and while an inbox chord is
   waiting (`M.placing`) any header click places it.
 - Hover readout (tools.js): while the pointer is over the map (and while drawing; on touch only while pressed) a label
@@ -298,7 +349,9 @@ Vibrato store (B1): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, to, cents, 
   column data the map is painted from (other layers included when `bandsOthers` is on). `M.tools.readoutText(t16, m)`.
 - Drum lane (sound.js): below 600 px stage width it shows one bar at a time with ‹ › paging (follows the playhead while
   playing; steps >= 18 px); wider, every bar sits under its canvas bar, aligned to the pixel.
-- Export: with a loop region, the dialog offers "Export loop region only" (off by default); `exportLib.sliceSong(S, a, b)`.
+- Export renders the whole arrangement (`md.flatten`; MIDI writes a time-signature meta at every meter change); the
+  dialog offers "Current section only" (with 2+ sections) and, with a loop region, "Export loop region only"
+  (`exportLib.sliceSong(S, a, b)`).
 - `toast(msg, { sticky, action: { label, run } })` (sticky stays until replaced or `toast(null)`; an action adds a button, e.g. Undo), `mixer.open() / close() / refresh()` (the mixer is the panel's Mix tab; the dock's Mixer button opens it there), `layerMenu.open(i)`, `drawer` (the Settings panel API), `openPanel(group)`, `closeFloats()`.
 - `mixer.addRow({ id, label, color?, get() -> 0..1, set(v), commit?, mute?: { get() -> bool, set(bool) }, muteTitle?, quiet?() })` adds a row between the backing and the master, with class `mel-mix-<id>`. It returns `remove()`. B2's Drums row is one.
   - `set` runs while dragging.
@@ -343,7 +396,7 @@ mounted and the hash changes (`onRoute`).
 - **First visit** (main.js `M.firstVisit`): no autosave, no share link in the URL, an empty inbox, `melody.tutorial` not
   'done', and the first Melody mount of the page. Only then the demo song loads (without an undo step) and the tutorial
   starts. An autosave or a share link is never replaced.
-- **Demo** (`VH.melody.demoSong()`): 4 bars, 90 BPM, C Am F G, Arpeggio backing (Pluck), soft brush drums; layer 1 is
+- **Demo** (`VH.melody.demoSong()`, a one-section song): 4 bars, 90 BPM, C Am F G, Arpeggio backing (Pluck), soft brush drums; layer 1 is
   Clarinet (glide) with a melody in bars 1-2 held on band maxima (`M.bands.snap`); bars 3-4 are empty. `song.ext.demo.ghost`
   draws a faint dashed **ghost path** through consonance peaks (`bandsAt().peaks()`) in bars 3-4 (`M.ghost()`); it is
   not playable and disappears once anything is drawn there.

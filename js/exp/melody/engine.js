@@ -9,7 +9,7 @@
 (function () {
   'use strict';
   const VH = window.VH, H = VH.harmony, NS = VH.melody, md = NS.model;
-  const { LPB, SPB, chordMidis, layerGain, GAIN } = md;
+  const { chordMidis, layerGain, GAIN } = md;
   const MIN_GAP = 70;            // ms between re-triggers of a hit sound on a line
   const LOOKAHEAD = 0.08;        // s: notes are scheduled this far ahead (>= 30 ms, so humanize can move them earlier)
   const G_LINE = GAIN.LINE, G_NOTE = GAIN.NOTE, G_BACK = GAIN.BACK, G_PREVIEW = GAIN.PREVIEW_CHORD, G_PNOTE = GAIN.PREVIEW_NOTE;
@@ -28,8 +28,13 @@
     E.playOf = (s) => VH.ui.playOf(s);
     E.secPer16 = () => md.secPer16(S());
     E.secPerBar = () => md.secPerBar(S());
-    Object.defineProperty(E, 'pos16', { get: () => E.phase * S().bars * SPB });
-    Object.defineProperty(E, 'bar', { get: () => Math.min(S().bars - 1, Math.floor(E.phase * S().bars)) });
+    Object.defineProperty(E, 'pos16', { get: () => E.phase * md.tot16(S()) });
+    Object.defineProperty(E, 'bar', { get: () => md.barAt(S(), E.pos16) });
+    Object.defineProperty(E, 'region', { get: () => md.regionAt(S(), E.pos16) });
+    // Playback mode: 'section' loops the current section (and its loop region); 'song' plays the arrangement from the
+    // current section on, switching sections at their ends (M.nextPass). E.pass = the arrangement item playing.
+    const songMode = () => M.playMode === 'song';
+    E.pass = -1;
     // The live AudioContext, never an OfflineAudioContext (VH.audio.ctx returns the bound one inside withContext).
     function liveCtx() {
       const c = VH.audio.ctx;
@@ -170,8 +175,8 @@
     E.stopLayer = (L) => stopLine(L, 0.05);
 
     // Gesture-only previews.
-    E.previewChord = function (b) {
-      const ch = S().chords[b];
+    E.previewChord = function (b) {   // b = chord region index (== bar while no bar is split)
+      const ch = md.regionChord(S(), b);
       if (!ch || !VH.audio.ensure()) return;
       const snd = M.backingSound(), bus = E.masterBus();
       const nw = performance.now(); chordMidis(ch).forEach((m) => E.previews.push({ L: -1, m, until: nw + 600 }));
@@ -191,11 +196,32 @@
     // Position: E.phase (0..1 of the song). cont = continuous play time in sixteenths since Play (never jumps: loops and
     // seeks don't reset it), so look-ahead schedulers can map "cont" to song positions with E.segments(). A loop region
     // (song.loopRegion = [a, b) bars) loops only those bars; without one the whole song loops when song.loop is on.
-    let cont = 0, seekId = 0, seekCont = 0;
+    let cont = 0, seekId = 0, seekCont = 0, lastBar = -1, countIn = 0;
+    // ---------- count-in (Settings > Song > Count-in, VH.store 'melody.countIn'): one bar of clicks, accent on beat 1 ----------
+    // x/4: a click per quarter; x/8: per eighth (accent on 1, the other beat starts medium). E.countLog = [[time, level]].
+    E.countLog = [];
+    function startCountIn() {
+      const c = liveCtx(), s = S(), T = md.tsOf(s), sec16 = md.secPer16(s);
+      if (!c || !VH.audio.out) return;
+      const unit = T.d === 8 ? 2 : 4, n = T.spb / unit, t0 = c.currentTime + 0.05;
+      E.countLog = [];
+      for (let k = 0; k < n; k++) {
+        const p = k * unit, lvl = k === 0 ? 2 : T.beats.includes(p) ? 1 : 0, t = t0 + p * sec16;
+        const o = c.createOscillator(), g = c.createGain();
+        o.frequency.value = lvl === 2 ? 1760 : lvl === 1 ? 1320 : 990;
+        g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(lvl === 2 ? 0.5 : lvl ? 0.32 : 0.22, t + 0.002);
+        g.gain.exponentialRampToValueAtTime(0.0008, t + 0.06);
+        o.connect(g); g.connect(VH.audio.out); o.start(t); o.stop(t + 0.08);
+        o.onended = () => { try { g.disconnect(); } catch (_) { /* ignore */ } };
+        E.countLog.push([t, lvl]);
+      }
+      countIn = 0.05 + T.spb * sec16;
+    }
+    Object.defineProperty(E, 'counting', { get: () => countIn > 0 });
     E.cue = null;   // start position (sixteenths) for the next Play, set by a seek while stopped; null = region start or 0
     function range() {
-      const s = S(), tot = s.bars * SPB, r = md.regionOf(s);
-      return r ? [r[0] * SPB, r[1] * SPB, true, tot] : [0, tot, false, tot];
+      const s = S(), n = md.spb(s), tot = md.tot16(s), r = songMode() ? null : md.regionOf(s);
+      return r ? [r[0] * n, r[1] * n, true, tot] : [0, tot, false, tot];
     }
     E.loopRange = () => { const [a, b, on] = range(); return { a16: a, b16: b, on }; };
     Object.defineProperty(E, 'cont16', { get: () => cont });
@@ -207,12 +233,12 @@
       let c = cont, p = E.pos16;
       // c0 may lie up to a frame in the past (events queued at a seek / Play): walk back within the current run
       const back = Math.min(cont - c0, 4), floor = reg && p >= a && p < b ? a : 0;
-      if (back > 0 && p - back >= floor) { c -= back; p -= back; }
+      if (back > 0 && p - back >= floor - 1e-6) { c -= back; p = Math.max(floor, p - back); }   // (float-safe at the run start)
       for (let k = 0; k < 64 && c < c1; k++) {
         const end = reg && p < b ? b : tot, cEnd = c + Math.max(0, end - p);
         const lo = Math.max(c, c0), hi = Math.min(cEnd, c1);
         if (hi > lo) out.push({ c: lo, s: p + (lo - c), n: hi - lo });
-        if (!reg && !s.loop) break;
+        if (songMode() || (!reg && !s.loop)) break;   // Song mode: the next section's events follow its switch
         c = cEnd; p = reg ? a : 0;
       }
       return out;
@@ -220,18 +246,21 @@
     E.play = function () {
       VH.audio.ensure(); ensureBuses();
       const [a, , reg, tot] = range(), st = E.cue != null ? Math.max(0, Math.min(tot - 1e-6, E.cue)) : reg ? a : 0;
-      E.phase = st / tot; prevPos = st; cont = 0; seekCont = 0; ahead = 0; seekId++; backingBar = -1; E.playing = true;
+      E.phase = st / tot; prevPos = st; cont = 0; seekCont = 0; ahead = 0; seekId++; backingBar = -1; lastBar = -1; E.playing = true;
+      E.pass = songMode() ? md.arrangement(S()).findIndex((it) => it.k === S().cur) : -1;
+      countIn = 0;
+      if (VH.store.get('melody.countIn', false) === true) startCountIn();
       M.emit('play');
     };
     E.stop = function () {
-      E.stopAll(); E.playing = false;
+      E.stopAll(); E.playing = false; countIn = 0; E.pass = -1;
       M.emit('stop');
     };
     E.toggle = () => (E.playing ? E.stop() : E.play());
     // Jump to sixteenth t16. Playing: playback continues from there (notes scheduled for the old position are cut).
     // Stopped: sets the cue, so the next Play starts there.
     E.seek = (t16) => {
-      const tot = S().bars * SPB;
+      const tot = md.tot16(S());
       t16 = Math.max(0, Math.min(tot - 1e-6, +t16 || 0));
       if (!E.playing) { E.cue = t16; E.phase = t16 / tot; M.emit('seek', t16); M.requestRender(); return; }
       E.phase = t16 / tot; prevPos = E.pos16; ahead = cont; seekCont = cont; backingBar = -1; seekId++;
@@ -241,11 +270,22 @@
     };
     E.step = function (now, dt) {   // called once per animation frame
       if (!E.playing) return;
-      const s = S(), [a, b, reg, tot] = range(), adv = dt / md.secPer16(s);
+      if (countIn > 0) {   // count-in: the clicks play, the song waits
+        countIn -= dt;
+        if (countIn > 0) return;
+        dt = Math.min(dt, -countIn); countIn = 0;
+      }
+      let s = S(), [a, b, reg, tot] = range(), adv = dt / md.secPer16(s);
       let pos = E.phase * tot + adv;
       cont += adv;
       if (reg && prevPos < b && pos >= b) pos = a + (pos - b);   // loop the region
-      else if (pos >= tot) {
+      else if (pos >= tot && songMode()) {   // next pass of the arrangement (may switch the section shown)
+        const over = pos - tot;
+        if (!M.nextPass()) { E.stop(); E.phase = 0; return; }
+        s = S(); tot = md.tot16(s); pos = Math.min(over, tot - 1e-6);
+        // schedulers restart at the new section's start (a moment ago): nothing at its downbeat is lost
+        seekCont = cont - over; ahead = seekCont; seekId++; backingBar = -1; prevPos = 0;
+      } else if (pos >= tot) {
         if (s.loop || reg) pos = (reg ? a : 0) + (pos - tot);
         else { E.stop(); E.phase = E.cue != null ? E.cue / tot : 0; return; }
       }
@@ -261,7 +301,7 @@
         const snd = M.soundOf(L);
         for (const g of segs) {
           for (const n of l.notes) {
-            if (n.s < g.s || n.s >= g.s + g.n) continue;
+            if (n.s < g.s - 1e-6 || n.s >= g.s + g.n - 1e-6) continue;
             const when = now + (g.c + (n.s - g.s) - cont) * sec16, dur = n.d * sec16;
             const p = play(L, 'note', snd, n.m, G_NOTE, Math.max(now, when), n, null);
             const t0 = Math.max(now, p.o.when != null ? p.o.when : when);
@@ -272,17 +312,18 @@
       });
     }
     function tick(now) {
-      const s = S(), tot = s.bars * SPB, pos = E.phase * tot, b = Math.min(s.bars - 1, Math.floor(E.phase * s.bars));
-      const i = Math.min(s.bars * LPB - 1, Math.floor(E.phase * s.bars * LPB)), actx = liveCtx(), sec16 = md.secPer16(s);
+      const s = S(), tot = md.tot16(s), pos = E.phase * tot, b = md.barAt(s, pos), rg = md.regionAt(s, pos);
+      const i = Math.min(tot * 3 - 1, Math.floor(pos * 3)), actx = liveCtx(), sec16 = md.secPer16(s);
       const wrapped = pos < prevPos, [ra, rb] = range();
       if (actx) ensureBuses();
-      if (actx && b !== backingBar) {
-        backingBar = b;
-        try { backing().onBar(b, s.chords[b] ? chordMidis(s.chords[b]) : null, { now, ctxTime: actx.currentTime, secPerBar: md.secPerBar(s) }); }
+      if (actx && rg !== backingBar) {   // the backing follows chord regions (several per bar when a bar is split)
+        backingBar = rg;
+        const ch = md.regionChord(s, rg), a16 = s.chords[rg] ? s.chords[rg].at : 0, z16 = md.regionEnd(s, rg);
+        try { backing().onBar(b, ch ? chordMidis(ch) : null, { now, ctxTime: actx.currentTime, secPerBar: md.secPerBar(s), region: rg, a16, z16, secs: (z16 - pos) * sec16 }); }
         catch (err) { console.error('[melody] backing', err); }
-        M.emit('bar', b);
       }
-      const info = { now, pos16: pos, prevPos16: prevPos, wrapped, bar: b, lineIndex: i, phase: E.phase,
+      if (b !== lastBar) { lastBar = b; M.emit('bar', b); }
+      const info = { now, pos16: pos, prevPos16: prevPos, wrapped, bar: b, region: rg, lineIndex: i, phase: E.phase, pass: E.pass,
         cont16: cont, seekId, seekCont16: seekCont, loopA16: ra, loopB16: rb,
         ctxTime: actx ? actx.currentTime : 0, secPer16: sec16, timeOf: (t16) => (actx ? actx.currentTime + (t16 - pos) * sec16 : 0) };
       if (ahead < cont) ahead = cont;   // fell behind (slow frame): never schedule into the past

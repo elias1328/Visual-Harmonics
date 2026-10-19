@@ -1,4 +1,4 @@
-// melody/bands.js - the harmony map. For each bar, every candidate pitch (rows LO..HI) is scored against that bar's
+// melody/bands.js - the harmony map. For each chord region (a bar, or part of a split bar; `b` below = region index), every candidate pitch (rows LO..HI) is scored against that bar's
 // chord: candidate partials come from the LAYER's spectrum, chord partials from the BACKING instrument's spectrum
 // (mixed spectra). Optional extra voices (M.hooks.bandExtras, used when "Bands include other layers" is on) are added.
 (function () {
@@ -55,7 +55,7 @@
       return d;
     }
     api.cross = function (f, b, L) {
-      const ch = M.song.chords[b];
+      const ch = md.regionChord(M.song, b);
       if (!ch) return 0;
       if (!specs[L]) api.refresh();
       return cross(f, chordMidis(ch).map(H.midiToHz), specs[L], bSpec, extras(b, L));
@@ -63,7 +63,7 @@
 
     // Column for bar b scored with layer L's spectrum: { D, V, px, chord } (cached).
     api.column = function (b, L) {
-      const S = M.song, ch = S.chords[b];
+      const S = M.song, ch = md.regionChord(S, b);
       if (!specs[L]) api.refresh();
       if (!specs[L]) L = 0;
       const ex = ch ? extras(b, L) : null;
@@ -104,17 +104,17 @@
       return c;
     };
 
-    // Background image (1 px per bar x R rows) for the active layer.
+    // Background image (1 px per sixteenth x R rows) for the active layer; cols[i] = region i's column.
     api.computeBg = function () {
-      const S = M.song, A = M.active;
+      const S = M.song, A = M.active, W = md.tot16(S);
       api.refresh();
-      off.width = S.bars; off.height = R;
-      const octx = off.getContext('2d'), img = octx.createImageData(S.bars, R);
-      for (let b = 0; b < S.bars; b++) {
-        const c = cols[b] = api.column(b, A);
-        for (let r = 0; r < R; r++) img.data.set(c.px.subarray(r * 4, r * 4 + 4), ((R - 1 - r) * S.bars + b) * 4);
-      }
-      cols.length = S.bars;
+      off.width = W; off.height = R;
+      const octx = off.getContext('2d'), img = octx.createImageData(W, R);
+      S.chords.forEach((e, i) => {
+        const c = cols[i] = api.column(i, A), z = md.regionEnd(S, i);
+        for (let x = e.at; x < z; x++) for (let r = 0; r < R; r++) img.data.set(c.px.subarray(r * 4, r * 4 + 4), ((R - 1 - r) * W + x) * 4);
+      });
+      cols.length = S.chords.length;
       octx.putImageData(img, 0, 0);
       bgFor = keys[A] + '|' + bKey;
       api.dirty = false;
@@ -123,7 +123,7 @@
     // 0..1 consonance of midi m in bar b for layer L (NaN without a chord).
     api.consonance = function (m, b, L) {
       L = L == null ? M.active : L;
-      if (!M.song.chords[b]) return NaN;
+      if (!md.regionChord(M.song, b)) return NaN;
       const V = api.column(b, L).V, rf = clamp((m - LO) * RPS, 0, R - 1), r = Math.min(R - 2, Math.floor(rf)), u = rf - r;
       return 1 - (V[r] * (1 - u) + V[r + 1] * u) ** 0.75;
     };
@@ -140,7 +140,7 @@
     // (60th percentile of those values), chord / key tests and the candidate scoring used by auto-fit and the snaps.
     api.fitCtx = function (b, L) {
       L = L == null ? M.active : L;
-      const S = M.song, ch = S.chords[b];
+      const S = M.song, ch = md.regionChord(S, b);
       if (!ch) return null;
       const col = api.column(b, L), mk = S.key + S.mode + ch.join('');
       let mm = ctxMemo.get(col);
@@ -203,7 +203,7 @@
     // Nearest bright band (local dissonance minimum, weighted by brightness) within ±1.5 semitones, refined to 1 cent.
     api.snapPure = function (m, b, L) {
       L = L == null ? M.active : L;
-      const ch = M.song.chords[b];
+      const ch = md.regionChord(M.song, b);
       if (!ch) return Math.round(m);
       const c = api.column(b, L), rf = (m - LO) * RPS, w = 1.5 * RPS;
       let best = -1, bs = Infinity;
@@ -226,9 +226,9 @@
     api.at = function (t16, L) {
       const S = M.song;
       L = L == null ? M.active : clamp(L | 0, 0, S.layers.length - 1);
-      const b = clamp(Math.floor(t16 / md.SPB), 0, S.bars - 1), c = api.column(b, L);
+      const b = md.regionAt(S, clamp(t16, 0, md.tot16(S) - 1e-6)), c = api.column(b, L), e = S.chords[b];
       return {
-        bar: b, chord: S.chords[b], layer: L, rows: R, D: c.D, V: c.V,
+        bar: md.barAt(S, e.at), region: b, a16: e.at, z16: md.regionEnd(S, b), chord: e.chord, layer: L, rows: R, D: c.D, V: c.V,
         midiOfRow: rowMidi, rowOfMidi: (m) => clamp((m - LO) * RPS, 0, R - 1),
         consonance: (m) => api.consonance(m, b, L), snap: (m) => api.snap(m, b, L),
         peaks() {   // midi of local consonance maxima, brightest first

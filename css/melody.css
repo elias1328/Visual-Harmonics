@@ -4,7 +4,7 @@
 /* strips under the canvas (M.view.addLane): the view subtracts their height from the canvas */
 .mel-wrap > .mel-lane { flex: none; }
 /* the load hint sits under the chord header, over the map, so it never covers lanes under the canvas (drums) or the dock */
-.vh-stage:has(> .vh-exp[data-exp="melody"]) > .vh-hint { bottom: auto; top: 52px; }
+.vh-stage:has(> .vh-exp[data-exp="melody"]) > .vh-hint { bottom: auto; top: 86px; }
 
 /* layer chips in the dock */
 .mel-layers .ic { gap: 6px; }
@@ -200,3 +200,35 @@
 .mel-zoom-b:focus-visible { outline: 2px solid var(--accent, #6fa3ff); outline-offset: 1px; }
 .mel-zoom-b:disabled { opacity: 0.35; cursor: default; }
 @media (max-width: 600px) { .mel-zoom-b { width: 30px; height: 30px; } }
+
+/* arrangement strip (a top lane above the chord header): play mode, section blocks, + */
+.mel-arr { display: flex; align-items: center; gap: 6px; height: 28px; box-sizing: border-box; max-width: 100%; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+.mel-arr-mode { flex: none; display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.mel-arr-m { border: 0; background: transparent; color: var(--muted); font: 11px system-ui, sans-serif; padding: 4px 8px; cursor: pointer; }
+.mel-arr-m.on { background: rgba(111, 163, 255, 0.25); color: #fff; }
+.mel-arr-blocks { flex: none; display: flex; gap: 4px; touch-action: pan-x; }
+.mel-arr-b {
+  --c: #6fa3ff; flex: none; display: flex; align-items: center; gap: 4px; height: 24px; max-width: 140px; padding: 0 9px;
+  border: 1px solid transparent; border-left: 4px solid var(--c); border-radius: 6px; cursor: pointer; user-select: none;
+  background: color-mix(in srgb, var(--c) 16%, #141824); color: #cfd5e6; font: 12px system-ui, sans-serif; white-space: nowrap;
+}
+.mel-arr-b .nm { overflow: hidden; text-overflow: ellipsis; }
+.mel-arr-b i { font-style: normal; font-size: 10px; color: var(--muted); }
+.mel-arr-b.cur { border-color: var(--c); color: #fff; background: color-mix(in srgb, var(--c) 32%, #141824); }
+.mel-arr-b.play { box-shadow: inset 0 -2px 0 #fff; }
+.mel-arr-b.drag { opacity: 0.5; }
+.mel-arr-b.drop { box-shadow: -3px 0 0 var(--accent); }
+.mel-arr-add { flex: none; width: 24px; height: 24px; border-radius: 6px; border: 1px dashed var(--line); background: transparent; color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1; }
+.mel-arr-add:hover, .mel-arr-b:hover { border-color: var(--accent); }
+/* section menu + chord-strip context menu */
+.mel-secmenu, .mel-cmenu { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 10px; min-width: 150px; }
+.mel-secmenu[hidden], .mel-cmenu[hidden] { display: none; }
+.mel-cm-item { text-align: left; background: transparent; border: 0; color: var(--text); padding: 5px 8px; border-radius: 6px; cursor: pointer; font: 13px system-ui, sans-serif; }
+.mel-cm-item:hover, .mel-cm-item:focus-visible { background: rgba(111, 163, 255, 0.2); }
+.mel-sm-name { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; color: var(--text); padding: 4px 6px; font: 13px system-ui, sans-serif; }
+.mel-sm-colors { display: flex; gap: 5px; flex-wrap: wrap; }
+.mel-sm-sw { width: 18px; height: 18px; border-radius: 50%; border: 2px solid transparent; padding: 0; cursor: pointer; }
+.mel-sm-sw.on { border-color: #fff; }
+.mel-sm-rep, .mel-sm-acts { gap: 6px; align-items: center; }
+.mel-sm-repn { min-width: 24px; text-align: center; }
+.mel-meter .vh-select { width: auto; }

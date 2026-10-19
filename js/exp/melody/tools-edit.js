@@ -11,8 +11,8 @@
 (function () {
   'use strict';
   const VH = window.VH, NS = VH.melody, md = NS.model;
-  const { LO, HI, LPB, SPB, clamp } = md;
-  const SPS = LPB / SPB;            // line samples per sixteenth (3)
+  const { LO, HI, clamp } = md;
+  const SPS = 3;                    // line samples per sixteenth
   const DEF_RATE = 5.5;
   let clip = null;                  // clipboard, kept across remounts
 
@@ -63,7 +63,7 @@
     factor: (cents, hz, t) => 2 ** (cents * Math.sin(2 * Math.PI * hz * t) / 1200),
     // Per-sample array (null | [cents, hz]) for stroke k (default 's1') of layer L.
     lineArray(S, L, k) {
-      const out = new Array(S.bars * LPB).fill(null), x = vstore(S, L, false);
+      const out = new Array(md.tot16(S) * 3).fill(null), x = vstore(S, L, false);
       if (x) for (const r of arr(x.s[k || 's1'])) for (let i = Math.max(0, r[0]); i < Math.min(out.length, r[1]); i++) out[i] = [r[2], r[3]];
       return out;
     },
@@ -138,12 +138,12 @@
     let alive = true;
     const touchy = (p) => p && p.e && p.e.pointerType === 'touch';
     const lay = () => M.song.layers[M.active];
-    const tot16 = () => M.song.bars * SPB;
+    const tot16 = () => md.tot16(M.song);
     const grid = () => (M.song.grid === 16 ? 1 : 2);
     const nh = () => V.noteH();
-    const lu = () => V.BW / LPB;
-    const LEN = () => M.song.bars * LPB;
-    const idxOf = (x) => clamp(Math.floor(x / V.BW * LPB), 0, LEN() - 1);
+    const lu = () => V.U() / SPS;
+    const LEN = () => tot16() * SPS;
+    const idxOf = (x) => clamp(Math.floor(x / lu()), 0, LEN() - 1);
     const commitE = (label) => { M.song.layers.forEach(md.pruneStrokes); prune(M.song); return M.commit(label); };
     const newStroke = (l) => (l.lines.length < md.MAX_STROKES ? md.addStroke(l, LEN()) : null);
 
@@ -252,7 +252,7 @@
       const raw = V.midiOf(p.y) - V.midiOf(d.y0);
       let dm;
       if (S.snap) {
-        const b = clamp(Math.floor((d.anchorT + dt) / SPB), 0, S.bars - 1);
+        const b = md.regionAt(S, clamp(d.anchorT + dt, 0, tot16() - 1e-6));
         dm = M.bands.snap(clamp(d.anchorM + raw, LO, HI), b) - d.anchorM;
       } else dm = Math.round(raw);
       dm = clamp(dm, LO - d.mlo, HI - d.mhi);
@@ -372,7 +372,7 @@
     function endM(p, i) {
       let m = p.midi;
       if (p.e && p.e.shiftKey) m = Math.round(m);
-      else if (M.song.snap) m = M.bands.snap(m, Math.floor(i / LPB));
+      else if (M.song.snap) m = M.bands.snap(m, md.regionAt(M.song, i / SPS));
       return clamp(m, LO, HI);
     }
     function applyLine() {
@@ -749,7 +749,7 @@
       const S = M.song;
       let notes = 0, pts = 0;
       S.layers.forEach((l, L) => {
-        const info = M.bandsAt(b * SPB + 0.5, L);
+        const info = M.bandsAt(S.chords[b].at + 0.01, L);
         if (!info.chord) return;
         const memo = new Map(), near = (m) => {
           const k = Math.round(m * 100);
@@ -757,14 +757,14 @@
           return memo.get(k);
         };
         l.notes.forEach((n) => {
-          if (Math.floor(n.s / SPB) !== b) return;
+          if (md.regionAt(S, n.s) !== b) return;
           const t = near(n.m);
           if (t == null || Math.abs(t - n.m) < 0.005) return;
           moveNote(S, L, n, Math.round(clamp(t, LO, HI) * 100) / 100); notes++;
         });
         for (const st of md.strokes(l)) {   // every stroke
           const line = st.v;
-          for (let i = b * LPB; i < Math.min(line.length, (b + 1) * LPB); i++) {
+          for (let i = S.chords[b].at * SPS; i < Math.min(line.length, md.regionEnd(S, b) * SPS); i++) {
             const m = line[i];
             if (isNaN(m)) continue;
             const t = near(m);
@@ -827,7 +827,7 @@
         // ---- notes, in time order (melodic direction from the previous note of the layer) ----
         const ord = l.notes.slice().sort((x, y) => x.s - y.s || x.m - y.m);
         ord.forEach((n, k) => {
-          if (Math.floor(n.s / SPB) !== b) return;
+          if (md.regionAt(S, n.s) !== b) return;
           const base = Math.round(n.m), off = n.m - base, micro = !snap && Math.abs(off) > 0.3;
           const prev = ord[k - 1], dir = prev && Math.abs(n.m - prev.m) >= 0.25 ? Math.sign(n.m - prev.m) : 0;
           const t = X.best(base, dir, prev ? prev.m - (micro ? off : 0) : null), nm = Math.round(clamp(t + (micro ? off : 0), LO, HI) * 1000) / 1000;
@@ -837,7 +837,7 @@
         });
         // ---- line: per stroke, plateaus move as units, glides are re-drawn ----
         for (const st of md.strokes(l)) {
-        const s = st.v, i0 = b * LPB, i1 = Math.min(s.length, (b + 1) * LPB), o = s.slice();
+        const s = st.v, i0 = S.chords[b].at * SPS, i1 = Math.min(s.length, md.regionEnd(S, b) * SPS), o = s.slice();
         let i = i0;
         while (i < i1) {
           if (isNaN(o[i])) { i++; continue; }
@@ -901,11 +901,11 @@
       if (!alive || !autofit || (cx.source !== 'chord' && cx.source !== 'generate')) return;
       const S = M.song, r = { notes: 0, pts: 0 };
       for (const b of new Set(cx.chords)) {
-        if (!(b >= 0 && b < S.bars) || !S.chords[b]) continue;
+        if (!(b >= 0 && b < S.chords.length) || !md.regionChord(S, b)) continue;
         const x = fitBar(b, NS.fitStats); r.notes += x.notes; r.pts += x.pts;
       }
       if (!r.notes && !r.pts) return;
-      cx.label = cx.source === 'generate' ? 'Generate + fit' : 'Chord + fit';
+      cx.label = cx.source === 'generate' ? 'Generate + fit' : cx.label === 'Chord' ? 'Chord + fit' : cx.label + ' + fit';
       cx.info = Object.assign({}, cx.info, { fit: r, fitMsg: fitMsg(r, cx.source === 'generate' ? 'the new chords' : 'the new chord') });
       if (cx.source === 'chord') M.toast(cx.info.fitMsg);
     });

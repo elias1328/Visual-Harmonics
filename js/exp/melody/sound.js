@@ -17,7 +17,7 @@
 (function () {
   'use strict';
   const VH = window.VH, NS = VH.melody, md = NS.model;
-  const { SPB, LPB, clamp, chordMidis } = md;
+  const { clamp, chordMidis } = md;
   const LA = 0.12, HUM_T = 0.015, HUM_V = 0.1, MAX_INS = 3, DRUM_LVL = md.GAIN.DRUMS, MAX_SPARKS = 20;
   const pct = (v) => Math.round(v * 100) + '%';
 
@@ -100,16 +100,41 @@
   const dlyOf = (S) => Object.assign({}, DLY_DEF, fxOf(S).dly);
   const fxW = (S) => { if (!S.fx || typeof S.fx !== 'object') S.fx = {}; return S.fx; };
   const extra = (S, k, d) => (fxOf(S)[k] != null ? fxOf(S)[k] : d);
+  // Drum steps follow the section's time signature: one step per sixteenth (len = md.spb), plus the 12-step grid that
+  // 4/4 always allowed. A pattern of another length (the meter changed) adapts: presets are rebuilt for the meter
+  // (presetPat), custom patterns are cut / padded.
+  const lenOk = (S, n) => n === md.spb(S) || (md.spb(S) === 16 && md.tsOf(S).d === 4 && n === 12);
+  function presetPat(id, ts) {
+    const p = DRUM_PRESETS.find((x) => x[0] === id);
+    if (!p || !p[2]) return null;
+    const T = md.TS[ts] || md.TS['4/4'], n = T.spb, kit = p[2].kit;
+    if (n === 16 && T.d === 4) return normPat(p[2]);
+    const h = { kick: {}, snare: {}, hat: {}, perc: {} }, row = (o) => Array.from({ length: n }, (_, j) => o[j] || '.').join('');
+    if (ts === '3/4') return normPat(DRUM_PRESETS.find((x) => x[0] === 'waltz')[2], 12, kit);   // waltz
+    if (T.compound) {   // 6/8, 12/8: kick on the first dotted quarter of each pair, snare on the other, hat on the eighths
+      T.beats.forEach((b, k) => { (k % 2 ? h.snare : h.kick)[b] = 'x'; });
+      for (let j = 0; j < n; j += 2) h.hat[j] = j % 6 ? 'o' : 'x';
+    } else {   // 2/4, 5/4, 7/8: kick on the first beat (and every other one), snare between, hat on the eighths
+      T.beats.forEach((b, k) => { (k % 2 ? h.snare : h.kick)[b] = 'x'; });
+      for (let j = 0; j < n; j += 2) h.hat[j] = 'x';
+    }
+    if (kit === 'brush') Object.keys(h.hat).forEach((j) => { h.hat[j] = 'o'; });
+    return { len: n, kit, kick: row(h.kick), snare: row(h.snare), hat: row(h.hat), perc: row(h.perc) };
+  }
   function drumsOf(S) {
     const d = S.drums && typeof S.drums === 'object' ? S.drums : {};
-    const pat = normPat(d.pat || DEF_PAT);
+    let pat = normPat(d.pat || DEF_PAT);
+    const want = presetPat(d.preset, S.ts);   // a preset is rebuilt for the meter; a custom pattern is cut / padded
+    const ts = S.ts || '4/4', was = typeof d.ts === 'string' ? d.ts : '4/4';   // d.ts: the meter the pattern was made for
+    if (want && (pat.len !== want.len || was !== ts)) pat = want; else if (!lenOk(S, pat.len)) pat = normPat(pat, md.spb(S));
     const bars = {};
     if (d.bars && typeof d.bars === 'object') for (const k of Object.keys(d.bars)) if (d.bars[k]) bars[k] = normPat(d.bars[k], pat.len);
-    return { on: !!d.on, preset: typeof d.preset === 'string' ? d.preset : 'off', vol: typeof d.vol === 'number' ? clamp(d.vol, 0, md.VOL_MAX) : 0.7,
+    return { on: !!d.on, ts: S.ts || '4/4', preset: typeof d.preset === 'string' ? d.preset : 'off', vol: typeof d.vol === 'number' ? clamp(d.vol, 0, md.VOL_MAX) : 0.7,
       vary: !!d.vary, kit: d.kit === 'brush' ? 'brush' : 'std', pat, bars };
   }
-  function normPat(p, len) {
-    const n = len || (p.len === 12 ? 12 : 16), o = { len: n };
+  function normPat(p, len, kit) {
+    const n = len || (p.len > 0 && p.len <= 24 ? p.len | 0 : 16), o = { len: n };
+    if (kit) o.kit = kit;
     ROWS.forEach(([k]) => { o[k] = fit(p[k], n); });
     return o;
   }
@@ -329,7 +354,7 @@
   function drumEvents(S, bar) {
     const d = drumsOf(S);
     if (!d.on) return [];
-    const p = patFor(d, bar), out = [], step = SPB / p.len;
+    const p = patFor(d, bar), out = [], step = md.spb(S) / p.len;
     ROWS.forEach(([k]) => {
       for (let j = 0; j < p.len; j++) {
         const ch = p[k][j];
@@ -362,40 +387,75 @@
   // Events of one bar: p = sixteenth in the bar, m = midi, dur / dt (offset) in seconds, g = gain.
   // opts = the style's sub-settings (styleOptsOf), bar = bar index (alternating strums, seeded random arps).
   // Style 'drone' is included for offline rendering (live, the engine's own drone plays it).
-  function backingEvents(style, midis, sec16, opts, bar) {
+  // geo = { ts, a, len }: the chord region inside the bar (a = its start in the bar, in sixteenths; default the whole
+  // 4/4 bar). The bar's pattern follows the meter (pulse / broken on its beats: 6/8 pulses in dotted quarters, arpeggios
+  // on the bar grid) and is windowed to the region; a region starting between onsets re-strikes what sounds there.
+  function backingEvents(style, midis, sec16, opts, bar, geo) {
     if (!midis || !midis.length) return [];
-    const o = Object.assign({}, STYLE_DEF[style], opts), bar16 = SPB * sec16, ms = midis.slice().sort((a, b) => a - b), out = [];
-    const note = (p, m, dur, g, dt) => out.push({ p, m, dur, g, dt: dt || 0 });
+    const T = md.TS[geo && geo.ts] || md.TS['4/4'], SPB = T.spb, a = geo && geo.a ? geo.a : 0, z = geo && geo.len != null ? a + geo.len : SPB;
+    const o = Object.assign({}, STYLE_DEF[style], opts), reg16 = (z - a) * sec16, ms = midis.slice().sort((x, y) => x - y), all = [];
+    const note = (p, m, dur, g, dt) => all.push({ p, m, dur, g, dt: dt || 0 });
+    const B = T.beats, beatEnd = (k) => (k + 1 < B.length ? B[k + 1] : SPB);
     if (style === 'strum') {
       const sp = clamp(+o.speed || 40, 10, 80) / 1000, up = o.dir === 'up' || (o.dir === 'alt' && (bar | 0) % 2 === 1);
-      (up ? ms.slice().reverse() : ms).forEach((m, k) => note(0, m, bar16 - k * sp, 0.25, k * sp));
-    } else if (style === 'arp') {
+      (up ? ms.slice().reverse() : ms).forEach((m, k) => note(a, m, reg16 - k * sp, 0.25, k * sp));
+      return all;
+    }
+    if (style !== 'arp' && style !== 'pulse' && style !== 'broken') { ms.forEach((m) => note(a, m, reg16, 0.25)); return all; }
+    if (style === 'arp') {
       const step = STEP16[o.rate] || 2, n = Math.round(SPB / step), seq = arpSeq(ms, o, n, bar), gate = clamp(+o.gate || 0.95, 0.25, 1);
       for (let i = 0; i < n; i++) note(i * step, seq[i], step * sec16 * gate, 0.28);
     } else if (style === 'pulse') {
-      const step = STEP16[o.rate] || 4, n = Math.round(SPB / step), gate = clamp(+o.gate || 0.85, 0.25, 1);
-      for (let i = 0; i < n; i++) ms.forEach((m) => note(i * step, m, step * sec16 * gate, 0.2));
-    } else if (style === 'broken') {
-      if (o.pattern === 'bcc') {   // three even beats per bar (like the Waltz drum preset): bass, chord, chord
-        const b3 = SPB / 3;
-        note(0, ms[0] - 12, b3 * sec16 * 0.95, 0.32);
-        [b3, 2 * b3].forEach((p) => ms.forEach((m) => note(p, m, b3 * sec16 * 0.85, 0.2)));
-      } else if (o.pattern === 'alberti') {   // low, high, middle, high in eighths
-        const seq = [ms[0], ms[ms.length - 1], ms[Math.min(1, ms.length - 1)], ms[ms.length - 1]];
-        for (let i = 0; i < 8; i++) note(i * 2, seq[i % 4], 2 * sec16 * 0.95, 0.24);
-      } else {
-        [0, 8].forEach((p) => note(p, ms[0] - 12, 4 * sec16 * 0.95, 0.32));
-        [4, 12].forEach((p) => ms.forEach((m) => note(p, m, 3.4 * sec16, 0.2)));
-      }
-    } else ms.forEach((m) => note(0, m, bar16, 0.25));
-    return out;
+      const gate = clamp(+o.gate || 0.85, 0.25, 1);
+      let on;
+      if (o.rate === '1/8') on = Array.from({ length: Math.ceil(SPB / 2) }, (_, i) => i * 2);
+      else if (o.rate === '1/2') on = B.filter((_, k) => k % 2 === 0);
+      else on = B.slice();   // the beat: quarters, dotted quarters in 6/8 + 12/8, 2+2+3 in 7/8
+      on.forEach((p, k) => { const len = (k + 1 < on.length ? on[k + 1] : SPB) - p; ms.forEach((m) => note(p, m, len * sec16 * gate, 0.2)); });
+    } else if (o.pattern === 'alberti') {   // low, high, middle, high in eighths
+      const seq = [ms[0], ms[ms.length - 1], ms[Math.min(1, ms.length - 1)], ms[ms.length - 1]];
+      for (let i = 0; i * 2 < SPB; i++) note(i * 2, seq[i % 4], 2 * sec16 * 0.95, 0.24);
+    } else if (o.pattern === 'bcc' && SPB === 16 && T.d === 4) {   // 4/4: three even beats per bar (like the Waltz drums)
+      const b3 = SPB / 3;
+      note(0, ms[0] - 12, b3 * sec16 * 0.95, 0.32);
+      [b3, 2 * b3].forEach((p) => ms.forEach((m) => note(p, m, b3 * sec16 * 0.85, 0.2)));
+    } else if (o.pattern === 'bcc') {   // bass on the first beat, the chord on the others (a waltz in 3/4)
+      B.forEach((p, k) => { const L = beatEnd(k) - p; if (!k) note(p, ms[0] - 12, L * sec16 * 0.95, 0.32); else ms.forEach((m) => note(p, m, L * sec16 * 0.85, 0.2)); });
+    } else {   // bass-chord: bass on beats 1, 3, ..., the chord between
+      B.forEach((p, k) => { const L = beatEnd(k) - p; if (k % 2 === 0) note(p, ms[0] - 12, L * sec16 * 0.95, 0.32); else ms.forEach((m) => note(p, m, L * sec16 * 0.85, 0.2)); });
+    }
+    if (a === 0 && z === SPB) return all;
+    // window to the region: a chord change between onsets re-strikes the pattern's sounding group at the change
+    const inR = all.filter((e) => e.p >= a - 1e-9 && e.p < z - 1e-9);
+    if (!inR.some((e) => Math.abs(e.p - a) < 1e-9)) {
+      const prev = all.filter((e) => e.p < a).map((e) => e.p), q = prev.length ? Math.max(...prev) : null;
+      const nx = inR.length ? inR[0].p : z;
+      all.filter((e) => e.p === q).forEach((e) => inR.push({ p: a, m: e.m, dur: Math.min(e.dur, (nx - a) * sec16), g: e.g, dt: 0 }));
+    }
+    inR.forEach((e) => { e.dur = Math.max(0.03, Math.min(e.dur, (z - e.p) * sec16)); });
+    return inR.sort((x, y) => x.p - y.p);
   }
-  // The backing events of song bar b with the song's style + sub-settings (null without a chord). Used by the MIDI export.
+  // The bar holding t16 in song S (section or flat): { a, n, b, ts, drums? }.
+  function barOf(S, t16) {
+    const bl = md.barsOf(S);
+    let k = 0;
+    while (k + 1 < bl.length && bl[k + 1].a <= t16 + 1e-9) k++;
+    return bl[k];
+  }
+  // Backing events of chord region r (null without a chord): p relative to the region start. Used by the MIDI export.
+  function regionEvents(S, r) {
+    const e = S.chords[r];
+    if (!e || !e.chord) return null;
+    const st = styleOf(S), bl = barOf(S, e.at), a = e.at - bl.a;
+    return backingEvents(st, chordMidis(e.chord), md.secPer16(S), styleOptsOf(S, st), bl.b, { ts: bl.ts, a, len: md.regionEnd(S, r) - e.at })
+      .map((x) => Object.assign(x, { p: x.p - a }));
+  }
+  // The backing events of song bar b (its first chord over the whole bar; older callers).
   function barEvents(S, b) {
-    const ch = S.chords[b];
+    const ch = md.chordAt(S, b * md.spb(S));
     if (!ch) return null;
     const st = styleOf(S);
-    return backingEvents(st, chordMidis(ch), md.secPer16(S), styleOptsOf(S, st), b);
+    return backingEvents(st, chordMidis(ch), md.secPer16(S), styleOptsOf(S, st), b, { ts: S.ts });
   }
   // ±15 ms (true early/late: the engine and the scheduler both look ahead) and ±10 % velocity.
   function humanize(on) {
@@ -404,22 +464,29 @@
   }
 
   // Offline rendering (B3's export + tests): builds the FX graph in context c into `dest` and schedules drums + backing
-  // (every style, including the held drone) for o.bars bars from time o.t0. Returns inputs for the layer voices.
+  // (every style, including the held drone) for o.loops passes (or o.bars bars) of the song from time o.t0. The song may
+  // be a section or a flattened arrangement (md.flatten: every bar has its own meter + drum pattern). Returns inputs
+  // for the layer voices.
   function offline(c, song, dest, o) {
     o = o || {};
-    const S = song, g = FxGraph(c, dest), sec = md.secPer16(S), t0 = o.t0 || 0, nb = o.bars || S.bars;
+    const S = song, g = FxGraph(c, dest), sec = md.secPer16(S), t0 = o.t0 || 0, BL = md.barsOf(S), tot = md.tot16(S);
+    const loops = o.loops > 0 ? o.loops | 0 : o.bars ? Math.max(1, Math.round(o.bars / BL.length)) : 1;
     const srcs = { backing: c.createGain() }, layerIns = S.layers.map((_, i) => { const n = c.createGain(); n.gain.value = md.layerGain(S, i); srcs['L' + i] = n; return n; });
     srcs.backing.gain.value = S.backing.on ? S.backing.vol : 0;
     g.update(S, srcs);
     const snd = o.backingSound || VH.sounds.get(S.backing.sound) || VH.sounds.get('string'), hum = !!(o.humanize != null ? o.humanize : extra(S, 'humanize', false));
     const log = [];
     VH.audio.withContext(c, () => {
-      for (let b = 0; b < nb; b++) {
-        const sb = b % S.bars, base = t0 + b * SPB * sec;
-        if (o.drums !== false) for (const e of drumEvents(S, sb)) { const h = humanize(hum); const t = base + e.p * sec + h.dt; drumHit(c, g.drumBus, e.drum, t, e.vel * h.v, e.kit); log.push(['d', e.drum, t]); }
-        const ch = S.chords[sb];
-        if (o.backing !== false && ch && S.backing.on) {
-          for (const e of backingEvents(styleOf(S), chordMidis(ch), sec, styleOptsOf(S, styleOf(S)), sb)) {
+      for (let r = 0; r < loops; r++) {
+        const off = t0 + r * tot * sec;
+        if (o.drums !== false) for (const bl of BL) {
+          const ds = { drums: bl.drums || S.drums, ts: bl.ts, bars: 1 }, base = off + bl.a * sec;
+          for (const e of drumEvents(ds, bl.b)) { const h = humanize(hum); const t = base + e.p * sec + h.dt; drumHit(c, g.drumBus, e.drum, t, e.vel * h.v, e.kit); log.push(['d', e.drum, t]); }
+        }
+        if (o.backing !== false && S.backing.on) for (const R of md.regions(S)) {
+          if (!R.chord) continue;
+          const bl = barOf(S, R.a), base = off + bl.a * sec;
+          for (const e of backingEvents(styleOf(S), chordMidis(R.chord), sec, styleOptsOf(S, styleOf(S)), bl.b, { ts: bl.ts, a: R.a - bl.a, len: R.z - R.a })) {
             const h = humanize(hum), t = base + e.p * sec + e.dt + h.dt;
             VH.audio.trigger(snd, VH.audio.midiToHz(e.m), e.dur, { gain: e.g * h.v, dest: srcs.backing, when: t });
             log.push(['n', e.m, t]);
@@ -434,7 +501,7 @@
   NS.sound = {
     FX_PRESETS, DRUM_PRESETS, STYLES, SYNC, PARAMS,
     STYLE_DEF, STYLE_CHOICES, styleOptsOf,
-    octaveUp, shimmer, buildChain, makeFx, FxGraph, drumHit, drumEvents, backingEvents, barEvents, offline, drumsOf, recOf,
+    octaveUp, shimmer, buildChain, makeFx, FxGraph, drumHit, drumEvents, backingEvents, barEvents, regionEvents, presetPat, offline, drumsOf, recOf,
     get graphsAlive() { return graphsAlive; },
     get debug() { return current; },
   };
@@ -542,14 +609,14 @@
     // ----- backing styles -----
     let backNotes = [], restrike = false;
     const backImpl = {
-      onBar(b) {   // events are scheduled ahead by the scheduler; after a stop mid-bar, re-strike a held strum
+      onBar(b, midis, info) {   // per chord region; events are scheduled ahead by the scheduler. After a stop mid-region, re-strike a held strum
         if (!restrike) return;
         restrike = false;
-        const S = M.song, c = VH.audio.ctx;
-        if (!c || styleOf(S) !== 'strum' || !S.backing.on || !S.chords[b] || sched.anchor == null) return;
-        const sec = md.secPer16(S), p = E.pos16, left = ((Math.floor(p / SPB) + 1) * SPB - p) * sec;
+        const S = M.song, c = VH.audio.ctx, r = info && info.region != null ? info.region : md.regionAt(S, E.pos16), ch = md.regionChord(S, r);
+        if (!c || styleOf(S) !== 'strum' || !S.backing.on || !ch || sched.anchor == null) return;
+        const sec = md.secPer16(S), p = E.pos16, left = (md.regionEnd(S, r) - p) * sec;
         if (left < 0.15) return;
-        for (const e of backingEvents('strum', chordMidis(S.chords[b]), sec, styleOptsOf(S, 'strum'), b)) playNote(Object.assign({}, e, { dur: left - e.dt }), c.currentTime + 0.01 + e.dt);
+        for (const e of backingEvents('strum', chordMidis(ch), sec, styleOptsOf(S, 'strum'), b, { ts: S.ts })) playNote(Object.assign({}, e, { dur: left - e.dt }), c.currentTime + 0.01 + e.dt);
       },
       stop(rel) { backNotes.forEach((x) => x.v.stop(rel)); backNotes = []; restrike = true; },
     };
@@ -580,7 +647,7 @@
       backNotes = backNotes.filter((x) => { if (x.t0 > now + 0.002) { try { x.v.stop(0.01); } catch (_) { /* ignore */ } return false; } return true; });
     }
     function scheduleRange(a, b) {
-      const S = M.song, c = VH.audio.ctx, sec = sched.sec, hum = !!extra(S, 'humanize', false), d = drumsOf(S), st = styleOf(S);
+      const S = M.song, c = VH.audio.ctx, sec = sched.sec, hum = !!extra(S, 'humanize', false), d = drumsOf(S), st = styleOf(S), SPB = md.spb(S);
       for (const g of E.segments(a, b)) {
         const s0 = g.s, s1 = g.s + g.n;
         for (let bar = Math.floor(s0 / SPB); bar * SPB < s1 && bar < S.bars; bar++) {
@@ -588,17 +655,18 @@
           if (d.on && graph) {
             for (const e of drumEvents(S, bar)) {
               const p = base + e.p;
-              if (p < s0 || p >= s1) continue;
+              if (p < s0 - 1e-6 || p >= s1 - 1e-6) continue;   // (float-safe at segment edges)
               const cp = g.c + (p - s0), h = humanize(hum), t = sched.anchor + cp * sec + h.dt;
               hits.push(drumHit(c, graph.drumBus, e.drum, t, e.vel * h.v, e.kit));
               if (dbg.sched.length < 400) dbg.sched.push(['d', e.drum, cp, t, sched.anchor + cp * sec]);
               if (hum && dbg.hum.length < 400) dbg.hum.push([h.dt, h.v]);
             }
           }
-          if (st !== 'drone' && S.backing.on && S.chords[bar]) {
-            for (const e of backingEvents(st, chordMidis(S.chords[bar]), sec, styleOptsOf(S, st), bar)) {
+          if (st !== 'drone' && S.backing.on) for (const R of md.regions(S)) {
+            if (!R.chord || R.a < base || R.a >= base + SPB) continue;
+            for (const e of backingEvents(st, chordMidis(R.chord), sec, styleOptsOf(S, st), bar, { ts: S.ts, a: R.a - base, len: R.z - R.a })) {
               const p = base + e.p;
-              if (p < s0 || p >= s1) continue;
+              if (p < s0 - 1e-6 || p >= s1 - 1e-6) continue;   // (float-safe at segment edges)
               const cp = g.c + (p - s0), h = humanize(hum), t = sched.anchor + cp * sec + e.dt + h.dt;
               playNote(Object.assign({ hv: h.v }, e), t);
               if (dbg.sched.length < 400) dbg.sched.push(['n', e.m, cp, t, sched.anchor + cp * sec + e.dt]);
@@ -662,7 +730,7 @@
     const lastSpark = [];
     const peakCache = new Map();
     function peaksOf(t16, L) {
-      const key = Math.floor(t16 / SPB) + '|' + L;
+      const key = md.regionAt(M.song, t16) + '|' + L;
       let pk = peakCache.get(key);
       if (!pk) { pk = M.bandsAt(t16, L).peaks(); peakCache.set(key, pk); }
       return pk;
@@ -923,10 +991,12 @@
       if (!p) return;
       d.preset = id;
       if (!p[2]) d.on = false;
-      else { d.on = true; d.kit = p[2].kit; d.pat = normPat(p[2]); d.bars = {}; }
+      else { const q = presetPat(id, S.ts); d.on = true; d.kit = q.kit || p[2].kit; d.pat = q; d.bars = {}; }
       M.commit('Drums: ' + p[1]);
       route();
     }
+    // A new time signature (M.setTimeSig, before its commit): store the drum pattern adapted to the meter (same undo step).
+    M.on('timeSig', () => { const S = M.song; if (S.drums && S.drums.pat) drumsW(S); });
     powBtn.addEventListener('click', () => {
       const S = M.song, d = drumsW(S);
       d.on = !d.on;
@@ -1001,15 +1071,16 @@
       if (d.preset === 'custom') opts.push({ value: 'custom', label: 'Custom' });
       presetSel.setOptions(opts, d.on ? d.preset : 'off');
       varyBtn.setAttribute('aria-pressed', String(d.vary));
-      if (shape !== S.bars + 'x' + n) {   // one column per step of every bar; row-major so arrow keys can index
-        shape = S.bars + 'x' + n;
+      const beatSet = new Set(md.tsOf(S).beats);
+      if (shape !== S.bars + 'x' + n + (S.ts || '')) {   // one column per step of every bar; row-major so arrow keys can index
+        shape = S.bars + 'x' + n + (S.ts || '');
         track.innerHTML = ''; cells = []; cols = Array.from({ length: nc }, () => []);
         track.style.gridTemplateColumns = 'repeat(' + nc + ', minmax(0, 1fr))';
         track.dataset.len = n;
         ROWS.forEach(([k]) => {
           for (let c = 0; c < nc; c++) {
             const bar = Math.floor(c / n), j = c % n;
-            const b = ui.h('button', 'mel-dr-st' + (j === 0 ? ' bar' : (j * 4) % n === 0 ? ' beat' : ''));
+            const b = ui.h('button', 'mel-dr-st' + (j === 0 ? ' bar' : beatSet.has(j * md.spb(S) / n) ? ' beat' : ''));
             b.type = 'button'; b.dataset.r = k; b.dataset.j = j; b.dataset.b = bar; b.tabIndex = -1;
             track.append(b); cells.push(b); cols[c].push(b);
           }
@@ -1036,6 +1107,7 @@
       const S = M.song, d = drumsOf(S);
       if (!d.on) { setNow(-1); return; }
       const n = d.pat.len;
+      const SPB = md.spb(S);
       setNow(t.bar * n + Math.floor((t.pos16 % SPB) / (SPB / n)));
       if (paged && t.bar !== page) setPage(t.bar);
       current.nowCol = nowCol;

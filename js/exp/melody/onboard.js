@@ -10,7 +10,8 @@
 (function () {
   'use strict';
   const VH = window.VH, NS = VH.melody, md = NS.model;
-  const { LO, HI, LPB, SPB, clamp } = md;
+  const { LO, HI, clamp } = md;
+  const SPB = 16, LPB = 48;   // the demo and its ghost path are 4/4 (the ghost hides in other meters / split bars)
   const DONE_KEY = 'melody.tutorial';
 
   // Melody keyframes [sixteenth, midi] for bars 1-2 (over C and Am) and the ghost's target contour for bars 3-4 (F, G).
@@ -40,9 +41,9 @@
     // Bars 1-2: hold each keyframe on the nearest bright band (snap), with a short glide into the next one.
     function fillMelody(S) {
       const A = 0, l0 = S.layers[0];
-      l0.lines = [{ id: 's1', v: new Float32Array(S.bars * LPB).fill(NaN) }];
+      l0.lines = [{ id: 's1', v: new Float32Array(md.tot16(S) * 3).fill(NaN) }];
       const line = l0.lines[0].v;
-      const snapAt = (t16, m) => M.bands.snap(m, Math.floor(t16 / SPB), A);
+      const snapAt = (t16, m) => M.bands.snap(m, md.regionAt(M.song, t16), A);
       const keys = MELODY.map(([t, m]) => [t, snapAt(t, m)]);
       const GL = 3;   // glide samples
       for (let k = 0; k < keys.length; k++) {
@@ -73,7 +74,7 @@
     // [{ t16, d, m }] or null when hidden (no demo flag, fewer than 4 bars, or something drawn in bars 3-4).
     function ghost() {
       const S = M.song;
-      if (!(S.ext && S.ext.demo && S.ext.demo.ghost) || S.bars < 4 || drawnIn(S, GHOST_BARS)) return null;
+      if (!(S.ext && S.ext.demo && S.ext.demo.ghost) || S.bars < 4 || md.spb(S) !== 16 || S.chords.length !== S.bars || drawnIn(S, GHOST_BARS)) return null;
       const cols = GHOST_BARS.map((b) => M.bands.column(b, M.active));
       if (ghostMemo && ghostMemo.cols.every((c, k) => c === cols[k])) return ghostMemo.pts;
       const pts = GHOST.map(([t, want], k) => {

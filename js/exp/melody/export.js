@@ -11,14 +11,27 @@
     7: [0, 4, 7, 10], maj7: [0, 4, 7, 11], m7: [0, 3, 7, 10] };
   const chordMidisLocal = (ch) => (QI[ch[1]] || QI.maj).map((i) => 48 + ch[0] + i);
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  // Time signatures (see model.js TS): sixteenths per bar, and the MIDI meta (numerator, log2 denominator, clocks/click).
+  const TSI = { '2/4': [8, 2, 2, 24], '3/4': [12, 3, 2, 24], '4/4': [16, 4, 2, 24], '5/4': [20, 5, 2, 24], '6/8': [12, 6, 3, 36], '7/8': [14, 7, 3, 12], '12/8': [24, 12, 3, 36] };
+  const spbOf = (S) => (TSI[S && S.ts] || TSI['4/4'])[0];
+  const totOf = (S) => (S.flat ? S.flat.tot : S.bars * spbOf(S));
+  // Chord regions of a song: [{ at, z, chord }]. Accepts chord events ({ at, chord }) and the older one-per-bar arrays.
+  function chordRegions(S) {
+    const c = Array.isArray(S.chords) ? S.chords : [], tot = totOf(S), n = spbOf(S);
+    if (c.some((e) => e && !Array.isArray(e) && typeof e === 'object' && 'at' in e)) {
+      const ev = c.filter((e) => e && typeof e === 'object').slice().sort((x, y) => x.at - y.at);
+      return ev.map((e, i) => ({ at: e.at, z: i + 1 < ev.length ? ev[i + 1].at : tot, chord: e.chord || null }));
+    }
+    return c.map((ch, b) => ({ at: b * n, z: (b + 1) * n, chord: Array.isArray(ch) ? ch : null }));
+  }
 
   // Bars [a, b) of a (runtime) song as a song of its own, for "Export loop region only": chords, lines, notes starting
   // in the range, per-bar drum patterns and vibrato (song.ext.edit.vib) shifted to start at bar 0.
   function sliceSong(S, a, b) {
-    const n = b - a, o = Object.assign({}, S), l0 = a * LPB, l1 = b * LPB, s0 = a * SPB, s1 = b * SPB;
+    const N = spbOf(S), n = b - a, o = Object.assign({}, S), l0 = a * N * 3, l1 = b * N * 3, s0 = a * N, s1 = b * N;
     const copy = (x) => (x && typeof x === 'object' ? JSON.parse(JSON.stringify(x)) : {});
-    o.bars = n; o.loopRegion = null;
-    o.chords = S.chords.slice(a, b).map((c) => (c ? c.slice() : null));
+    o.bars = n; o.loopRegion = null; delete o.flat;
+    o.chords = chordRegions(S).filter((e) => e.at >= s0 && e.at < s1).map((e) => ({ at: e.at - s0, chord: e.chord ? e.chord.slice() : null }));
     o.layers = S.layers.map((l) => Object.assign({}, l, {
       lines: strokesOf(l).map((st) => ({ id: st.id, v: st.v.slice(l0, l1) })).filter((st) => st.v.some((v) => !isNaN(v))),
       notes: l.notes.filter((x) => x.s >= s0 && x.s < s1).map((x) => ({ s: x.s - s0, d: Math.min(x.d, s1 - x.s), m: x.m })),
@@ -270,7 +283,7 @@
   // layer / backing / drums). A layer whose line strokes overlap gets one channel per simultaneous voice (channel 10 is
   // skipped), each with its own pitch bends; in Separate mode those channels share the layer's track.
   function songToMidi(song, opts) {
-    const o = opts || {}, loops = Math.max(1, o.loops | 0 || 1), bars = song.bars, tot = bars * SPB;
+    const o = opts || {}, loops = Math.max(1, o.loops | 0 || 1), bars = song.bars, tot = totOf(song);
     const secPer16 = 15 / song.bpm, cm = o.chordMidis || chordMidisLocal;
     const soundOf = o.soundOf || ((i) => ({ id: song.layers[i].sound, name: song.layers[i].sound }));
     const chosen = (o.layers || song.layers.map((_, i) => i)).filter((i) => song.layers[i]);
@@ -299,13 +312,16 @@
       });
       if (hasNotes && !(hasLine && chN === chs[0])) parts.push({ name: label + (hasLine ? ' (notes)' : ''), ch: chN, program: prog, vol, track: i, events: evN });
     }
-    if (o.backing && song.chords && song.chords.some(Boolean)) {
+    const regs = chordRegions(song);
+    if (o.backing && regs.some((e) => e.chord)) {
       const ch = takeCh(8), ev = [], snd = o.backingSound || { id: song.backing && song.backing.sound };
       for (let r = 0; r < loops; r++) {
-        song.chords.forEach((c, b) => {
+        regs.forEach((R, b) => {
+          const c = R.chord;
           if (!c) return;
-          const t0 = (r * tot + b * SPB) * T16, t1 = t0 + SPB * T16;
-          // the backing style + its sub-settings (B2's events: p = sixteenth in the bar, dt / dur in seconds, g = gain)
+          const t0 = (r * tot + R.at) * T16, t1 = (r * tot + R.z) * T16;
+          // the backing style + its sub-settings (B2's events per chord region: p = sixteenth from the region start,
+          // dt / dur in seconds, g = gain)
           const bev = o.backingEvents ? o.backingEvents(b, c) : null;
           if (bev && bev.length) {
             const tk = T16 / secPer16;
@@ -334,8 +350,16 @@
     }
     const usPerQ = Math.round(60e6 / song.bpm);
     const conductor = [{ t: 0, o: O.setup, b: meta(0x03, txt(o.title || 'Visual Harmonics')) },
-      { t: 0, o: O.setup, b: meta(0x51, [(usPerQ >> 16) & 255, (usPerQ >> 8) & 255, usPerQ & 255]) },
-      { t: 0, o: O.setup, b: meta(0x58, [4, 2, 24, 8]) }];
+      { t: 0, o: O.setup, b: meta(0x51, [(usPerQ >> 16) & 255, (usPerQ >> 8) & 255, usPerQ & 255]) }];
+    // time signature(s): one at the start, and one at every change (sections in other meters)
+    const tsl = song.flat && song.flat.ts && song.flat.ts.length ? song.flat.ts : [{ at: 0, ts: song.ts || '4/4' }];
+    let lastTs = '';
+    for (let r = 0; r < loops; r++) for (const x of tsl) {
+      if (x.ts === lastTs) continue;
+      lastTs = x.ts;
+      const q = TSI[x.ts] || TSI['4/4'], t = (r * tot + x.at) * T16;
+      conductor.push({ t, o: O.setup, b: meta(0x58, [q[1], q[2], q[3], 8]) });
+    }
     const endT = loops * tot * T16;
     const tail = (ch) => [bendEv(endT, ch, 8192)];
     let tracks;
@@ -382,7 +406,7 @@
     return new Uint8Array(buf);
   }
 
-  const X = { songToMidi, sliceSong, encodeWav, drumHits, drumNote, gmProgram, vibReader, strokesOf, lineVoices, vlq, PPQ, T16, TBEND, TLINE };
+  const X = { songToMidi, sliceSong, chordRegions, encodeWav, drumHits, drumNote, gmProgram, vibReader, strokesOf, lineVoices, vlq, PPQ, T16, TBEND, TLINE, TSI };
   if (typeof module !== 'undefined' && module.exports) module.exports = X;
   const VH = root && root.VH;
   if (!VH || !VH.melody || !root.document) return;
@@ -488,9 +512,14 @@
     const ui = VH.ui, md = M.model, H = VH.harmony, NS = VH.melody;
     injectCss();
     let alive = true, dlg = null, busy = false;
-    const st = { fmt: 'midi', midiMode: 'mixed', scope: 'song', loops: 1, pick: null, backing: true, drums: true, region: false, normalize: true };
-    // The song to export: the whole song, or (with "Export loop region only" checked and a region set) just its bars.
-    const songOf = () => { const r = md.regionOf(M.song); return st.region && r ? sliceSong(M.song, r[0], r[1]) : M.song; };
+    const st = { fmt: 'midi', midiMode: 'mixed', scope: 'song', loops: 1, pick: null, backing: true, drums: true, region: false, section: false, normalize: true };
+    // The song to export: the whole arrangement (every section and repeat, md.flatten), one pass of the current section
+    // ("Current section only"), or that section's loop region ("Export loop region only").
+    const songOf = () => {
+      const S = M.song, r = md.regionOf(S);
+      if (st.region && r) return sliceSong(S, r[0], r[1]);
+      return md.flatten(S, st.section ? { only: S.cur } : {});
+    };
 
     // ---------- Settings section ----------
     const sec = M.ui.addPanelSection('Export', 70, { group: 'export' });
@@ -506,7 +535,7 @@
       const S = songOf(), B = NS.sound;
       if (B && typeof B.drumEvents === 'function') {
         const out = [];
-        for (let b = 0; b < S.bars; b++) for (const e of B.drumEvents(S, b)) out.push({ t16: b * SPB + e.p, note: GMD[e.drum] || drumNote(e.drum) || 37, vel: clamp(Math.round(e.vel * 110), 1, 127) });
+        for (const bl of md.barsOf(S)) for (const e of B.drumEvents({ drums: bl.drums || S.drums, ts: bl.ts, bars: 1 }, bl.b)) out.push({ t16: bl.a + e.p, note: GMD[e.drum] || drumNote(e.drum) || 37, vel: clamp(Math.round(e.vel * 110), 1, 127) });
         return out;
       }
       return drumHits(S.drums, S.bars);
@@ -554,11 +583,15 @@
       if (!audio) seg(dlg, 'Tracks', [['mixed', 'Mixed'], ['separate', 'Separate']], st.midiMode, (v) => { st.midiMode = v; }).classList.add('mx-mode');
       else seg(dlg, 'Render', [['song', 'Whole song'], ['pick', 'Chosen parts']], st.scope, (v) => { st.scope = v; }).classList.add('mx-scope');
       seg(dlg, 'Loops', [[1, '1×'], [2, '2×']], st.loops, (v) => { st.loops = v; }).classList.add('mx-loops');
+      if (S.sections.length > 1) {
+        const sr = ui.h('div', 'mx-row'); dlg.append(sr);
+        check(sr, 'Current section only (' + S.sections[S.cur].name + ')', st.section, true, '', (v) => { st.section = v; if (v) st.region = false; render(); }, 'mx-section');
+      }
       const reg = md.regionOf(S);
       if (reg) {
         const rr = ui.h('div', 'mx-row'); dlg.append(rr);
         check(rr, 'Export loop region only (bar' + (reg[1] - reg[0] > 1 ? 's ' + (reg[0] + 1) + '–' + reg[1] : ' ' + (reg[0] + 1)) + ')', st.region, true, '',
-          (v) => { st.region = v; }, 'mx-region');
+          (v) => { st.region = v; if (v) st.section = false; render(); }, 'mx-region');
       }
       if (audio) {
         const nr = ui.h('div', 'mx-row'); dlg.append(nr);
@@ -600,7 +633,7 @@
           const src = songOf();
           const bytes = songToMidi(src, { mode: st.midiMode, layers: sel.layers, backing: sel.backing, drums: sel.drums, loops: st.loops,
             soundOf: (i) => M.soundOf(i), backingSound: M.backingSound(), chordMidis: md.chordMidis, drumHits: sel.drums ? drumList() : null,
-            backingEvents: NS.sound && NS.sound.barEvents ? (b) => NS.sound.barEvents(src, b) : null });
+            backingEvents: NS.sound && NS.sound.regionEvents ? (r) => NS.sound.regionEvents(src, r) : null });
           download(new Blob([bytes], { type: 'audio/midi' }), name + '.mid');
           progress(1, 'Saved ' + name + '.mid (' + (st.midiMode === 'mixed' ? 'one track' : 'one track per part') + ').');
         } else {
@@ -654,7 +687,7 @@
       return list.filter((e) => e && T.includes(e.type) && e.on !== false).map((e) => ({ type: e.type, params: Object.assign({}, e.params) }));
     }
     async function renderAudio(sel, loops, onProgress) {
-      const S = songOf(), sr = 44100, bars = S.bars, tot = bars * SPB, sec16 = md.secPer16(S), songSec = loops * tot * sec16;
+      const S = songOf(), sr = 44100, tot = md.tot16(S), sec16 = md.secPer16(S), songSec = loops * tot * sec16;
       const seconds = songSec + TAIL;
       const ids = new Set(sel.layers.map((i) => M.soundOf(i).id));   // samplers must be decoded first
       if (sel.backing) ids.add(M.backingSound().id);
@@ -679,7 +712,7 @@
             backing: Object.assign({}, S.backing, { on: sel.whole ? S.backing.on : !!sel.backing }),
             drums: Object.assign({}, S.drums, { on: !!sel.drums }),
           });
-          b2 = B.offline(ctx, S2, master, { bars: loops * bars, backingSound: back, backing: !!sel.backing, drums: !!sel.drums });
+          b2 = B.offline(ctx, S2, master, { loops, backingSound: back, backing: !!sel.backing, drums: !!sel.drums });
           layerIn = (i) => b2.layerIn(i);
           if (!sel.whole) S.layers.forEach((l, i) => { const n = b2.layerIn(i); if (n) n.gain.value = l.vol; });
           fxUsed = true; drumsUsed = !!sel.drums;
@@ -692,7 +725,7 @@
           if (chain && chain.input && chain.output) { sum.connect(chain.input); chain.output.connect(master); fxUsed = true; } else sum.connect(master);
           const buses = S.layers.map((l, i) => { const g = ctx.createGain(); g.gain.value = sel.whole ? md.layerGain(S, i) : l.vol; g.connect(sum); return g; });
           layerIn = (i) => buses[i];
-          const hits = sel.drums ? drumHits(S.drums, bars) : [];
+          const hits = sel.drums ? drumList() : [];
           let noise = null;
           if (hits.length) {
             drumsUsed = true;
@@ -700,10 +733,10 @@
           }
           for (let r = 0; r < loops; r++) {
             const off = r * tot * sec16;
-            if (sel.backing) S.chords.forEach((ch, b) => {
-              if (!ch) return;
-              const t0 = off + b * SPB * sec16;
-              md.chordMidis(ch).forEach((m) => VH.audio.voice(back, hz(m), { gain: G_BACK, dest: backBus, when: t0 }).stop(0.12, t0 + SPB * sec16));
+            if (sel.backing) md.regions(S).forEach((R) => {
+              if (!R.chord) return;
+              const t0 = off + R.a * sec16;
+              md.chordMidis(R.chord).forEach((m) => VH.audio.voice(back, hz(m), { gain: G_BACK, dest: backBus, when: t0 }).stop(0.12, off + R.z * sec16));
             });
             for (const h of hits) drumVoice(ctx, drumBus, h.note, off + h.t16 * sec16 + 0.003, h.vel, noise);
           }
@@ -719,7 +752,7 @@
               const vb = vr.note(n);
               if (vb) for (let t = t0 + VIB_DT; t < t1; t += VIB_DT) { const f = hz(n.m + vb.depth * Math.sin(2 * Math.PI * vb.rate * (t - t0))); at(t, () => v.setFreq(f, 0.01, t)); }
             }
-            const dtL = sec16 * SPB / LPB, hit = plays[L] === 'hit';
+            const dtL = sec16 / 3, hit = plays[L] === 'hit';
             for (const st of strokesOf(l)) {   // one voice per stroke (strokes may overlap)
             const line = st.v, sk = st.id;
             let cur = null, lastHit = -1e9;

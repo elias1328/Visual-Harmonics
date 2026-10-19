@@ -3,7 +3,7 @@
 (function () {
   'use strict';
   const VH = window.VH, H = VH.harmony, ui = VH.ui, NS = VH.melody, md = NS.model;
-  const { LO, HI, SPAN, LPB, SPB, NATURAL, clamp, chordMidis, chordName, namesOf } = md;
+  const { LO, HI, SPAN, NATURAL, clamp, chordMidis, chordName, namesOf } = md;
   const HDR = 40, LANE_GAP = 6;   // LANE_GAP = .mel-wrap's flex gap
   const Z_MIN = 12;               // pitch zoom: at least one octave stays visible
 
@@ -20,7 +20,7 @@
       X0: 22, GW: 778, span: SPAN, pTop: HI, Z_MIN };
     let boxW = 800, boxH = 600;
     const lanes = [];   // { el, h, fixed, ro } added with V.addLane, stacked under the canvas (and its scroll bar)
-    V.U = () => V.BW / SPB;                                   // px per sixteenth
+    V.U = () => V.BW / md.spb(M.song);                        // px per sixteenth (the bar length follows the time signature)
     V.xOf = (t16) => t16 * V.U();
     V.t16Of = (x) => x / V.U();
     V.sx = (x) => x - V.scrollX + V.X0;                       // content x -> canvas x
@@ -79,13 +79,14 @@
       const scrolls = V.CW > V.GW + 0.5;
       scroller.hidden = !scrolls;
       const laneH = lanes.reduce((a, l) => a + (l.el.hidden ? 0 : l.h + LANE_GAP), 0);
+      V.topH = lanes.reduce((a, l) => a + (l.top && !l.el.hidden ? l.h + LANE_GAP : 0), 0);   // lanes above the canvas
       V.TH = Math.max(200, boxH - (scrolls ? 20 : 0) - laneH); V.MH = V.TH - HDR; V.dpr = ui.dpr();
       lanes.forEach((l) => { l.el.style.width = V.VW + 'px'; });
       const w = Math.round(V.VW * V.dpr), h = Math.round(V.TH * V.dpr);
       if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
       cv.style.width = V.VW + 'px'; cv.style.height = V.TH + 'px'; scroller.style.width = V.VW + 'px';
       scroller.max = Math.max(0, Math.round(V.CW - V.GW));
-      zoomEl.style.top = (HDR + 6) + 'px';
+      zoomEl.style.top = (V.topH + HDR + 6) + 'px';
       zoomEl.style.right = 'calc(50% - ' + (V.VW / 2 - (V.VW <= 600 ? 12 : 16)) + 'px)';
       V.setScroll(V.scrollX);
       M.emit('layout', V);
@@ -98,12 +99,14 @@
     // A DOM strip under the canvas (e.g. the drum lane) that the layout makes room for: the canvas gets shorter by the
     // lane's height + 6 px. o.height = fixed px; omitted = measured (ResizeObserver), so content changes re-layout.
     // Returns { el, setHeight(px), remove() }. Lanes are removed on unmount with M.el.
+    V.topH = 0;
     V.addLane = function (el, o) {
       o = o || {};
       const fixed = typeof o.height === 'number' && o.height >= 0;
-      const lane = { el, h: fixed ? o.height : 0, fixed, ro: null };
+      const lane = { el, h: fixed ? o.height : 0, fixed, ro: null, top: !!o.top };
       el.classList.add('mel-lane');
-      wrap.append(el); lanes.push(lane);
+      if (lane.top) wrap.prepend(el); else wrap.append(el);   // o.top: above the canvas (the arrangement strip)
+      lanes.push(lane);
       const measure = () => {
         if (lane.fixed || !el.isConnected) return;
         const h = Math.ceil(el.offsetHeight);
@@ -152,21 +155,34 @@
       ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(x - 2, y - 10, w + 4, 13);
       ctx.fillStyle = '#cfd5e6'; ctx.fillText(t, x, y);
     }
-    // What a header click at content (x, y) hits: 'x' (the loop region's clear button), 'name' (the chord name: picker)
-    // or 'empty' (seek / start of a loop-region drag).
-    V.headerHit = function (x, y) {
-      const S = M.song, r = md.regionOf(S), BW = V.BW;
-      if (r && Math.hypot(x - (r[1] * BW - 11), y - 11) <= 11) return 'x';
-      const b = clamp(Math.floor(x / BW), 0, S.bars - 1), ch = S.chords[b], names = namesOf(S);
+    // What a header point at content (x, y) hits: { kind, region, at }. kind: 'x' (the loop region's clear button),
+    // 'edge' (a boundary between two chords inside a bar: drag it), 'plus' (a beat boundary near the strip's bottom:
+    // split the chord there), 'name' (the chord name: picker) or 'empty' (seek / start of a loop-region drag).
+    const hdrFont = (w) => (w < 34 ? 10 : w < 60 ? 12 : 15);
+    V.hdrAt = function (x, y) {
+      const S = M.song, r = md.regionOf(S), BW = V.BW, u = V.U(), n = md.spb(S), tot = md.tot16(S);
+      if (r && Math.hypot(x - (r[1] * BW - 11), y - 11) <= 11) return { kind: 'x', region: -1 };
+      const t = clamp(x / u, 0, tot - 1e-6), i = md.regionAt(S, t), e = S.chords[i], z = md.regionEnd(S, i);
+      for (const q of [i, i + 1]) {
+        const E = S.chords[q];
+        if (E && q > 0 && E.at % n && Math.abs(x - E.at * u) <= 6) return { kind: 'edge', region: q, at: E.at };
+      }
+      if (y >= HDR - 16) {
+        const b0 = Math.floor(t / n) * n;
+        for (const p of md.beatGrid(S, false)) { const at = b0 + p; if (at > e.at && at < z && Math.abs(x - at * u) <= 7) return { kind: 'plus', region: i, at }; }
+      }
+      const ch = e.chord, names = namesOf(S), w = (z - e.at) * u;
       ctx.save();
-      ctx.font = '600 ' + (BW < 60 ? 12 : 15) + 'px system-ui, sans-serif';
+      ctx.font = '600 ' + hdrFont(w) + 'px system-ui, sans-serif';
       const w1 = ctx.measureText(ch ? chordName(ch, names) : '—').width;
-      ctx.font = (BW < 70 ? 9 : 10.5) + 'px system-ui, sans-serif';
+      ctx.font = (w < 70 ? 9 : 10.5) + 'px system-ui, sans-serif';
       const w2 = ctx.measureText(ch ? chordMidis(ch).map((m) => names[m % 12]).join(' ') : 'no chord').width;
       ctx.restore();
-      const half = Math.min(BW / 2, Math.max(22, Math.max(w1, w2) / 2 + 8));
-      return Math.abs(x - (b + 0.5) * BW) <= half ? 'name' : 'empty';
+      const half = Math.min(w / 2, Math.max(22, Math.max(w1, w2) / 2 + 8));
+      return { kind: Math.abs(x - (e.at * u + w / 2)) <= half ? 'name' : 'empty', region: i };
     };
+    V.headerHit = (x, y) => V.hdrAt(x, y).kind;
+    V.hdrHover = null;   // { kind, region, at } under the pointer (tools.js): drawn as a split "+" / a lit boundary grip
     V.rrect = function (x, y, w, h, r) { ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x, y, w, h, r); else ctx.rect(x, y, w, h); };
 
 
@@ -182,13 +198,13 @@
       const S = M.song, E = M.engine, out = new Map(), glow = new Set();
       const add = (m, col) => { m = Math.round(m); if (m < LO || m > HI) return; const a = out.get(m) || out.set(m, []).get(m); if (a.indexOf(col) < 0) a.push(col); };
       if (E.playing) {
-        const tot = S.bars * SPB, pos = E.phase * tot, i = Math.min(S.bars * LPB - 1, Math.floor(E.phase * S.bars * LPB));
+        const tot = md.tot16(S), pos = E.phase * tot, i = Math.min(tot * 3 - 1, Math.floor(pos * 3));
         S.layers.forEach((l, L) => {
           if (md.layerGain(S, L) <= 0) return;
           for (const x of md.lineAt(l, i)) add(x.m, l.color);   // every stroke lights its key
           for (const n of l.notes) if (pos >= n.s && pos < n.s + n.d) add(n.m, l.color);
         });
-        const ch = S.backing.on && S.chords[Math.min(S.bars - 1, Math.floor(E.phase * S.bars))];
+        const ch = S.backing.on && md.chordAt(S, pos);
         if (ch) chordMidis(ch).forEach((m) => glow.add(m));
       }
       for (const p of E.previews || []) if (p.until > now) { if (p.L < 0) glow.add(p.m); else if (S.layers[p.L]) add(p.m, S.layers[p.L].color); }
@@ -325,26 +341,41 @@
     cv.addEventListener('pointerleave', () => { if (V.hoverMidi != null) { V.hoverMidi = null; M.requestRender(); } });
 
     V.draw = function () {
-      const S = M.song, E = M.engine, A = M.active, names = namesOf(S), tot = S.bars * SPB, u = V.U();
+      const S = M.song, E = M.engine, A = M.active, names = namesOf(S), tot = md.tot16(S), u = V.U(), SPB = md.spb(S);
       const playing = E.playing, phase = E.phase, pos = phase * tot, { VW, TH, MH, BW, CW, scrollX, dpr, X0, GW } = V;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, VW, TH);
       ctx.imageSmoothingEnabled = false;
-      // the cached band image (1 px per bar x R rows, top row = HI) cropped to the visible pitch range
+      // the cached band image (1 px per sixteenth x R rows, top row = HI) cropped to the visible pitch range
       const RPS = M.bands.R / SPAN;
-      ctx.drawImage(M.bands.off, 0, (HI - V.pTop) * RPS, S.bars, V.span * RPS, X0 - scrollX, HDR, CW, MH);
+      if (M.bands.off.width === tot) ctx.drawImage(M.bands.off, 0, (HI - V.pTop) * RPS, tot, V.span * RPS, X0 - scrollX, HDR, CW, MH);
       ctx.translate(X0 - scrollX, 0);
       const b0 = Math.max(0, Math.floor(scrollX / BW)), b1 = Math.min(S.bars - 1, Math.floor((scrollX + GW) / BW));
-      const curBar = playing ? Math.floor(phase * S.bars) : -1, xa = scrollX, xb = scrollX + GW, hb = V.highlightBar;
-      for (let b = b0; b <= b1; b++) {   // chord header strip: name big, notes small
-        const x = b * BW, ch = S.chords[b];
-        ctx.fillStyle = b === hb ? '#24345a' : b === curBar ? '#22345e' : '#141824'; ctx.fillRect(x, 0, BW, HDR);
-        ctx.strokeStyle = b === hb ? '#6fa3ff' : '#262b3a'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, 0.5, BW - 1, HDR - 1);
+      const curReg = playing ? md.regionAt(S, pos) : -1, xa = scrollX, xb = scrollX + GW, hb = V.highlightBar, hv = V.hdrHover;
+      for (const R of md.regions(S)) {   // chord header strip: one block per chord region (its width = its duration)
+        const x = R.a * u, w = (R.z - R.a) * u, ch = R.chord, b = R.i, inner = R.a % SPB !== 0;
+        if (x > xb || x + w < xa) continue;
+        ctx.fillStyle = b === hb ? '#24345a' : b === curReg ? '#22345e' : hv && hv.kind === 'name' && hv.region === b ? '#1a2133' : '#141824'; ctx.fillRect(x, 0, w, HDR);
+        ctx.strokeStyle = b === hb ? '#6fa3ff' : '#262b3a'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, 0.5, w - 1, HDR - 1);
+        ctx.save(); ctx.beginPath(); ctx.rect(x + 2, 0, w - 4, HDR); ctx.clip();
         ctx.textAlign = 'center';
-        ctx.fillStyle = ch ? '#fff' : '#7a8194'; ctx.font = '600 ' + (BW < 60 ? 12 : 15) + 'px system-ui, sans-serif';
-        ctx.fillText(ch ? chordName(ch, names) : '—', x + BW / 2, 18);
-        ctx.fillStyle = '#7a8194'; ctx.font = (BW < 70 ? 9 : 10.5) + 'px system-ui, sans-serif';
-        ctx.fillText(ch ? chordMidis(ch).map((m) => names[m % 12]).join(' ') : 'no chord', x + BW / 2, 33);
+        ctx.fillStyle = ch ? '#fff' : '#7a8194'; ctx.font = '600 ' + hdrFont(w) + 'px system-ui, sans-serif';
+        ctx.fillText(ch ? chordName(ch, names) : '—', x + w / 2, 18);
+        if (w >= 44) {
+          ctx.fillStyle = '#7a8194'; ctx.font = (w < 70 ? 9 : 10.5) + 'px system-ui, sans-serif';
+          ctx.fillText(ch ? chordMidis(ch).map((m) => names[m % 12]).join(' ') : 'no chord', x + w / 2, 33);
+        }
+        ctx.restore();
+        if (inner) {   // a chord change inside the bar: a grip to drag the boundary
+          const on = (hv && hv.kind === 'edge' && hv.region === b) || V.edgeDrag === b;
+          ctx.fillStyle = on ? '#6fa3ff' : 'rgba(207,213,230,0.5)'; V.rrect(x - 1.5, 9, 3, HDR - 18, 1.5); ctx.fill();
+        }
+      }
+      if (hv && hv.kind === 'plus') {   // split here
+        const x = hv.at * u, y = HDR - 9;
+        ctx.fillStyle = '#6fa3ff'; ctx.beginPath(); ctx.arc(x, y, 6.5, 0, 2 * Math.PI); ctx.fill();
+        ctx.strokeStyle = '#07101f'; ctx.lineWidth = 1.6;
+        ctx.beginPath(); ctx.moveTo(x - 3.5, y); ctx.lineTo(x + 3.5, y); ctx.moveTo(x, y - 3.5); ctx.lineTo(x, y + 3.5); ctx.stroke();
       }
       const reg = V.regionPreview || md.regionOf(S);
       if (reg) {   // loop region: map outside it dimmed, a bright rule over its header bars
@@ -366,16 +397,18 @@
         ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(xb, y); ctx.stroke();
       }
       const notesMode = S.layers[A].mode === 'notes', step = notesMode ? (S.grid === 16 ? 1 : 2) : 4;
-      for (let k = Math.max(1, b0 * SPB); k < (b1 + 1) * SPB; k += 1) {   // bar / beat / grid lines
-        if (k % step) continue;
+      const beats = new Set(md.tsOf(S).beats);
+      for (let k = Math.max(1, b0 * SPB); k < (b1 + 1) * SPB; k += 1) {   // bar / beat / grid lines (beats follow the time signature)
+        const isBeat = beats.has(k % SPB);
+        if (k % step && !isBeat) continue;
         const x = Math.round(k * u) + 0.5;
-        ctx.strokeStyle = k % SPB === 0 ? 'rgba(255,255,255,0.4)' : k % 4 === 0 ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.045)';
+        ctx.strokeStyle = k % SPB === 0 ? 'rgba(255,255,255,0.4)' : isBeat ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.045)';
         ctx.beginPath(); ctx.moveTo(x, HDR); ctx.lineTo(x, HDR + MH); ctx.stroke();
       }
       ctx.lineJoin = ctx.lineCap = 'round';
       const nh = V.noteH(), order = S.layers.map((_, i) => i).filter((i) => i !== A).concat(A);
       for (const L of order) {   // layers, active on top; silent (muted / not soloed) layers are faint
-        const lay = S.layers[L], isA = L === A, lu = BW / LPB, quiet = md.layerGain(S, L) === 0;
+        const lay = S.layers[L], isA = L === A, lu = u / 3, quiet = md.layerGain(S, L) === 0;
         ctx.globalAlpha = (isA ? 1 : 0.55) * (quiet ? 0.4 : 1);
         for (const st of md.strokes(lay)) {   // each line stroke (strokes may overlap)
           const s = st.v;
@@ -405,7 +438,7 @@
       const tool = M.tools && M.tools.current;
       if (tool && tool.draw) { try { tool.draw(ctx, V); } catch (err) { console.error('[melody] tool draw', err); } }
       if (playing) {   // playhead dots on every sounding stroke
-        const x = phase * CW, i = Math.min(S.bars * LPB - 1, Math.floor(phase * S.bars * LPB));
+        const x = phase * CW, i = Math.min(tot * 3 - 1, Math.floor(pos * 3));
         S.layers.forEach((l) => {
           for (const q of md.lineAt(l, i)) {
             ctx.fillStyle = l.color; ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5;

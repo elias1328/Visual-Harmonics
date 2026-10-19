@@ -43,14 +43,26 @@
       if (last && k === t.deg.length - 1 && d !== 1 && rnd() < 0.4) return chordOf(1);                    // end home
       return chordOf(d);
     });
-    const A = wpick(usable, rnd), n = S.bars / 4, out = [];
+    const A = wpick(usable, rnd), n = Math.ceil(S.bars / 4), out = [];
     let B = wpick(usable, rnd);
     for (let p = 0; p < n; p++) {
-      // 4 bars: A. 8 bars: A A' or A B. 16 bars: A A B A.
+      // 4 bars: A. 8 bars: A A' or A B. 16 bars: A A B A. (Other lengths: phrases of 4, cut at the end.)
       const t = n === 2 ? (p === 0 || rnd() < 0.5 ? A : B) : n === 4 ? (p === 2 ? B : A) : A;
       out.push(...phrase(t, n > 1 && p === n - 1));
     }
-    return out;
+    out.length = S.bars;
+    // chord events: one chord per bar, and now and then two in a phrase's last bar (a turn towards the next phrase:
+    // V on the bar's second half, or IV / ii then V when the bar already holds V)
+    const nb = md.spb(S), half = md.tsOf(S).beats[Math.floor(md.tsOf(S).beats.length / 2)] || nb / 2, ev = [];
+    const V5 = chordOf(5), pre = chordOf(minor ? 4 : 2), same = (a, b) => a && b && a[0] === b[0] && a[1] === b[1];
+    out.forEach((c, b) => {
+      ev.push({ at: b * nb, chord: c });
+      const last = b % 4 === 3 || b === S.bars - 1;
+      if (last && half > 0 && S.bars > 1 && rnd() < 0.55) {
+        if (same(c, V5)) { ev[ev.length - 1].chord = pre; ev.push({ at: b * nb + half, chord: V5.slice() }); } else ev.push({ at: b * nb + half, chord: V5.slice() });
+      }
+    });
+    return ev;
   }
 
   // ---------- melody ----------
@@ -58,9 +70,9 @@
   // Default (equal temperament): the whole semitones that fit the chord (chord tones, and key tones at least as
   // consonant as the bar's 60th percentile: M.bands.fitCtx), so melodies are in tune with the backing.
   // With Pure intonation (M.bands.pure) the exact band maxima, as before.
-  function targetsFor(M, bar, L, lo, hi) {
-    const S = M.song, md = M.model, at = M.bandsAt(bar * md.SPB, L);
-    const X = !M.bands.pure && M.bands.fitCtx ? M.bands.fitCtx(at.bar, L) : null;
+  function targetsFor(M, bar, L, lo, hi) {   // bar = chord region index
+    const S = M.song, md = M.model, at = M.bandsAt(S.chords[bar].at, L);
+    const X = !M.bands.pure && M.bands.fitCtx ? M.bands.fitCtx(at.region, L) : null;
     if (X) {
       const all = [];
       for (let m = Math.ceil(lo); m <= hi; m++) if (X.fits(m)) all.push(m);
@@ -71,12 +83,12 @@
       const sc = md.scaleOf(S).steps.map((x) => (S.key + x) % 12);
       pk = []; for (let m = Math.ceil(lo); m <= hi; m++) if (sc.includes(((m % 12) + 12) % 12)) pk.push(m);
     }
-    const ct = S.chords[bar] ? md.chordMidis(S.chords[bar]).map((m) => m % 12) : [];
+    const rc = md.regionChord(S, bar), ct = rc ? md.chordMidis(rc).map((m) => m % 12) : [];
     const isCT = (m) => ct.some((pc) => { const d = (((m - pc) % 12) + 12) % 12; return Math.min(d, 12 - d) < 0.3; });
     return { all: pk.slice().sort((a, b) => a - b), chordTones: pk.filter(isCT).sort((a, b) => a - b) };
   }
   function melody(M, L, o, rnd) {
-    const S = M.song, md = M.model, SPB = md.SPB, tot = S.bars * SPB, dens = DENS[o.density] || DENS.medium;
+    const S = M.song, md = M.model, SPB = md.spb(S), tot = md.tot16(S), dens = DENS[o.density] || DENS.medium;
     const [lo, hi] = RANGES[o.range] || RANGES.mid, unit = o.notes ? (S.grid === 16 ? 1 : 2) : 1;
     const phraseLen = 2 * SPB;
     const cache = new Map();
@@ -84,10 +96,10 @@
     const out = [];   // { s, d, m } (rests are skipped)
     let cur = (lo + hi) / 2, dir = rnd() < 0.5 ? -1 : 1, t = 0;
     while (t < tot) {
-      const bar = Math.min(S.bars - 1, Math.floor(t / SPB)), T = tg(bar), pEnd = Math.min(tot, (Math.floor(t / phraseLen) + 1) * phraseLen);
+      const bar = md.regionAt(S, t), T = tg(bar), pEnd = Math.min(tot, (Math.floor(t / phraseLen) + 1) * phraseLen);
       let d = Math.max(unit, Math.round(wpick(dens.d, rnd) / unit) * unit);
       const rem = pEnd - t, ending = rem <= dens.end || t + d >= pEnd;   // the phrase's last note fills up to its end
-      if (ending) d = rem; else d = Math.min(d, (bar + 1) * SPB - t);       // other notes stay inside their bar
+      if (ending) d = rem; else d = Math.min(d, md.regionEnd(S, bar) - t);   // other notes stay inside their chord
       if (!ending && t > 0 && rnd() < dens.rest) { t += d; continue; }
       const list = ending && T.chordTones.length ? T.chordTones : T.all;
       if (!list.length) { t += d; continue; }
@@ -123,11 +135,11 @@
   // Per grid column, collect what every other audible layer plays (its own spectrum); each bar's extras are the
   // distinct pitches weighted by the fraction of columns they sound in (top 4 per bar), quantised for stable caching.
   const MAX_EXTRAS = 4, DEBOUNCE = 120;
-  function sounding(S, md, L, bar, cols) {   // -> Map(pitchKey -> { m, w }) for layer L in bar
-    const SPB = md.SPB, LPB = md.LPB, res = new Map(), l = S.layers[L], step = SPB / cols;
+  function sounding(S, md, L, bar, cols) {   // -> Map(pitchKey -> { m, w }) for layer L in chord region `bar`
+    const a = S.chords[bar].at, res = new Map(), l = S.layers[L], step = (md.regionEnd(S, bar) - a) / cols;
     for (let c = 0; c < cols; c++) {
-      const t16 = bar * SPB + (c + 0.5) * step, ps = new Set();
-      for (const q of md.lineAt(l, Math.floor(t16 * LPB / SPB))) ps.add(Math.round(q.m * 10) / 10);   // every stroke
+      const t16 = a + (c + 0.5) * step, ps = new Set();
+      for (const q of md.lineAt(l, Math.floor(t16 * 3))) ps.add(Math.round(q.m * 10) / 10);   // every stroke
       for (const n of l.notes) if (n.s <= t16 && t16 < n.s + n.d) ps.add(Math.round(n.m * 10) / 10);
       for (const m of ps) { const e = res.get(m) || { m, w: 0 }; e.w += 1 / cols; res.set(m, e); }
     }
@@ -171,11 +183,13 @@
       let ch = null;
       for (let i = 0; i < 6; i++) { ch = progression(S, md, rnd); if (JSON.stringify(ch) !== before) break; }
       S.chords = ch;
-      const changed = ch.map((c, b) => b).filter((b) => JSON.stringify(ch[b]) !== JSON.stringify(old[b] || null));
+      md.normChords(S);
+      const was = new Set(old.map((e) => e.at + ':' + JSON.stringify(e.chord)));
+      const changed = S.chords.map((e, r) => r).filter((r) => !was.has(S.chords[r].at + ':' + JSON.stringify(S.chords[r].chord)));
       M.commit('Random progression', { chords: changed, source: 'generate' });
       M.engine.previewChord(0);
-      const fit = M.lastCommit && M.lastCommit.info && M.lastCommit.info.fitMsg;
-      M.toast('Progression: ' + ch.map((c) => md.chordName(c, md.namesOf(S))).join(' – ') + (fit ? ' · ' + fit.toLowerCase() : ''));
+      const fit = M.lastCommit && M.lastCommit.info && M.lastCommit.info.fitMsg, nb = md.spb(S);
+      M.toast('Progression: ' + S.chords.map((e) => (e.at % nb ? '/' : '') + md.chordName(e.chord, md.namesOf(S))).join(' – ').replace(/ – \//g, ' ') + (fit ? ' · ' + fit.toLowerCase() : ''));
     }
     function genMelody(again) {
       if (again && lastGen && lastGen.snap === snapOf() && M.hist.past.length && M.hist.past[M.hist.past.length - 1].label === 'Random melody') {
@@ -186,7 +200,7 @@
       const notes = melody(M, L, { density: opts.density, range: opts.range, notes: asNotes }, rnd);
       l.lines = []; l.notes = [];   // the roll replaces the layer (all its strokes)
       if (asNotes) l.notes = notes.map((n) => ({ s: n.s, d: n.d, m: Math.round(n.m * 100) / 100 }));
-      else l.lines = [{ id: 's1', v: toLine(notes, S.bars * md.LPB, md.LPB, md.SPB) }];
+      else l.lines = [{ id: 's1', v: toLine(notes, md.tot16(S) * 3, 3, 1) }];
       M.commit('Random melody');
       lastGen = { snap: snapOf(), layer: L, targets: notes, mode: l.mode };
       api.last = lastGen;
@@ -204,7 +218,7 @@
         if (!(md.layerGain(S, L) > 0)) return null;
         const sp = M.bands.spectrumOf(M.soundOf(L)).slice().sort((a, b) => b[1] - a[1]).slice(0, 8).sort((a, b) => a[0] - b[0]);
         const g = Math.min(1, md.layerGain(S, L) / 0.8);
-        return { sp, g, bars: Array.from({ length: S.bars }, (_, b) => sounding(S, md, L, b, cols)) };
+        return { sp, g, bars: Array.from({ length: S.chords.length }, (_, b) => sounding(S, md, L, b, cols)) };
       });
       const old = assembled;
       assembled = new Map();
@@ -231,9 +245,9 @@
     }
     function refreshBands() {
       if (!alive || !M.song.bandsOthers) return;
-      const before = JSON.stringify(M.song.layers.map((_, L) => Array.from({ length: M.song.bars }, (_, b) => extras(b, L))));
+      const before = JSON.stringify(M.song.layers.map((_, L) => Array.from({ length: M.song.chords.length }, (_, b) => extras(b, L))));
       compute();
-      const after = JSON.stringify(M.song.layers.map((_, L) => Array.from({ length: M.song.bars }, (_, b) => extras(b, L))));
+      const after = JSON.stringify(M.song.layers.map((_, L) => Array.from({ length: M.song.chords.length }, (_, b) => extras(b, L))));
       if (before !== after) {   // the bands cache is keyed by the extras, so unchanged bars are reused
         M.markBandsDirty();
       }

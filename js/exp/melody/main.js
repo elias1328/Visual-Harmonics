@@ -4,7 +4,7 @@
   'use strict';
   const PUBLIC_URL = 'https://elias1328.github.io/Visual-Harmonics/';
   const VH = window.VH, ui = VH.ui, NS = VH.melody, md = NS.model;
-  const { LPB, SPB, MAX_LAYERS, COLORS, clamp, serialize, parse, namesOf } = md;
+  const { MAX_LAYERS, COLORS, clamp, serialize, parse, namesOf } = md;
   const hist = { past: [], future: [] };   // undo history survives tab switches (the song itself is autosaved). Entries: { s, label }
   let inst = null;
 
@@ -15,7 +15,7 @@
     // done, and the first Melody mount of this page session. Never overrides an autosave or a share link.
     const firstVisit = !saved && !shareSub && !(Array.isArray(inbox0) && inbox0.length) && !VH.store.get('melody.tutorial', null) && !NS.mountedOnce;
     NS.mountedOnce = true;
-    const upgraded = S.migratedIds > 0 || S.migratedLines > 0;   // autosave from before layer ids: save it back in the new format
+    const upgraded = S.migratedIds > 0 || S.migratedLines > 0 || S.migratedSections > 0;   // autosave from before layer ids: save it back in the new format
     const cleanups = [], timers = new Set(), subs = new Map(), parts = [];
     const hookFns = { voiceOpts: [], pitchMod: [], beforeCommit: [] };
     const later = (fn, ms) => { const t = setTimeout(() => { timers.delete(t); if (alive) fn(); }, ms); timers.add(t); return t; };
@@ -126,12 +126,13 @@
       return true;
     };
     function applySnap(str) {
-      const old = S.chords, o = JSON.parse(str);
+      const old = S.chords, o = JSON.parse(str), cur0 = S.cur;
       ['grid', 'loop', 'snap'].forEach((k) => { o[k] = S[k]; });
       S = parse(o); lastSnap = snap();
       M.engine.stopAll();
       afterChange(); checkMissing();
       const b = S.chords.findIndex((c, i) => JSON.stringify(c) !== JSON.stringify(old[i] || null));
+      if (o.cur !== cur0) M.emit('section', S.cur);
       if (b >= 0) M.engine.previewChord(b);   // chord changed by undo/redo -> preview the first changed bar
     }
     // Drop uncommitted live edits (e.g. a drag cancelled by a two-finger pinch): back to the last committed song, no step.
@@ -153,20 +154,43 @@
     };
     M.setLayerMode = (L) => { const l = S.layers[L]; l.mode = l.mode === 'notes' ? 'line' : 'notes'; M.commit('Draw mode'); };
     M.setBackingSound = (id) => { if (!VH.sounds.get(id)) return; S.backing.sound = id; M.engine.restartBacking(); M.commit('Backing instrument'); };
-    // o.extra(song): more edits merged into the same undo step. beforeCommit hooks see { chords: [b], source: 'chord' }.
+    // b = chord region index (== bar while no bar is split; see md.regionAt). o.extra(song): more edits merged into the
+    // same undo step. beforeCommit hooks see { chords: [b], source: 'chord' }.
     M.setChord = (b, ch, o) => {
-      S.chords[b] = ch;
+      if (!S.chords[b]) return;
+      S.chords[b].chord = ch ? [ch[0], ch[1]] : null;
       if (o && typeof o.extra === 'function') { try { o.extra(S); } catch (err) { console.error('[melody] setChord extra', err); } }
       M.commit('Chord', { chords: [b], source: 'chord' });
       M.engine.previewChord(b);
     };
+    // Chord regions: split at t16 (the new region keeps the chord; returns its index) / merge region r into the one
+    // before it (it takes that chord; auto-fit runs on the merged region). Bar starts never merge.
+    M.splitChord = (t16) => {
+      const r = md.splitAt(S, t16);
+      if (r < 0) return -1;
+      M.commit('Split chord');
+      return r;
+    };
+    M.mergeChord = (r) => {
+      if (!md.mergeAt(S, r)) return false;
+      M.commit('Merge chords', { chords: [r - 1], source: 'chord' });
+      return true;
+    };
     M.setBars = (n) => {
       if (n === S.bars) return;
-      const old = S.bars, tot = n * SPB;
-      S.chords = Array.from({ length: n }, (_, b) => { const c = S.chords[b < old ? b : b % old]; return c ? c.slice() : null; });
+      n = clamp(n | 0, 1, md.MAX_BARS);
+      if (n === S.bars) return;
+      const old = S.bars, spb = md.spb(S), tot = n * spb;
+      // new bars repeat the chords (and splits) of the bars before them
+      const ev = [];
+      for (let b = 0; b < n; b++) {
+        const src = b < old ? b : b % old;
+        S.chords.forEach((e) => { if (e.at >= src * spb && e.at < (src + 1) * spb) ev.push({ at: e.at - src * spb + b * spb, chord: e.chord ? e.chord.slice() : null }); });
+      }
+      S.chords = ev;
       S.layers.forEach((l) => {
         l.lines.forEach((st) => {
-          const v = new Float32Array(n * LPB).fill(NaN);
+          const v = new Float32Array(tot * 3).fill(NaN);
           v.set(st.v.subarray(0, Math.min(st.v.length, v.length)));
           st.v = v;
         });
@@ -175,6 +199,7 @@
         l.notes.forEach((x) => { x.d = Math.min(x.d, tot - x.s); });
       });
       S.bars = n;
+      md.normChords(S);
       S.loopRegion = md.regionOf(S);
       M.engine.cue = null;
       M.engine.restartBacking();
@@ -185,7 +210,7 @@
       const i = S.layers.length, used = new Set(S.layers.map((l) => l.color)), names = new Set(S.layers.map((l) => l.name));
       let k = i + 1; while (names.has('Layer ' + k)) k++;
       const l = md.newLayer(i, Object.assign({ name: 'Layer ' + k, color: COLORS.find((c) => !used.has(c)) || COLORS[i % COLORS.length],
-        sound: S.layers[active].sound, mode: 'line' }, o), S.bars);
+        sound: S.layers[active].sound, mode: 'line' }, o), S.bars, S.ts);
       l.id = md.nextLayerId(S.layers);
       S.layers.push(l);
       active = i;
@@ -201,6 +226,16 @@
       S.layers.splice(i, 1);
       if (active > i || active >= S.layers.length) active = Math.max(0, active - 1);
       M.emit('layerRemoved', id, i);   // after the splice, before the commit: index-keyed part data shifts in the same undo step
+      S.sections.forEach((x) => {   // other sections: drop the layer's content, shift their index-keyed vibrato
+        if (!x.data) return;
+        delete x.data.layers[id];
+        const v = x.data.vib;
+        if (v && typeof v === 'object') {
+          const nv = {};
+          Object.keys(v).forEach((q) => { const n = +q; if (n < i) nv[n] = v[q]; else if (n > i) nv[n - 1] = v[q]; });
+          x.data.vib = nv;
+        }
+      });
       M.commit('Delete layer');
       M.emit('layer', active);
     };
@@ -211,7 +246,8 @@
       if (JSON.stringify(v) === JSON.stringify(had)) return;
       S.loopRegion = v; M.engine.cue = null;
       M.commit(v ? 'Loop bars ' + (v[0] + 1) + (v[1] - v[0] > 1 ? '–' + v[1] : '') : 'Clear loop region');
-      if (v && M.engine.playing) { const p = M.engine.pos16; if (p < v[0] * SPB || p >= v[1] * SPB) M.engine.seek(v[0] * SPB); }
+      const n = md.spb(S);
+      if (v && M.engine.playing) { const p = M.engine.pos16; if (p < v[0] * n || p >= v[1] * n) M.engine.seek(v[0] * n); }
       M.toast(v ? 'Looping bar' + (v[1] - v[0] > 1 ? 's ' + (v[0] + 1) + '–' + v[1] : ' ' + (v[0] + 1)) + ' · ✕ clears' : 'Loop region cleared');
     };
     // Replace the whole song. label = an undo step with that label (Ctrl+Z brings the old song back); none = no step.
@@ -236,6 +272,121 @@
       return M.replaceSong(o, 'New song');
     };
 
+    // ---------- time signature (current section) ----------
+    // Content keeps its place within each bar; whatever falls past the new bar end is dropped (chord splits too).
+    M.setTimeSig = (ts) => {
+      if (!md.TS[ts] || ts === (S.ts || '4/4')) return;
+      const n0 = md.spb(S), n1 = md.TS[ts].spb, keep = (t) => t % n0 < n1, map = (t) => Math.floor(t / n0) * n1 + (t % n0);
+      S.chords = S.chords.filter((e) => keep(e.at)).map((e) => ({ at: map(e.at), chord: e.chord }));
+      S.layers.forEach((l) => {
+        l.lines.forEach((st) => {
+          const v = new Float32Array(S.bars * n1 * 3).fill(NaN);
+          for (let i = 0; i < st.v.length; i++) if (keep(i / 3)) { const j = Math.floor(i / (n0 * 3)) * n1 * 3 + (i % (n0 * 3)); if (j < v.length) v[j] = st.v[i]; }
+          st.v = v;
+        });
+        md.pruneStrokes(l);
+        l.notes = l.notes.filter((x) => keep(x.s)).map((x) => { const s = map(x.s), end = Math.floor(x.s / n0) * n1 + n1; return { s, d: Math.max(1, Math.min(x.d, end - s)), m: x.m }; });
+      });
+      S.ts = ts;
+      md.normChords(S);
+      M.engine.cue = null; M.engine.restartBacking();
+      M.emit('timeSig', ts);   // before the commit: parts adapt their data (drum steps) in the same undo step
+      M.commit('Time ' + ts);
+      if (M.engine.playing) M.engine.seek(0);
+    };
+
+    // ---------- sections + arrangement (see MELODY.md "Sections") ----------
+    // Switching the section shown is not an undo step (the history stays clean when nothing was pending); every
+    // section operation (add, duplicate, delete, rename, recolor, reorder, repeat) is one.
+    M.playMode = VH.store.get('melody.playMode', 'section') === 'song' ? 'song' : 'section';
+    M.setPlayMode = (m) => { M.playMode = m === 'song' ? 'song' : 'section'; VH.store.set('melody.playMode', M.playMode); if (M.engine.playing) M.engine.pass = M.playMode === 'song' ? md.arrangement(S).findIndex((it) => it.k === S.cur) : -1; M.ui.sync(); M.emit('section', S.cur); };
+    function showSection(k) {
+      const clean = snap() === lastSnap;
+      if (!md.selectSection(S, k)) return false;
+      if (clean) lastSnap = snap();
+      M.engine.cue = null; M.cancelPlacing();
+      if (M.picker) M.picker.close();
+      afterChange();
+      M.emit('section', k);
+      return true;
+    }
+    // Click on an arrangement block: edit that section (while playing: it plays from its start).
+    M.selectSection = (k) => {
+      if (k === S.cur || !S.sections[k]) return false;
+      const playing = M.engine.playing;
+      if (playing) M.engine.stopAll();
+      showSection(k);
+      if (playing) { M.engine.pass = M.playMode === 'song' ? md.arrangement(S).findIndex((it) => it.k === k) : -1; M.engine.seek(0); }
+      return true;
+    };
+    // Song playback: move to the next arrangement pass (switching the section shown). false = the song ended.
+    M.nextPass = () => {
+      const items = md.arrangement(S);
+      let p = M.engine.pass + 1;
+      if (p >= items.length) { if (!S.loop) return false; p = 0; }
+      M.engine.pass = p;
+      if (items[p].k !== S.cur) showSection(items[p].k);
+      M.emit('pass', p);
+      return true;
+    };
+    function nameFor(base) {
+      const names = new Set(S.sections.map((x) => x.name));
+      if (base) { let k = 2; while (names.has(base + ' ' + k)) k++; return base + ' ' + k; }
+      return md.SEC_NAMES.find((n) => !names.has(n)) || ('Section ' + (S.sections.length + 1));
+    }
+    M.addSection = (dup) => {
+      if (S.sections.length >= md.MAX_SECTIONS) { M.toast('Up to ' + md.MAX_SECTIONS + ' sections'); return -1; }
+      const cur = S.sections[S.cur], used = new Set(S.sections.map((x) => x.color));
+      const data = dup ? md.copyContent(md.liveContent(S)) : md.emptyContent(S, S.bars, S.ts || '4/4');
+      if (!dup) data.drums = md.copyContent(md.liveContent(S)).drums;   // a new section keeps the groove (no notes, tonic chords)
+      const x = { id: md.nextSecId(S.sections), name: dup ? nameFor(cur.name.replace(/ \d+$/, '')) : nameFor(),
+        color: dup ? cur.color : md.SEC_COLORS.find((c) => !used.has(c)) || md.SEC_COLORS[S.sections.length % md.SEC_COLORS.length], rep: 1, data };
+      const k = S.cur + 1;
+      if (M.engine.playing) M.engine.stop();
+      S.sections.splice(k, 0, x);
+      md.selectSection(S, k);
+      M.engine.cue = null;
+      M.commit(dup ? 'Duplicate section' : 'Add section');
+      M.emit('section', k);
+      return k;
+    };
+    M.deleteSection = (k) => {
+      if (S.sections.length < 2 || !S.sections[k]) return false;
+      if (M.engine.playing) M.engine.stop();
+      if (k === S.cur) md.selectSection(S, k + 1 < S.sections.length ? k + 1 : k - 1);
+      const curX = S.sections[S.cur];
+      S.sections.splice(k, 1);
+      S.cur = S.sections.indexOf(curX);
+      M.commit('Delete section');
+      M.emit('section', S.cur);
+      return true;
+    };
+    M.moveSection = (from, to) => {
+      to = clamp(to | 0, 0, S.sections.length - 1);
+      if (from === to || !S.sections[from]) return false;
+      const curX = S.sections[S.cur], [x] = S.sections.splice(from, 1);
+      S.sections.splice(to, 0, x);
+      S.cur = S.sections.indexOf(curX);
+      M.commit('Reorder sections');
+      M.emit('section', S.cur);
+      return true;
+    };
+    M.renameSection = (k, name) => {
+      const x = S.sections[k], n = String(name || '').trim().slice(0, 20);
+      if (!x || !n || n === x.name) return;
+      x.name = n; M.commit('Rename section'); M.emit('section', S.cur);
+    };
+    M.recolorSection = (k, color) => {
+      const x = S.sections[k];
+      if (!x || !/^#[0-9a-f]{6}$/i.test(color) || x.color === color) return;
+      x.color = color; M.commit('Section color'); M.emit('section', S.cur);
+    };
+    M.setRepeat = (k, n) => {
+      const x = S.sections[k], r = clamp(Math.round(+n) || 1, 1, md.MAX_REP);
+      if (!x || x.rep === r) return;
+      x.rep = r; M.commit('Repeat ×' + r); M.emit('section', S.cur);
+    };
+
     // ---------- inbox: items other experiments send (VH.store 'melody.inbox', see MELODY.md "Inbox") ----------
     const chordLabel = (ch) => namesOf(S)[ch[0]] + ' ' + ch[1];
     M.startPlacing = (ch, from) => {
@@ -253,11 +404,11 @@
     };
     M.placeChordAt = (b) => {
       const p = M.placing;
-      if (!p || !(b >= 0 && b < S.bars)) return;
+      if (!p || !(b >= 0 && b < S.chords.length)) return;
       M.placing = null; el.classList.remove('mel-placing');
       M.picker.close();
       M.setChord(b, p.ch.slice());   // previews it; auto-fit (B1) joins the same undo step
-      M.ui.toast(chordLabel(p.ch) + ' in bar ' + (b + 1) + (M.lastCommit && /fit/i.test(M.lastCommit.label) ? ' · notes fitted' : ''),
+      M.ui.toast(chordLabel(p.ch) + ' in bar ' + (Math.floor(S.chords[b].at / md.spb(S)) + 1) + (M.lastCommit && /fit/i.test(M.lastCommit.label) ? ' · notes fitted' : ''),
         { action: undoAction(M.hist.past.length) });
     };
     function undoAction(depth) {   // a toast "Undo" that only undoes the step it announced

@@ -94,13 +94,26 @@
       parent.append(row);
       return (cur) => bs.forEach((b, i) => b.set({ pressed: vals[i] === cur }));
     };
-    const syncBars = seg(sSong, 'Bars', [4, 8, 16], String, (n) => M.setBars(n));
+    // Bars + time signature belong to the section shown (Song: the arrangement strip above the chords)
+    const meterRow = ui.h('div', 'vh-row mel-keyrow mel-meter'); sSong.append(meterRow);
+    meterRow.append(ui.h('span', 'mel-lbl', 'Bars'));
+    const barsSel = ui.select(meterRow, { label: 'Bars in this section', value: M.song.bars,
+      options: Array.from({ length: md.MAX_BARS }, (_, i) => ({ value: String(i + 1), label: String(i + 1) })), onChange: (v) => M.setBars(+v) });
+    meterRow.append(ui.h('span', 'mel-lbl', 'Time'));
+    const tsSel = ui.select(meterRow, { label: 'Time signature of this section', value: M.song.ts || '4/4',
+      options: md.TS_LIST.map((t) => ({ value: t, label: t })), onChange: (v) => M.setTimeSig(v) });
+    barsSel.el.classList.add('mel-bars'); tsSel.el.classList.add('mel-ts');
+    const syncBars = (n) => { barsSel.value = String(n); tsSel.value = M.song.ts || '4/4'; };
     const tempoSl = ui.slider(sSong, { label: 'Tempo', min: BPM_MIN, max: BPM_MAX, step: 1, value: M.song.bpm, fmt: (v) => v + ' BPM',
-      desc: '4/4 time: one bar is four beats.', onInput: (v) => { M.song.bpm = v; VH.store.set('melody.bpm', v); M.save(); } });
+      desc: 'Quarter notes per minute, for the whole song. Bars and time signature belong to the section shown.', onInput: (v) => { M.song.bpm = v; VH.store.set('melody.bpm', v); M.save(); } });
     tempoSl.input.addEventListener('change', () => M.commit('Tempo'));
     const pRow = ui.h('div', 'vh-row mel-seg'); pRow.append(ui.h('span', 'mel-lbl', 'Play')); sSong.append(pRow);
     const loopBtn = ui.button(pRow, { label: 'Loop', pressed: M.song.loop, onClick: () => { M.song.loop = !M.song.loop; U.sync(); M.save(); } });
     loopBtn.title = 'Play the song in a loop';
+    const countOn = () => VH.store.get('melody.countIn', false) === true;
+    const countBtn = ui.button(pRow, { label: 'Count-in', pressed: countOn(), onClick: () => { VH.store.set('melody.countIn', !countOn()); countBtn.set({ pressed: countOn() }); } });
+    countBtn.title = 'Metronome count-in: one bar of clicks (accent on beat 1) before playback starts';
+    countBtn.classList.add('mel-countin');
     const regRow = ui.h('div', 'vh-row mel-regrow'); sSong.append(regRow);
     const regTxt = ui.h('span', 'vh-desc mel-regtxt');
     regRow.append(regTxt);
@@ -268,10 +281,12 @@
     // chord picker
     let popBar = -1;
     function renderPicker() {
-      const S = M.song, b = popBar, names = namesOf(S), cur = S.chords[b], sc = scaleOf(S);
+      const S = M.song, b = popBar, names = namesOf(S), cur = md.regionChord(S, b), sc = scaleOf(S), e = S.chords[b] || { at: 0 };
+      const n = md.spb(S), bar = Math.floor(e.at / n), split = e.at % n || md.regionEnd(S, b) % n || (S.chords[b + 1] && md.barAt(S, S.chords[b + 1].at) === bar);
+      const beat = md.tsOf(S).beats.indexOf(e.at % n), where = 'Bar ' + (bar + 1) + (split ? ' · ' + (beat >= 0 ? 'beat ' + (beat + 1) : 'at ' + (e.at % n) + '/16') : '');
       const pcs = new Set(sc.steps.map((st) => (S.key + st) % 12));
       const same = (r, q) => cur && cur[0] === r && cur[1] === q;
-      let h = '<div class="mel-pop-head"><span><b>Bar ' + (b + 1) + '</b> · ' + ui.esc(chordName(cur, names)) + '</span>' +
+      let h = '<div class="mel-pop-head"><span><b>' + where + '</b> · ' + ui.esc(chordName(cur, names)) + '</span>' +
         '<button type="button" class="vh-icon-btn x" aria-label="Close">✕</button></div>' +
         '<div class="mel-sub">In ' + names[S.key] + ' ' + S.mode + '</div><div class="mel-quick">';
       diatonic(S).forEach(([r, q], k) => {
@@ -290,12 +305,13 @@
       }
       h += '</div><button type="button" class="vh-btn mel-none' + (cur ? '' : ' cur') + '" data-none="1">No chord</button>';
       pop.innerHTML = h;
-      pop.setAttribute('aria-label', 'Chord for bar ' + (b + 1));
+      pop.setAttribute('aria-label', 'Chord for ' + where.toLowerCase());
     }
     function positionPicker() {
       if (pop.hidden) return;
       const V = M.view, er = el.getBoundingClientRect(), cr = V.cv.getBoundingClientRect(), k = cr.width / V.VW || 1, pw = pop.offsetWidth;
-      const left = clamp(cr.left - er.left + V.sx((popBar + 0.5) * V.BW) * k - pw / 2, 8, Math.max(8, er.width - pw - 8));
+      const e = M.song.chords[popBar] || { at: 0 }, mid = (e.at + md.regionEnd(M.song, popBar)) / 2;
+      const left = clamp(cr.left - er.left + V.sx(V.xOf(mid)) * k - pw / 2, 8, Math.max(8, er.width - pw - 8));
       const top = cr.top - er.top + V.HDR * k + 4;
       pop.style.left = left + 'px'; pop.style.top = top + 'px'; pop.style.maxHeight = Math.max(160, er.height - top - 10) + 'px';
     }
@@ -467,6 +483,8 @@
     U.closeFloats = () => {
       const any = !pop.hidden || !lmenu.hidden || !shareBox.hidden || !tpop.hidden, tool = !tpop.hidden;
       picker.close(); layerMenu.close(); toolPop.close(); shareBox.hidden = true;
+      if (U.closeSecMenu) U.closeSecMenu();
+      if (M.tools && M.tools.closeMenu) M.tools.closeMenu();
       if (tool) toolBtn.focus({ preventScroll: true });
       return any;
     };
@@ -574,6 +592,7 @@
       syncRegion(); syncTools();
       fillKeys(); modeSel.value = S.mode;
       syncBars(S.bars); syncGrid(S.grid);
+      if (U.renderArr) U.renderArr();
       loopBtn.set({ pressed: S.loop });
       backBtn.set({ pressed: S.backing.on }); backSel.set(S.backing.sound); backSl.set(S.backing.vol);
       othersBtn.set({ pressed: S.bandsOthers });
@@ -598,12 +617,13 @@
     }
     M.on('tick', (t) => {
       const S = M.song, names = namesOf(S);
-      let html = 'bar ' + (t.bar + 1) + ' · <b>' + chordName(S.chords[t.bar], names) + '</b>';
+      const rg = t.region != null ? t.region : t.bar, sn = S.sections.length > 1 ? ui.esc(S.sections[S.cur].name) + ' · ' : '';
+      let html = sn + 'bar ' + (t.bar + 1) + ' · <b>' + chordName(md.regionChord(S, rg), names) + '</b>';
       S.layers.forEach((l, L) => {
         const q = md.lineAt(l, t.lineIndex), nm = q.length ? q.map((x) => x.m).sort((a, b) => b - a)[0] : (l.notes.find((n) => t.pos16 >= n.s && t.pos16 < n.s + n.d) || {}).m;
         let txt = '—';
         if (nm != null && !isNaN(nm)) {
-          const k = Math.round(nm), c = Math.round((nm - k) * 100), cs = M.bands.consonance(nm, t.bar, L);
+          const k = Math.round(nm), c = Math.round((nm - k) * 100), cs = M.bands.consonance(nm, rg, L);
           txt = VH.harmony.noteName(k) + (c ? (c > 0 ? '+' : '') + c + '¢' : '') + (isNaN(cs) ? '' : ' ' + cs.toFixed(2));
         }
         html += '<span class="vh-sw" style="background:' + l.color + '"></span>' + txt;
@@ -614,6 +634,136 @@
     M.on('stop', () => { playBtn.set({ icon: '▶', label: 'Play', pressed: false }); idleCaption(); M.requestRender(); });
     M.on('tools', syncTools);
     M.on('tool', syncTools);
+
+    // ---------- arrangement strip (above the chord header): the song's sections in order ----------
+    // [Section | Song] play mode · one block per section (name, ×repeat; the shown one outlined, the playing one lit)
+    // · "+" (new / duplicate). Click a block = edit that section; click the shown one = its menu (rename, color,
+    // repeat, duplicate, delete); drag a block = reorder. One slim row that scrolls sideways when narrow.
+    const arr = ui.h('div', 'mel-arr');
+    arr.setAttribute('role', 'toolbar'); arr.setAttribute('aria-label', 'Song sections');
+    const modeBox = ui.h('div', 'mel-arr-mode');
+    const modeBtns = [['section', 'Section', 'Play loops the section shown (and its loop region)'], ['song', 'Song', 'Play runs the whole arrangement and follows it']].map(([v, label, title]) => {
+      const b = ui.h('button', 'mel-arr-m', label); b.type = 'button'; b.dataset.v = v; b.title = title;
+      b.addEventListener('click', () => M.setPlayMode(v));
+      modeBox.append(b); return b;
+    });
+    const blocks = ui.h('div', 'mel-arr-blocks');
+    const addBtn = ui.h('button', 'mel-arr-add', '+'); addBtn.type = 'button'; addBtn.title = 'Add a section'; addBtn.setAttribute('aria-label', 'Add a section');
+    arr.append(modeBox, blocks, addBtn);
+    M.view.addLane(arr, { top: true, height: 28 });
+    const smenu = ui.h('div', 'mel-secmenu mel-float'); smenu.hidden = true; smenu.setAttribute('role', 'dialog');
+    el.append(smenu);
+    function closeSecMenu() { smenu.hidden = true; }
+    U.closeSecMenu = closeSecMenu;
+    function placeMenu(anchor) {
+      smenu.hidden = false;
+      const er = el.getBoundingClientRect(), r = anchor.getBoundingClientRect();
+      smenu.style.left = clamp(r.left - er.left, 6, Math.max(6, er.width - smenu.offsetWidth - 6)) + 'px';
+      smenu.style.top = (r.bottom - er.top + 4) + 'px';
+    }
+    function openAddMenu() {
+      smenu.innerHTML = '';
+      smenu.setAttribute('aria-label', 'Add a section');
+      [['New empty section', () => M.addSection(false)], ['Duplicate “' + M.song.sections[M.song.cur].name + '”', () => M.addSection(true)]].forEach(([label, run], i) => {
+        const b = ui.h('button', 'mel-cm-item mel-sm-' + (i ? 'dup' : 'new'), ui.esc(label)); b.type = 'button';
+        b.addEventListener('click', () => { closeSecMenu(); run(); });
+        smenu.append(b);
+      });
+      placeMenu(addBtn);
+    }
+    addBtn.addEventListener('click', () => { if (!smenu.hidden && smenu.dataset.k === 'add') { closeSecMenu(); return; } smenu.dataset.k = 'add'; openAddMenu(); });
+    function openSecMenu(k, anchor) {
+      const S = M.song, x = S.sections[k];
+      if (!x) return;
+      smenu.dataset.k = String(k);
+      smenu.setAttribute('aria-label', 'Section ' + x.name);
+      smenu.innerHTML = '';
+      const nameIn = ui.h('input', 'vh-input mel-sm-name'); nameIn.type = 'text'; nameIn.maxLength = 20; nameIn.value = x.name; nameIn.setAttribute('aria-label', 'Section name');
+      nameIn.setAttribute('list', 'mel-sec-names');
+      const dl = ui.h('datalist'); dl.id = 'mel-sec-names'; dl.innerHTML = md.SEC_NAMES.map((n) => '<option value="' + n + '">').join('');
+      const commitName = () => M.renameSection(k, nameIn.value);
+      nameIn.addEventListener('change', commitName);
+      nameIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commitName(); closeSecMenu(); } e.stopPropagation(); });
+      const sw = ui.h('div', 'mel-sm-colors');
+      md.SEC_COLORS.forEach((c) => {
+        const b = ui.h('button', 'mel-sm-sw' + (c === x.color ? ' on' : '')); b.type = 'button'; b.style.background = c; b.setAttribute('aria-label', 'Color ' + c);
+        b.addEventListener('click', () => { M.recolorSection(k, c); U.openSecMenu(k); });
+        sw.append(b);
+      });
+      const rep = ui.h('div', 'vh-row mel-sm-rep');
+      rep.append(ui.h('span', 'mel-lbl', 'Repeat'));
+      const dn = ui.button(rep, { label: '−', onClick: () => { M.setRepeat(k, x.rep - 1); U.openSecMenu(k); } });
+      rep.append(ui.h('b', 'mel-sm-repn', '×' + x.rep));
+      const up = ui.button(rep, { label: '+', onClick: () => { M.setRepeat(k, x.rep + 1); U.openSecMenu(k); } });
+      dn.disabled = x.rep <= 1; up.disabled = x.rep >= md.MAX_REP;
+      dn.setAttribute('aria-label', 'Fewer repeats'); up.setAttribute('aria-label', 'More repeats');
+      const acts = ui.h('div', 'vh-row mel-sm-acts');
+      ui.button(acts, { label: 'Duplicate', onClick: () => { closeSecMenu(); if (k !== M.song.cur) M.selectSection(k); M.addSection(true); } }).classList.add('mel-sm-dup');
+      const del = ui.button(acts, { label: 'Delete', onClick: () => { closeSecMenu(); M.deleteSection(k); } });
+      del.classList.add('mel-sm-del'); del.disabled = S.sections.length < 2;
+      smenu.append(nameIn, dl, sw, rep, acts);
+      placeMenu(anchor);
+    }
+    U.openSecMenu = (k) => { const b = blocks.children[k]; if (b) openSecMenu(k, b); };
+    const offSec = (e) => { if (!smenu.hidden && !smenu.contains(e.target) && !arr.contains(e.target)) closeSecMenu(); };
+    const escSec = (e) => { if (e.key === 'Escape' && !smenu.hidden) closeSecMenu(); };
+    document.addEventListener('pointerdown', offSec, true); document.addEventListener('keydown', escSec);
+    M.cleanups.push(() => { document.removeEventListener('pointerdown', offSec, true); document.removeEventListener('keydown', escSec); });
+    let secDrag = null;
+    function renderArr() {
+      const S = M.song, E = M.engine, items = md.arrangement(S), it = E.playing && M.playMode === 'song' ? items[E.pass] : null;
+      modeBtns.forEach((b) => { const on = b.dataset.v === M.playMode; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); });
+      blocks.innerHTML = '';
+      S.sections.forEach((x, k) => {
+        const b = ui.h('button', 'mel-arr-b' + (k === S.cur ? ' cur' : '') + (it && it.k === k ? ' play' : ''));
+        b.type = 'button'; b.dataset.k = k; b.style.setProperty('--c', x.color);
+        const bars = k === S.cur ? S.bars : x.data.bars, ts = k === S.cur ? S.ts || '4/4' : x.data.ts;
+        b.innerHTML = '<span class="nm">' + ui.esc(x.name) + '</span>' + (x.rep > 1 ? '<i>×' + (it && it.k === k ? (it.r + 1) + '/' : '') + x.rep + '</i>' : '');
+        b.title = x.name + ' · ' + bars + ' bar' + (bars > 1 ? 's' : '') + ' · ' + ts + (x.rep > 1 ? ' · ×' + x.rep : '') + (k === S.cur ? ' (shown; click for its menu, drag to reorder)' : ' (click to edit, drag to reorder)');
+        b.setAttribute('aria-pressed', String(k === S.cur));
+        blocks.append(b);
+      });
+      addBtn.disabled = S.sections.length >= md.MAX_SECTIONS;
+    }
+    U.renderArr = renderArr;
+    blocks.addEventListener('pointerdown', (e) => {
+      const b = e.target.closest('.mel-arr-b');
+      if (!b || e.button > 0) return;
+      secDrag = { k: +b.dataset.k, x0: e.clientX, moved: false, id: e.pointerId, to: +b.dataset.k };
+      try { blocks.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    });
+    blocks.addEventListener('pointermove', (e) => {
+      if (!secDrag || e.pointerId !== secDrag.id) return;
+      if (!secDrag.moved && Math.abs(e.clientX - secDrag.x0) > 6) secDrag.moved = true;
+      if (!secDrag.moved) return;
+      const bs = [...blocks.children];
+      let to = bs.length - 1;
+      for (let i = 0; i < bs.length; i++) { const r = bs[i].getBoundingClientRect(); if (e.clientX < r.left + r.width / 2) { to = i > secDrag.k ? i - 1 : i; break; } }
+      secDrag.to = to;
+      bs.forEach((x, i) => { x.classList.toggle('drag', i === secDrag.k); x.classList.toggle('drop', i === to && i !== secDrag.k); });
+    });
+    const endSecDrag = (e) => {
+      if (!secDrag || e.pointerId !== secDrag.id) return;
+      const d = secDrag; secDrag = null;
+      if (e.type === 'pointercancel') { renderArr(); return; }
+      if (d.moved) { if (!M.moveSection(d.k, d.to)) renderArr(); return; }
+      const b = blocks.children[d.k];
+      if (d.k === M.song.cur) { if (!smenu.hidden && smenu.dataset.k === String(d.k)) closeSecMenu(); else openSecMenu(d.k, b); }
+      else { closeSecMenu(); M.selectSection(d.k); }
+    };
+    blocks.addEventListener('pointerup', endSecDrag);
+    blocks.addEventListener('pointercancel', endSecDrag);
+    blocks.addEventListener('keydown', (e) => {   // Enter / Space on the shown block opens its menu (click handles others)
+      const b = e.target.closest('.mel-arr-b');
+      if (!b || (e.key !== 'Enter' && e.key !== ' ')) return;
+      e.preventDefault();
+      const k = +b.dataset.k;
+      if (k === M.song.cur) openSecMenu(k, b); else M.selectSection(k);
+    });
+    M.on('section', () => { renderArr(); const cb = blocks.querySelector('.cur'); if (cb && cb.scrollIntoView) cb.scrollIntoView({ block: 'nearest', inline: 'nearest' }); });
+    M.on('pass', renderArr);
+    M.on('play', renderArr); M.on('stop', renderArr);
+    renderArr();
     U.refreshSounds = () => { instSel.refresh(); backSel.refresh(); };
     M.cleanups.push(() => { instSel.destroy(); backSel.destroy(); });
     syncTools();
