@@ -161,10 +161,10 @@
     T.readout = ro;
     // Text for a pitch at time t16 on the active layer: "E4 · 92% fit" / "F#4 +18¢ · 31%" / "E4 · no chord".
     T.readoutText = function (t16, m) {
-      const k = Math.round(m), c = Math.round((m - k) * 100), cs = M.bandsAt(t16).consonance(m);
+      const k = Math.round(m), c = Math.round((m - k) * 100), at = M.bandsAt(t16), tn = at.tension > 0, cs = tn ? at.match(m) : at.consonance(m);
       const nm = H.noteName(k) + (c ? ' ' + (c > 0 ? '+' : '−') + Math.abs(c) + '¢' : '');
       const pct = isNaN(cs) ? null : Math.round(cs * 100);
-      return { text: nm + ' · ' + (pct == null ? 'no chord' : pct + '%' + (c ? '' : ' fit')), pct, midi: m };
+      return { text: nm + ' · ' + (pct == null ? 'no chord' : pct + '%' + (c ? '' : tn ? ' match' : ' fit')), pct, midi: m };
     };
     function showReadout(e, p) {
       if (p.inHeader || (e.pointerType === 'touch' && !(e.buttons & 1) && e.type !== 'pointerdown')) { hideReadout(); return; }

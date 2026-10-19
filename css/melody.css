@@ -200,6 +200,19 @@
 .mel-zoom-b:focus-visible { outline: 2px solid var(--accent, #6fa3ff); outline-offset: 1px; }
 .mel-zoom-b:disabled { opacity: 0.35; cursor: default; }
 @media (max-width: 600px) { .mel-zoom-b { width: 30px; height: 30px; } }
+/* Tension dial (view.js): chip left of the zoom buttons + slider pop-over */
+.mel-tens-chip { position: absolute; z-index: 4; height: 26px; padding: 0 9px; border-radius: 7px; border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(11, 13, 18, 0.72); color: #dfe4f2; font: 600 12px/1 system-ui, sans-serif; cursor: pointer; white-space: nowrap; }
+.mel-tens-chip.on { border-color: var(--tens, #6fa3ff); color: var(--tens, #dfe4f2); }
+.mel-tens-chip:hover { border-color: var(--accent, #6fa3ff); }
+.mel-tens-chip:focus-visible, .mel-tens-range:focus-visible { outline: 2px solid var(--accent, #6fa3ff); outline-offset: 1px; }
+.mel-tens-pop { position: absolute; z-index: 6; width: min(250px, calc(100% - 24px)); padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(14, 17, 25, 0.96); color: #dfe4f2; box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5); font: 12px/1.35 system-ui, sans-serif; }
+.mel-tens-h { font-weight: 700; margin-bottom: 6px; }
+.mel-tens-range { width: 100%; margin: 0; accent-color: #ffb35c; }
+.mel-tens-ticks { display: flex; justify-content: space-between; font-size: 11px; opacity: 0.75; margin-bottom: 6px; }
+.mel-tens-d { font-size: 11px; opacity: 0.65; }
+@media (max-width: 600px) { .mel-tens-chip { height: 30px; } }
 
 /* arrangement strip (a top lane above the chord header): play mode, section blocks, + */
 .mel-arr { display: flex; align-items: center; gap: 6px; height: 28px; box-sizing: border-box; max-width: 100%; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }

@@ -249,7 +249,7 @@
     const dr = Object.assign({}, S.drums); delete dr.vol;
     const ed = S.ext && S.ext.edit, layers = {};
     S.layers.forEach((l) => { layers[l.id] = { lines: l.lines, notes: l.notes }; });
-    return { bars: S.bars, ts: S.ts || '4/4', chords: S.chords, loopRegion: S.loopRegion || null, drums: dr, vib: ed && ed.vib ? ed.vib : null, layers };
+    return { bars: S.bars, ts: S.ts || '4/4', chords: S.chords, loopRegion: S.loopRegion || null, tension: S.tension || 0, drums: dr, vib: ed && ed.vib ? ed.vib : null, layers };
   }
   function copyContent(d) {
     const layers = {};
@@ -258,11 +258,11 @@
       layers[id] = { lines: c.lines.map((st) => ({ id: st.id, v: new Float32Array(st.v) })), notes: c.notes.map((n) => ({ s: n.s, d: n.d, m: n.m })) };
     });
     return { bars: d.bars, ts: d.ts, chords: d.chords.map((e) => ({ at: e.at, chord: e.chord ? e.chord.slice() : null })),
-      loopRegion: d.loopRegion ? d.loopRegion.slice() : null, drums: plain(d.drums), vib: d.vib ? plain(d.vib) : null, layers };
+      loopRegion: d.loopRegion ? d.loopRegion.slice() : null, tension: d.tension || 0, drums: plain(d.drums), vib: d.vib ? plain(d.vib) : null, layers };
   }
   const contentOf = (S, k) => (k === S.cur ? liveContent(S) : S.sections[k].data);
   function applyContent(S, d) {
-    S.bars = d.bars; S.ts = d.ts; S.chords = d.chords; S.loopRegion = d.loopRegion || null;
+    S.bars = d.bars; S.ts = d.ts; S.chords = d.chords; S.loopRegion = d.loopRegion || null; S.tension = d.tension || 0;
     const vol = S.drums && typeof S.drums.vol === 'number' ? { vol: S.drums.vol } : {};
     S.drums = Object.assign({}, d.drums, vol);
     if (!S.ext || typeof S.ext !== 'object') S.ext = {};
@@ -279,7 +279,7 @@
     return true;
   }
   function emptyContent(S, bars, ts) {
-    const c = { bars, ts, chords: [], loopRegion: null, drums: {}, vib: null, layers: {} };
+    const c = { bars, ts, chords: [], loopRegion: null, tension: 0, drums: {}, vib: null, layers: {} };
     const tonic = diatonic(S)[0];
     c.chords = normChords({ bars, ts, chords: [{ at: 0, chord: tonic }] });
     return c;
@@ -290,7 +290,7 @@
     if (k === S.cur) return S;
     const d = S.sections[k].data, ed = Object.assign({}, S.ext && S.ext.edit);
     if (d.vib) ed.vib = d.vib; else delete ed.vib;
-    return Object.assign({}, S, { bars: d.bars, ts: d.ts, chords: d.chords, loopRegion: d.loopRegion, cur: k,
+    return Object.assign({}, S, { bars: d.bars, ts: d.ts, chords: d.chords, loopRegion: d.loopRegion, tension: d.tension || 0, cur: k,
       drums: Object.assign({}, d.drums, S.drums && typeof S.drums.vol === 'number' ? { vol: S.drums.vol } : {}),
       ext: Object.assign({}, S.ext, { edit: ed }),
       layers: S.layers.map((l) => { const c = d.layers[l.id]; return Object.assign({}, l, { lines: c ? c.lines : [], notes: c ? c.notes : [] }); }) });
@@ -354,6 +354,7 @@
       layers: layers.filter((l) => d.layers[l.id]).map((l) => Object.assign({ id: l.id }, serLayerContent(d.layers[l.id]))) };
     const lr = regionOf({ loopRegion: d.loopRegion, bars: d.bars });
     if (lr) o.loopRegion = lr;
+    if (d.tension > 0) o.tension = r3(d.tension);   // written only when set
     if (d.vib) o.vib = plain(d.vib);
     return o;
   }
@@ -369,6 +370,7 @@
       master: r3(S.master), bandsOthers: S.bandsOthers, fx: plain(S.fx), drums: plain(S.drums), ext: plain(S.ext) };
     const lr = regionOf(S);
     if (lr) o.loopRegion = lr;   // written only when set, so songs without one serialize unchanged
+    if (S.tension > 0) o.tension = r3(S.tension);   // Tension dial (0..1) of the shown section; only when set
     o.sections = (S.sections || []).map((x, k) => (k === S.cur ? secMeta(x) : Object.assign(secMeta(x), serContent(x.data, S.layers))));
     o.cur = S.cur | 0;
     if (full) Object.assign(o, { grid: S.grid, loop: S.loop, snap: S.snap });
@@ -412,6 +414,7 @@
     });
     const migratedLines = mig.lines;
     S.loopRegion = regionOf({ loopRegion: o.loopRegion, bars });
+    S.tension = tensionOf(o.tension);
     S.migratedIds = assignIds(S.layers);   // > 0 for songs saved before layer ids (runtime info, not serialized)
     S.migratedLines = migratedLines;       // > 0 for songs saved before strokes (v < 3)
     // vibrato (B1, ext.edit.vib[L]) was keyed by line sample of the one line: { l: ranges } -> { s: { s1: ranges } }
@@ -444,6 +447,29 @@
     S.cur = cur;
     S.migratedSections = secs.length ? 0 : 1;
     return S;
+  }
+  const tensionOf = (v) => (typeof v === 'number' && isFinite(v) ? Math.round(clamp(v, 0, 1) * 1000) / 1000 : 0);
+
+  // ---------- Tension dial (0..1, per section) ----------
+  // The map highlights h(c, T) instead of the consonance c: T = 0 is c itself (Calm); higher T blends in a Gaussian around
+  // target = 1 - T (Color ~0.5 = mid-consonance "spicy" notes, Tense 1 = the roughest). Applied at draw / fit time to the cached columns.
+  const TENSION_W = 0.15;
+  const sstep = (a, b, x) => { const u = clamp((x - a) / (b - a), 0, 1); return u * u * (3 - 2 * u); };
+  function tensionH(c, T) {
+    if (!(T > 0)) return c;
+    const g = Math.exp(-(((c - (1 - T)) / TENSION_W) ** 2)), b = sstep(0, 0.4, T);
+    return (1 - b) * c + b * g;
+  }
+  const tensionName = (T) => (T < 0.2 ? 'Calm' : T < 0.75 ? 'Color' : 'Tense');
+  // Palette stops for the bright bands: cyan (Calm) -> amber (Color) -> red (Tense); null at 0 = the calm palette untouched.
+  function tensionTint(T) {
+    if (!(T > 0)) return null;
+    const A = { c1: [0.38, 0.10, 0.55], c2: [0.0, 0.75, 0.86], c3: [1, 1, 1], G: [0.55, 0.95, 1] };
+    const B = { c1: [0.45, 0.10, 0.36], c2: [1, 0.72, 0.2], c3: [1, 0.95, 0.8], G: [1, 0.85, 0.5] };
+    const C = { c1: [0.5, 0.06, 0.15], c2: [1, 0.25, 0.18], c3: [1, 0.8, 0.75], G: [1, 0.5, 0.4] };
+    const lo = T < 0.5 ? A : B, hi = T < 0.5 ? B : C, u = T < 0.5 ? T / 0.5 : (T - 0.5) / 0.5, o = {};
+    for (const k of ['c1', 'c2', 'c3', 'G']) o[k] = lo[k].map((v, i) => v + (hi[k][i] - v) * u);
+    return o;
   }
   function barsIn(b, v4) {
     const n = Math.round(+b);
@@ -490,7 +516,7 @@
       layers[l.id] = c;
     });
     const dr = plain(x.drums); delete dr.vol;
-    return { bars, ts, chords: parseChords(x.chords || [], true, bars, ts), loopRegion: regionOf({ loopRegion: x.loopRegion, bars }),
+    return { bars, ts, chords: parseChords(x.chords || [], true, bars, ts), loopRegion: regionOf({ loopRegion: x.loopRegion, bars }), tension: tensionOf(x.tension),
       drums: dr, vib: x.vib && typeof x.vib === 'object' ? plain(x.vib) : null, layers };
   }
 
@@ -509,7 +535,7 @@
     return l.vol;
   };
 
-  NS.model = { LO, HI, SPAN, LPB, SPB, MAX_LAYERS, BPM_MIN, BPM_MAX, SHARP, FLAT, QUALS, QI, SCALE, NATURAL, COLORS,
+  NS.model = { tensionH, tensionName, tensionTint, TENSION_W, LO, HI, SPAN, LPB, SPB, MAX_LAYERS, BPM_MIN, BPM_MAX, SHARP, FLAT, QUALS, QI, SCALE, NATURAL, COLORS,
     GAIN, VOL_MAX, MAX_STROKES, strokes, nextStrokeId, addStroke, strokeEmpty, pruneStrokes, lineAt, hasLine, lineRuns, withLegacyLine, volDb, volLabel, clamp, r2, regionOf, newLayer, nextLayerId, assignIds, defaultSong, segs, serialize, parse, chordMidis, scaleOf, namesOf, chordName, diatonic,
     secPerBar, secPer16, layerGain,
     TS, TS_LIST, tsOf, spb, lpb, tot16, barsOf, barAt, beatGrid,

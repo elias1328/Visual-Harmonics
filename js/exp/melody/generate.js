@@ -76,9 +76,9 @@
     if (X) {
       const all = [];
       for (let m = Math.ceil(lo); m <= hi; m++) if (X.fits(m)) all.push(m);
-      return { all, chordTones: all.filter((m) => X.isChord(m)) };
+      return { all, chordTones: X.tension > 0.3 ? [] : all.filter((m) => X.isChord(m)) };   // phrase ends rest on chord tones only while the dial is calm
     }
-    let pk = at.peaks().filter((m) => m >= lo - 0.01 && m <= hi + 0.01);
+    let pk = (at.matchPeaks ? at.matchPeaks() : at.peaks()).filter((m) => m >= lo - 0.01 && m <= hi + 0.01);
     if (!pk.length) {
       const sc = md.scaleOf(S).steps.map((x) => (S.key + x) % 12);
       pk = []; for (let m = Math.ceil(lo); m <= hi; m++) if (sc.includes(((m % 12) + 12) % 12)) pk.push(m);
@@ -205,7 +205,7 @@
       lastGen = { snap: snapOf(), layer: L, targets: notes, mode: l.mode };
       api.last = lastGen;
       syncAgain();
-      M.toast((asNotes ? notes.length + ' notes' : 'A line through ' + notes.length + ' targets') + ' on the bright bands · Ctrl+Z undoes');
+      M.toast((asNotes ? notes.length + ' notes' : 'A line through ' + notes.length + ' targets') + (S.tension > 0 ? ' on the highlighted notes' : ' on the bright bands') + ' · Ctrl+Z undoes');
     }
     M.on('song', syncAgain);
 

@@ -120,6 +120,10 @@
     const tempoSl = ui.slider(sSong, { label: 'Tempo', min: BPM_MIN, max: BPM_MAX, step: 1, value: M.song.bpm, fmt: (v) => v + ' BPM',
       desc: 'Quarter notes per minute, for the whole song. Bars and time signature belong to the section shown.', onInput: (v) => { M.song.bpm = v; VH.store.set('melody.bpm', v); M.save(); } });
     tempoSl.input.addEventListener('change', () => M.commit('Tempo'));
+    const tenSl = ui.slider(sSong, { label: 'Tension', min: 0, max: 1, step: 0.01, value: M.song.tension || 0, fmt: (v) => md.tensionName(v) + ' \u00b7 ' + Math.round(v * 100) + '%',
+      desc: 'What the map highlights, for the section shown. Calm: the most consonant notes. Color: spicy 7ths, 9ths, 11ths and 13ths. Tense: the roughest clashes. Snap, auto-fit and the dice follow it; playback and export are unchanged.',
+      onInput: (v) => M.setTension(v) });
+    tenSl.input.addEventListener('change', () => M.setTension(+tenSl.input.value, true));
     const pRow = ui.h('div', 'vh-row mel-seg'); pRow.append(ui.h('span', 'mel-lbl', 'Play')); sSong.append(pRow);
     const loopBtn = ui.button(pRow, { label: 'Loop', pressed: M.song.loop, onClick: () => { M.song.loop = !M.song.loop; U.sync(); M.save(); } });
     loopBtn.title = 'Play the song in a loop';
@@ -610,6 +614,7 @@
       syncRegion(); syncTools();
       fillKeys(); modeSel.value = S.mode;
       syncBars(S.bars); syncGrid(S.grid);
+      tenSl.set(S.tension || 0); if (M.view && M.view.syncTension) M.view.syncTension();
       if (U.renderArr) U.renderArr();
       loopBtn.set({ pressed: S.loop });
       backBtn.set({ pressed: S.backing.on }); backSel.set(S.backing.sound); backSl.set(S.backing.vol);

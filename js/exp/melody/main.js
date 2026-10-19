@@ -155,6 +155,13 @@
       if (b >= 0) M.engine.previewChord(b);   // chord changed by undo/redo -> preview the first changed bar
     }
     // Drop uncommitted live edits (e.g. a drag cancelled by a two-finger pinch): back to the last committed song, no step.
+    // Tension dial (0..1) of the section shown: live while dragging, final = one undo step ("Tension: Color").
+    M.setTension = (v, final) => {
+      v = Math.round(clamp(+v || 0, 0, 1) * 1000) / 1000;
+      S.tension = v; M.bands.dirty = true; M.requestRender();
+      if (M.view && M.view.syncTension) M.view.syncTension();
+      if (final) M.commit('Tension: ' + md.tensionName(v));
+    };
     M.revert = () => { if (snap() !== lastSnap) applySnap(lastSnap); };
     M.undo = () => { if (!hist.past.length) return; const e = hist.past.pop(); hist.future.push({ s: snap(), label: e.label }); applySnap(e.s); };
     M.redo = () => { if (!hist.future.length) return; const e = hist.future.pop(); hist.past.push({ s: snap(), label: e.label }); applySnap(e.s); };

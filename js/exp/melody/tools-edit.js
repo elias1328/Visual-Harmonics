@@ -728,7 +728,7 @@
     // Pure intonation (Settings > Edit > Advanced): the old exact-band fit. Nearest bright band (local consonance
     // maximum) within ±1.5 semitones of m, or null.
     function bandNear(info, m) {
-      const V = info.V, R = info.rows, rf = info.rowOfMidi(m), w = 1.5 * (R - 1) / md.SPAN;
+      const V = info.Vh, R = info.rows, rf = info.rowOfMidi(m), w = 1.5 * (R - 1) / md.SPAN;
       let best = -1, bs = Infinity;
       for (let r = Math.max(1, Math.ceil(rf - w)); r <= Math.min(R - 2, Math.floor(rf + w)); r++) {
         if (V[r] > V[r - 1] || V[r] > V[r + 1] || V[r] > 0.8) continue;

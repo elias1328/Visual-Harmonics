@@ -65,6 +65,32 @@
     };
     const zIn = zBtn('+', 'Zoom in on pitch (+, Ctrl + wheel, pinch)', 1 / 1.4), zOut = zBtn('−', 'Zoom out on pitch (−)', 1.4);
     wrap.append(zoomEl);
+    // Tension dial: a "◐ Calm / Color / Tense" chip left of the zoom buttons; it opens a slider pop-over (M.setTension).
+    const tenChip = ui.h('button', 'mel-tens-chip'); tenChip.type = 'button';
+    tenChip.setAttribute('aria-haspopup', 'true'); tenChip.setAttribute('aria-expanded', 'false');
+    const tenPop = ui.h('div', 'mel-tens-pop'); tenPop.hidden = true; tenPop.setAttribute('role', 'group'); tenPop.setAttribute('aria-label', 'Tension');
+    const tenRange = ui.h('input', 'mel-tens-range'); tenRange.type = 'range'; tenRange.min = 0; tenRange.max = 1; tenRange.step = 0.01; tenRange.value = 0;
+    tenRange.setAttribute('aria-label', 'Tension: what the map highlights');
+    const tenTicks = ui.h('div', 'mel-tens-ticks'); ['Calm', 'Color', 'Tense'].forEach((t) => tenTicks.append(ui.h('span', '', t)));
+    tenPop.append(ui.h('div', 'mel-tens-h', 'Tension'), tenRange, tenTicks,
+      ui.h('div', 'mel-tens-d', 'What the map highlights: Calm = the most consonant notes, Color = spicy 7ths, 9ths, 11ths and 13ths, Tense = the roughest clashes. Snap, auto-fit and the dice follow it; playback and export do not change.'));
+    wrap.append(tenChip, tenPop);
+    V.syncTension = function () {
+      const T = (M.song && M.song.tension) || 0, tint = md.tensionTint(T), nm = md.tensionName(T);
+      tenChip.textContent = '◐ ' + nm; tenChip.title = 'Tension: ' + nm + ' (' + Math.round(T * 100) + '%) - click to change what the map highlights';
+      tenChip.classList.toggle('on', T > 0);
+      tenChip.style.setProperty('--tens', tint ? 'rgb(' + tint.c2.map((v) => Math.round(v * 255)).join(',') + ')' : '');
+      if (document.activeElement !== tenRange) tenRange.value = T;
+    };
+    tenChip.addEventListener('click', () => { tenPop.hidden = !tenPop.hidden; tenChip.setAttribute('aria-expanded', String(!tenPop.hidden)); });
+    tenRange.addEventListener('input', () => M.setTension(+tenRange.value));
+    tenRange.addEventListener('change', () => M.setTension(+tenRange.value, true));
+    const tenClose = (e) => {
+      if (tenPop.hidden || (e.type === 'keydown' ? e.key !== 'Escape' : tenPop.contains(e.target) || tenChip.contains(e.target))) return;
+      tenPop.hidden = true; tenChip.setAttribute('aria-expanded', 'false');
+    };
+    document.addEventListener('pointerdown', tenClose); document.addEventListener('keydown', tenClose);
+    if (M.cleanups) M.cleanups.push(() => { document.removeEventListener('pointerdown', tenClose); document.removeEventListener('keydown', tenClose); });
     function syncZoomUi() {
       zIn.disabled = V.span <= Z_MIN + 1e-6; zOut.disabled = !V.zoomed();
       zoomEl.classList.toggle('zoomed', V.zoomed());
@@ -88,6 +114,9 @@
       scroller.max = Math.max(0, Math.round(V.CW - V.GW));
       zoomEl.style.top = (V.topH + HDR + 6) + 'px';
       zoomEl.style.right = 'calc(50% - ' + (V.VW / 2 - (V.VW <= 600 ? 12 : 16)) + 'px)';
+      const zr = V.VW / 2 - (V.VW <= 600 ? 12 : 16), zw = V.VW <= 600 ? 30 : 26;
+      tenChip.style.top = zoomEl.style.top; tenChip.style.right = 'calc(50% - ' + (zr - zw - 6) + 'px)';
+      tenPop.style.top = (V.topH + HDR + 6 + 30) + 'px'; tenPop.style.right = 'calc(50% - ' + zr + 'px)';
       V.setScroll(V.scrollX);
       M.emit('layout', V);
     };

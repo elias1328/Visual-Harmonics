@@ -8,8 +8,8 @@
   const R = 301, RPS = (R - 1) / SPAN;   // rows, rows per semitone
   const rowMidi = (r) => LO + r / (R - 1) * SPAN;
 
-  function pal(t) {   // harmony palette: navy -> violet -> cyan -> white
-    const c0 = [0.03, 0.04, 0.16], c1 = [0.38, 0.10, 0.55], c2 = [0.0, 0.75, 0.86], c3 = [1, 1, 1];
+  function pal(t, tint) {   // harmony palette: navy -> violet -> cyan -> white (tint: the Tension dial's warmer stops)
+    const c0 = [0.03, 0.04, 0.16], c1 = tint ? tint.c1 : [0.38, 0.10, 0.55], c2 = tint ? tint.c2 : [0.0, 0.75, 0.86], c3 = tint ? tint.c3 : [1, 1, 1];
     const mix = (a, b, u) => a.map((v, i) => v + (b[i] - v) * u);
     return t < 0.33 ? mix(c0, c1, t / 0.33) : t < 0.66 ? mix(c1, c2, (t - 0.33) / 0.33) : mix(c2, c3, (t - 0.66) / 0.34);
   }
@@ -36,7 +36,7 @@
       specs = S.layers.map((_, L) => spectrumOf(M.soundOf(L)));
       keys = specs.map((s) => JSON.stringify(s));
       bSpec = spectrumOf(M.backingSound()); bKey = JSON.stringify(bSpec);
-      const k = keys[M.active] + '|' + bKey;
+      const k = keys[M.active] + '|' + bKey + '|' + (S.tension || 0);
       if (k !== bgFor) api.dirty = true;
     };
     api.invalidate = function () { cache.clear(); api.dirty = true; M.requestRender(); };
@@ -61,6 +61,39 @@
       return cross(f, chordMidis(ch).map(H.midiToHz), specs[L], bSpec, extras(b, L));
     };
 
+    // Pixels (R x RGBA) for a highlight curve t (0..1 per row): palette + soft glow around its peaks.
+    function paint(t, tint) {
+      const out = new Uint8ClampedArray(R * 4), halo = new Float32Array(R), G = tint ? tint.G : [0.55, 0.95, 1];
+      for (let r = 1; r < R - 1; r++) {   // soft glow around the highlighted peaks
+        if (t[r] < 0.62 || t[r] < t[r - 1] || t[r] < t[r + 1]) continue;
+        const str = (t[r] - 0.62) / 0.38;
+        for (let q = Math.max(0, r - 14); q <= Math.min(R - 1, r + 14); q++) halo[q] = Math.max(halo[q], str * Math.exp(-(((q - r) / 5.5) ** 2)));
+      }
+      for (let r = 0; r < R; r++) {
+        const k = pal(t[r], tint), g = 0.5 * halo[r] * (1 - t[r]);
+        out.set([0, 1, 2].map((i) => (k[i] + (G[i] - k[i]) * g) * 255).concat(255), r * 4);
+      }
+      return out;
+    }
+    const tm = md.tensionH;
+    api.tension = () => M.song.tension || 0;
+    // Highlight h per row for tension T (null at 0 = the consonance itself), cached on the column.
+    function hRows(col, T) {
+      if (!(T > 0) || !col.chord) return null;
+      if (col.hT && col.hT.T === T) return col.hT.H;
+      const H = new Float32Array(R);
+      for (let r = 0; r < R; r++) H[r] = tm(1 - col.V[r] ** 0.75, T);
+      col.hT = { T, H };
+      return H;
+    }
+    // Pixels of a column for tension T (the calm ones at 0 or without a chord), cached on the column.
+    api.pixels = function (col, T) {
+      if (!(T > 0) || !col.chord) return col.px;
+      if (col.pxT && col.pxT.T === T) return col.pxT.px;
+      const px = paint(hRows(col, T), md.tensionTint(T));
+      col.pxT = { T, px };
+      return px;
+    };
     // Column for bar b scored with layer L's spectrum: { D, V, px, chord } (cached).
     api.column = function (b, L) {
       const S = M.song, ch = md.regionChord(S, b);
@@ -87,17 +120,9 @@
         }
         let mn = Infinity, mx = -Infinity;
         for (let r = 0; r < R; r++) { mn = Math.min(mn, V[r]); mx = Math.max(mx, V[r]); }
-        const t = new Float32Array(R), halo = new Float32Array(R);
+        const t = new Float32Array(R);
         for (let r = 0; r < R; r++) { V[r] = (V[r] - mn) / ((mx - mn) || 1); t[r] = 1 - V[r] ** 0.75; }
-        for (let r = 1; r < R - 1; r++) {   // soft glow around consonant peaks
-          if (t[r] < 0.62 || t[r] < t[r - 1] || t[r] < t[r + 1]) continue;
-          const str = (t[r] - 0.62) / 0.38;
-          for (let q = Math.max(0, r - 14); q <= Math.min(R - 1, r + 14); q++) halo[q] = Math.max(halo[q], str * Math.exp(-(((q - r) / 5.5) ** 2)));
-        }
-        for (let r = 0; r < R; r++) {
-          const k = pal(t[r]), g = 0.5 * halo[r] * (1 - t[r]), G = [0.55, 0.95, 1];
-          px.set([0, 1, 2].map((i) => (k[i] + (G[i] - k[i]) * g) * 255).concat(255), r * 4);
-        }
+        px.set(paint(t, null));
       }
       c = { D, V, px, chord: ch };
       cache.set(key, c);
@@ -106,17 +131,17 @@
 
     // Background image (1 px per sixteenth x R rows) for the active layer; cols[i] = region i's column.
     api.computeBg = function () {
-      const S = M.song, A = M.active, W = md.tot16(S);
+      const S = M.song, A = M.active, W = md.tot16(S), T = S.tension || 0;
       api.refresh();
       off.width = W; off.height = R;
       const octx = off.getContext('2d'), img = octx.createImageData(W, R);
       S.chords.forEach((e, i) => {
-        const c = cols[i] = api.column(i, A), z = md.regionEnd(S, i);
-        for (let x = e.at; x < z; x++) for (let r = 0; r < R; r++) img.data.set(c.px.subarray(r * 4, r * 4 + 4), ((R - 1 - r) * W + x) * 4);
+        const c = cols[i] = api.column(i, A), z = md.regionEnd(S, i), cpx = api.pixels(c, T);
+        for (let x = e.at; x < z; x++) for (let r = 0; r < R; r++) img.data.set(cpx.subarray(r * 4, r * 4 + 4), ((R - 1 - r) * W + x) * 4);
       });
       cols.length = S.chords.length;
       octx.putImageData(img, 0, 0);
-      bgFor = keys[A] + '|' + bKey;
+      bgFor = keys[A] + '|' + bKey + '|' + T;
       api.dirty = false;
     };
 
@@ -126,6 +151,11 @@
       if (!md.regionChord(M.song, b)) return NaN;
       const V = api.column(b, L).V, rf = clamp((m - LO) * RPS, 0, R - 1), r = Math.min(R - 2, Math.floor(rf)), u = rf - r;
       return 1 - (V[r] * (1 - u) + V[r + 1] * u) ** 0.75;
+    };
+    // 0..1 highlight h of midi m (the Tension dial's map value); equals the consonance at tension 0.
+    api.match = function (m, b, L) {
+      const c = api.consonance(m, b, L), T = api.tension();
+      return T > 0 && !isNaN(c) ? tm(c, T) : c;
     };
     // ---------- fitting to the backing: equal temperament (default) or pure intonation ----------
     // The backing plays equal-tempered chords, so by default every snap lands on a whole semitone (integer midi), picked
@@ -142,26 +172,35 @@
       L = L == null ? M.active : L;
       const S = M.song, ch = md.regionChord(S, b);
       if (!ch) return null;
-      const col = api.column(b, L), mk = S.key + S.mode + ch.join('');
+      const col = api.column(b, L), T = S.tension || 0, mk = S.key + S.mode + ch.join('') + '|' + T;
       let mm = ctxMemo.get(col);
       if (!mm) { mm = new Map(); ctxMemo.set(col, mm); }
       if (mm.has(mk)) return mm.get(mk);
       const cons = new Float32Array(SPAN + 1);
       for (let m = LO; m <= HI; m++) {
         const rf = (m - LO) * RPS, r = Math.min(R - 2, Math.floor(rf)), u = rf - r;
-        cons[m - LO] = 1 - (col.V[r] * (1 - u) + col.V[r + 1] * u) ** 0.75;
+        cons[m - LO] = tm(1 - (col.V[r] * (1 - u) + col.V[r + 1] * u) ** 0.75, T);
       }
-      const sorted = Array.from(cons).sort((a, z) => a - z), thr = sorted[Math.min(SPAN, Math.floor(FIT.pct * SPAN))];
       const chordPc = new Set(chordMidis(ch).map((m) => m % 12));
       const keyPc = new Set(md.scaleOf(S).steps.map((x) => (S.key + x) % 12));
       const c = (m) => cons[clamp(Math.round(m), LO, HI) - LO];
       const isChord = (m) => chordPc.has(pcOf(m)), isKey = (m) => keyPc.has(pcOf(m));
-      const fits = (m) => isChord(m) || (isKey(m) && c(m) >= thr - 1e-6);
+      // Tension: chord / key bonuses fade out as T rises (chord tones by 0.625, key tones at 1), and chord extensions
+      // (7th / 9th / #11 / 11th / 13th over the root) get a bonus that peaks at Color (T ~ 0.5).
+      const wC = Math.max(0, 1 - 1.6 * T), wK = 1 - T, wE = 0.45 * Math.max(0, 1 - Math.abs(T - 0.5) / 0.45), root = ch[0];
+      const isExt = (m) => [2, 5, 6, 9, 10, 11].includes(((pcOf(m) - root) % 12 + 12) % 12);
+      const bon = (n) => (isChord(n) ? FIT.chord * wC + 1e-4 : 0) + (isKey(n) ? FIT.key * wK : 0) + (T > 0 && isExt(n) ? wE : 0);
+      let thr;
+      if (T > 0) {   // the target test: highlight (+ the faded bonuses) at least the bar's 70th percentile
+        const sc = []; for (let m = LO; m <= HI; m++) sc.push(cons[m - LO] + bon(m));
+        sc.sort((a, z) => a - z); thr = sc[Math.min(SPAN, Math.floor(0.7 * SPAN))];
+      } else { const sorted = Array.from(cons).sort((a, z) => a - z); thr = sorted[Math.min(SPAN, Math.floor(FIT.pct * SPAN))]; }
+      const fits = T > 0 ? (m) => c(m) + bon(clamp(Math.round(m), LO, HI)) >= thr - 1e-6 : (m) => isChord(m) || (isKey(m) && c(m) >= thr - 1e-6);
       // dir: the melody's direction into this pitch (-1 | 0 | 1); prev: the (already fitted) previous pitch, so the
       // contour is kept: landing on the other side of prev (a reversed step) costs a lot, a step flattened to a repeat a little.
       const score = (n, from, dir, prev) => {
         const mv = n - from;
-        let sc = c(n) + (isChord(n) ? FIT.chord + 1e-4 : 0) + (isKey(n) ? FIT.key : 0) - FIT.dist * Math.abs(mv) -
+        let sc = c(n) + (T > 0 ? bon(n) : (isChord(n) ? FIT.chord + 1e-4 : 0) + (isKey(n) ? FIT.key : 0)) - FIT.dist * Math.abs(mv) -
           (dir && Math.abs(mv) > 0.5 && Math.sign(mv) !== Math.sign(dir) ? FIT.against : 0);
         if (dir && prev != null) { const st = n - prev; if (Math.abs(st) < 0.25) sc -= FIT.flat; else if (Math.sign(st) !== dir) sc -= FIT.reverse; }
         return sc;
@@ -173,14 +212,15 @@
         if (fits(base)) return base;
         // tiers: 3 = fits and keeps the contour, 2 = a chord / key tone that keeps the contour, 1 = fits, 0 = anything
         const keeps = (n) => !dir || prev == null || (Math.abs(n - prev) >= 0.25 && Math.sign(n - prev) === dir);
+        const win = T > 0 ? 3 : 2;   // a sparse target (Tense) may sit a little farther away
         let bn = base, bs = -Infinity, bt = -1;
-        for (let n = Math.max(LO, base - 2); n <= Math.min(HI, base + 2); n++) {
-          const f = fits(n), k = keeps(n), t = f && k ? 3 : k && (isChord(n) || isKey(n)) ? 2 : f ? 1 : 0, s = score(n, p, dir, prev);
+        for (let n = Math.max(LO, base - win); n <= Math.min(HI, base + win); n++) {
+          const f = fits(n), k = keeps(n), t = T > 0 ? (f && k ? 3 : f ? 2 : k ? 1 : 0) : f && k ? 3 : k && (isChord(n) || isKey(n)) ? 2 : f ? 1 : 0, s = score(n, p, dir, prev);
           if (t > bt || (t === bt && s > bs)) { bn = n; bs = s; bt = t; }
         }
         return bn;
       };
-      const x = { bar: b, layer: L, chord: ch, cons, thr, c, isChord, isKey, fits, score, best };
+      const x = { bar: b, layer: L, chord: ch, tension: T, cons, thr, c, isChord, isKey, isExt, bon, fits, score, best };
       mm.set(mk, x);
       return x;
     };
@@ -190,7 +230,7 @@
       if (!x) return clamp(Math.round(m), LO, HI);
       let bn = clamp(Math.round(m), LO, HI), bs = -Infinity;
       for (let n = Math.max(LO, Math.ceil(m - 1.5)); n <= Math.min(HI, Math.floor(m + 1.5)); n++) {
-        const s = x.c(n) + (x.isChord(n) ? 0.35 : 0) + (x.isKey(n) ? 0.15 : 0) - 0.6 * Math.abs(n - m);
+        const s = x.c(n) + (x.tension > 0 ? x.bon(n) : (x.isChord(n) ? 0.35 : 0) + (x.isKey(n) ? 0.15 : 0)) - 0.6 * Math.abs(n - m);
         if (s > bs) { bs = s; bn = n; }
       }
       return bn;
@@ -205,8 +245,16 @@
       L = L == null ? M.active : L;
       const ch = md.regionChord(M.song, b);
       if (!ch) return Math.round(m);
-      const c = api.column(b, L), rf = (m - LO) * RPS, w = 1.5 * RPS;
+      const c = api.column(b, L), rf = (m - LO) * RPS, w = 1.5 * RPS, Hh = hRows(c, api.tension());
       let best = -1, bs = Infinity;
+      if (Hh) {   // Tension: the nearest highlighted maximum (no 1-cent refinement: the map's own row resolution)
+        for (let r = Math.max(1, Math.ceil(rf - w)); r <= Math.min(R - 2, Math.floor(rf + w)); r++) {
+          if (Hh[r] < Hh[r - 1] || Hh[r] < Hh[r + 1]) continue;
+          const sc = Math.abs(r - rf) / RPS + 2.4 * (1 - Hh[r]);
+          if (sc < bs) { bs = sc; best = r; }
+        }
+        return best < 0 ? Math.round(m) : rowMidi(best);
+      }
       for (let r = Math.max(1, Math.ceil(rf - w)); r <= Math.min(R - 2, Math.floor(rf + w)); r++) {
         if (c.D[r] > c.D[r - 1] || c.D[r] > c.D[r + 1]) continue;
         const sc = Math.abs(r - rf) / RPS + 1.2 * c.V[r];
@@ -226,8 +274,16 @@
     api.at = function (t16, L) {
       const S = M.song;
       L = L == null ? M.active : clamp(L | 0, 0, S.layers.length - 1);
-      const b = md.regionAt(S, clamp(t16, 0, md.tot16(S) - 1e-6)), c = api.column(b, L), e = S.chords[b];
+      const b = md.regionAt(S, clamp(t16, 0, md.tot16(S) - 1e-6)), c = api.column(b, L), e = S.chords[b], T = S.tension || 0, Hh = hRows(c, T);
       return {
+        tension: T, H: Hh || null, Vh: Hh ? Hh.map((v) => 1 - v) : c.V,   // Vh: 0 = most highlighted (V itself at tension 0)
+        match: (m) => api.match(m, b, L),
+        matchPeaks() {   // highlighted maxima (midi), brightest first: peaks() at tension 0
+          if (!Hh) return this.peaks();
+          const out = [];
+          for (let r = 1; r < R - 1; r++) if (Hh[r] >= Hh[r - 1] && Hh[r] >= Hh[r + 1] && Hh[r] > 0.5) out.push([rowMidi(r), Hh[r]]);
+          return out.sort((a, z) => z[1] - a[1]).map((p) => p[0]);
+        },
         bar: md.barAt(S, e.at), region: b, a16: e.at, z16: md.regionEnd(S, b), chord: e.chord, layer: L, rows: R, D: c.D, V: c.V,
         midiOfRow: rowMidi, rowOfMidi: (m) => clamp((m - LO) * RPS, 0, R - 1),
         consonance: (m) => api.consonance(m, b, L), snap: (m) => api.snap(m, b, L),

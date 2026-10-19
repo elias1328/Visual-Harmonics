@@ -292,6 +292,8 @@ Vibrato store (B1): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, to, cents, 
   fits, else picks a fitting semitone within ±2 that keeps the melodic direction (dir, relative to the fitted previous
   pitch prev), smallest move, ties to chord tones.
 
+- **Tension dial** (`S.tension` 0..1, per section, serialized only when > 0; `M.setTension(v, final)`; Settings > Song slider + the chip left of the zoom buttons): the map highlights `h = md.tensionH(c, T)` instead of the consonance c (T = 0: h = c, pixel-identical to before; else a Gaussian around c = 1 - T blended in; warmer palette via `md.tensionTint`). Applied at draw / fit time to the cached columns (`bands.pixels`, `at.H`, `at.match(m)`, `at.matchPeaks()`). With T > 0 `fitCtx().fits` = h + faded chord / key bonuses + a chord-extension bonus (peaks at Color) >= the bar's 70th percentile, and `best` looks within 3 semitones. The hover readout shows "% match"; snap, select-move, auto-fit and the generator follow. Export and playback are unchanged.
+
 ## View: `M.view`
 
 - `cv`, `ctx`, `HDR` (chord header height, 40), `VW`, `TH`, `MH` (map height), `BW` (bar width), `CW` (content width), `scrollX`.

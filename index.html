@@ -91,8 +91,15 @@
     VH.track = function (name) { send(name, name, true); };
     window.addEventListener('hashchange', view);
     window.vhGoatReady = function () { ready = true; view(); };
+    // Only the published site loads the counter (no third-party request or console noise when run locally).
+    if (/github\.io$/.test(location.hostname)) {
+      var s = document.createElement('script');
+      s.async = true; s.src = 'https://gc.zgo.at/count.js';
+      s.setAttribute('data-goatcounter', 'https://elias1328.goatcounter.com/count');
+      s.onload = window.vhGoatReady;
+      document.body.appendChild(s);
+    }
   })();
 </script>
-<script data-goatcounter="https://elias1328.goatcounter.com/count" async src="https://gc.zgo.at/count.js" onload="vhGoatReady()"></script>
 </body>
 </html>
