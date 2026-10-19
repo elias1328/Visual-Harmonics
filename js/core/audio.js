@@ -338,7 +338,7 @@
   function stopAll(rel = 0.05) { [...live].forEach((v) => v.stop(rel)); }
 
   VH.audio = {
-    ensure, voice, trigger, stopAll, load, withContext, midiToHz, hzToMidi,
+    ensure, voice, trigger, stopAll, load, decode, withContext, midiToHz, hzToMidi,
     // For experiments with their own synth (babel): register a handle with stop() so it is counted/stopped.
     track, retire,
     get ctx() { return (bound && bound.ctx) || ctx; },

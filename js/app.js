@@ -163,22 +163,45 @@
     },
 
     // Unified instrument picker fed by VH.sounds.list(): Synths / Instruments / Your sounds / Local.
-    // opts: { value, onChange(id), title, mode: 'line'|undefined, filter(sound) }. In a .vh-dock it is a dock item,
-    // anywhere else a plain select. Returns { value, set(id), setMode(mode), refresh(), destroy(), el, select }.
+    // opts: { value, onChange(id), title, mode: 'line'|undefined, filter(sound), imports (false hides ＋ Import), onImport(sounds) }.
+    // In a .vh-dock it is a dock item, anywhere else a plain select. Audio files dropped on it are imported.
+    // Returns { value, set(id), setMode(mode), refresh(), importFiles(files), destroy(), el, select }.
     soundPicker(parent, o) {
       o = o || {};
-      let mode = o.mode;
-      const opts = () => ui.soundOptions({ mode, filter: o.filter });
+      let mode = o.mode, last = o.value;
+      // Action rows at the end: import (file chooser) and rename / delete (when the user has sounds of their own).
+      const ACT = { value: '__import', label: '＋ Import sound…' }, MAN = { value: '__manage', label: '✎ Rename / delete your sounds…' };
+      const acts = () => (o.imports === false ? [] : [ACT].concat(ui.userSounds().length ? [MAN] : []));
+      const opts = () => ui.soundOptions({ mode, filter: o.filter }).concat(acts());
+      const pick = (id) => { last = id; if (o.onChange) o.onChange(id); };
+      // After an import: the host's onImport(sounds) (return false to fall through), else the first instrument is picked.
+      const imported = (ss) => {
+        if (!ss || !ss.length) return;
+        if (o.onImport && o.onImport(ss) !== false) return;
+        const s = ss.find((x) => !x.drum) || ss[0];
+        sel.value = s.id; pick(s.id);
+      };
+      const importFiles = (fs) => ui.importSounds(fs).then(imported);
+      const onSel = (id) => {
+        if (id === '__import' || id === '__manage') {
+          sel.value = last;
+          if (id === '__import') ui.pickAudioFiles().then((fs) => { if (fs.length) importFiles(fs); });
+          else ui.manageSounds();
+          return;
+        }
+        pick(id);
+      };
       const inDock = parent && parent.classList && parent.classList.contains('vh-dock');
       const sel = inDock
-        ? ui.dockSelect(parent, { icon: o.icon || '♪', title: o.title || 'Instrument', options: opts(), value: o.value, onChange: (id) => o.onChange && o.onChange(id) })
-        : ui.select(parent, { label: o.title || 'Instrument', options: opts(), value: o.value, onChange: (id) => o.onChange && o.onChange(id) });
+        ? ui.dockSelect(parent, { icon: o.icon || '♪', title: o.title || 'Instrument', options: opts(), value: o.value, onChange: onSel })
+        : ui.select(parent, { label: o.title || 'Instrument', options: opts(), value: o.value, onChange: onSel });
       const refresh = () => { const v = sel.value; sel.setOptions(opts(), v); };
       const off = VH.sounds.onChange(refresh);
+      const offDrop = o.imports === false ? () => {} : ui.dropTarget(sel.el, importFiles);
       return {
-        get value() { return sel.value; }, set(id) { sel.value = id; },
+        get value() { return sel.value; }, set(id) { last = id; sel.value = id; },
         setMode(m) { if (m !== mode) { mode = m; refresh(); } },
-        refresh, destroy: off, el: sel.el, select: sel.select,
+        importFiles, refresh, destroy() { off(); offDrop(); }, el: sel.el, select: sel.select,
       };
     },
 
@@ -392,6 +415,245 @@
       return n;
     },
   };
+
+  // ---------- your own sounds: import (file picker / drag & drop), rename, delete ----------
+  // ui.importSounds(files) -> Promise<saved sounds[] | null>: decodes, analyzes (VH.analyze.analyzeImport), asks for
+  // confirmation (root note ± cents with a preview, play type, name) in a small dialog, stores the audio
+  // (VH.store.putBlob) and saves Sounds with source 'import'. Several files -> one multi-zone instrument (or several drums).
+  const IMP = { MAX_BYTES: 20 * 1024 * 1024, MAX_SEC: 30, EXT: /\.(wav|wave|mp3|ogg|oga|opus|flac|m4a|mp4|aac)$/i };
+  const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  const noteName = (m) => NOTES[((Math.round(m) % 12) + 12) % 12] + (Math.floor(Math.round(m) / 12) - 1);
+  const isAudioFile = (f) => !!f && (IMP.EXT.test(f.name || '') || /^audio\//.test(f.type || ''));
+  function wavBlob(x, sr) {
+    const n = x.length, ab = new ArrayBuffer(44 + n * 2), v = new DataView(ab);
+    const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVE'); str(12, 'fmt '); v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true);
+    v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, 'data'); v.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, x[i])) * 32767, true);
+    return new Blob([ab], { type: 'audio/wav' });
+  }
+  // Decode + analyze one file -> { file, name, x (mono, <= 30 s), sr, trimmed, an } or { file, error }.
+  async function readImport(f) {
+    if (!isAudioFile(f)) return { file: f, error: 'not an audio file (wav, mp3, ogg, flac, m4a)' };
+    if (f.size > IMP.MAX_BYTES) return { file: f, error: 'larger than 20 MB' };
+    try {
+      const buf = await VH.audio.decode(await f.arrayBuffer());
+      const x = VH.analyze.monoOf(buf, IMP.MAX_SEC);
+      let peak = 0;
+      for (let i = 0; i < x.length; i++) peak = Math.max(peak, Math.abs(x[i]));
+      if (!(peak > 1e-4)) return { file: f, error: 'silent' };
+      if (peak > 0.99) for (let i = 0; i < x.length; i++) x[i] *= 0.99 / peak;
+      return { file: f, name: String(f.name || 'Sound').replace(/\.[^.]+$/, '').slice(0, 40), x, sr: buf.sampleRate,
+        trimmed: buf.duration > IMP.MAX_SEC + 0.01, an: VH.analyze.analyzeImport(x, buf.sampleRate) };
+    } catch (_) { return { file: f, error: 'could not be decoded' }; }
+  }
+  let impPreview = null;
+  function previewImport(it, midi) {
+    if (!VH.audio.ensure || !VH.audio.ensure()) return;
+    const c = VH.audio.ctx, out = VH.audio.out;
+    if (impPreview) impPreview.forEach((n) => { try { n.stop(); } catch (_) { /* ignore */ } });
+    const b = c.createBuffer(1, it.x.length, it.sr); b.getChannelData(0).set(it.x);
+    const src = c.createBufferSource(), g = c.createGain(), t = c.currentTime + 0.02, dur = Math.min(2.5, it.x.length / it.sr);
+    src.buffer = b; g.gain.value = 0.9; src.connect(g); g.connect(out); src.start(t); src.stop(t + dur);
+    impPreview = [src];
+    if (midi != null) {   // a quiet reference sine at the chosen root: in tune = one fused pitch
+      const o = c.createOscillator(), og = c.createGain();
+      o.frequency.value = 440 * 2 ** ((midi - 69) / 12);
+      og.gain.setValueAtTime(0, t); og.gain.linearRampToValueAtTime(0.12, t + 0.05);
+      og.gain.setValueAtTime(0.12, t + Math.max(0.06, dur - 0.1)); og.gain.linearRampToValueAtTime(0, t + dur);
+      o.connect(og); og.connect(out); o.start(t); o.stop(t + dur + 0.05);
+      impPreview.push(o);
+    }
+    ui.importSounds.previews = (ui.importSounds.previews || 0) + 1;
+  }
+  // A small modal dialog on the page: { back, box, body, foot, close(), onClose }. Esc, ✕ or the backdrop close it.
+  function modal(cls, title) {
+    const back = h('div', 'vh-modal-back'), box = h('div', 'vh-modal ' + (cls || ''));
+    box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true'); box.setAttribute('aria-label', title);
+    box.innerHTML = '<div class="vh-modal-head"><h2></h2><button class="vh-icon-btn" type="button" aria-label="Close">✕</button></div><div class="vh-modal-body"></div><div class="vh-modal-foot"></div>';
+    box.querySelector('h2').textContent = title;
+    back.append(box); doc.body.append(back);
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); api.close(); } };
+    const api = { back, box, body: box.querySelector('.vh-modal-body'), foot: box.querySelector('.vh-modal-foot'), onClose: null,
+      close() { if (!back.isConnected) return; back.remove(); doc.removeEventListener('keydown', onKey, true); if (api.onClose) api.onClose(); } };
+    doc.addEventListener('keydown', onKey, true);
+    box.querySelector('.vh-modal-head button').addEventListener('click', () => api.close());
+    back.addEventListener('pointerdown', (e) => { if (e.target === back) api.close(); });
+    return api;
+  }
+  const btnIn = (p, label, fn, cls) => { const b = h('button', 'vh-btn' + (cls ? ' ' + cls : '')); b.type = 'button'; b.textContent = label; b.addEventListener('click', fn); p.append(b); return b; };
+  const TYPES = [['glide', 'Instrument · sustained (glides)'], ['hit', 'Instrument · decaying (notes)'], ['drum', 'Drum / one-shot']];
+  function importDialog(items, bad) {
+    return new Promise((resolve) => {
+      const multi = items.length > 1, D = modal('vh-imp', multi ? 'Import ' + items.length + ' sounds' : 'Import sound');
+      let done = false;
+      D.onClose = () => { if (!done) { done = true; resolve(null); } };
+      const B = D.body;
+      if (bad.length) B.append(h('div', 'vh-imp-err', bad.map((b) => esc(b.file.name) + ': ' + esc(b.error)).join('<br>')));
+      const allDrum = items.every((it) => it.an.drum), anyHit = items.some((it) => it.an.play === 'hit');
+      const nameRow = h('label', 'vh-imp-row', '<span>Name</span><input type="text" maxlength="40" class="vh-imp-name">');
+      const name = nameRow.querySelector('input');
+      name.value = items[0].name;
+      const typeRow = h('label', 'vh-imp-row', '<span>Use as</span>');
+      const type = ui.select(typeRow, { label: 'Use as', options: TYPES.map(([v, l]) => ({ value: v, label: l })), value: allDrum ? 'drum' : anyHit ? 'hit' : 'glide' });
+      type.select.classList.add('vh-imp-type');
+      const note = h('div', 'vh-desc vh-imp-note');
+      B.append(nameRow, typeRow);
+      const list = h('div', 'vh-imp-list');
+      const rows = items.map((it) => {
+        const r = h('div', 'vh-imp-item');
+        const m0 = it.an.pitched ? it.an.rootMidi : 60, base = Math.round(m0), c0 = Math.round((m0 - base) * 100);
+        r.innerHTML = '<div class="vh-imp-file"><b></b><span class="vh-imp-det"></span></div>' +
+          '<div class="vh-imp-pitch"><label>Root <select class="vh-select vh-imp-root" aria-label="Root note"></select></label>' +
+          '<label><input type="number" class="vh-imp-cents" min="-50" max="50" step="1" aria-label="Cents"> ¢</label>' +
+          '<button type="button" class="vh-btn vh-imp-play">▶ Preview</button></div>';
+        r.querySelector('b').textContent = it.file.name;
+        const det = it.an.pitched ? 'detected ' + noteName(m0) + ' ' + (c0 >= 0 ? '+' : '') + c0 + '¢ · ' + Math.round(it.an.conf * 100) + '% sure' : 'no clear pitch';
+        r.querySelector('.vh-imp-det').textContent = ' · ' + (it.x.length / it.sr).toFixed(1) + ' s · ' + det + (it.trimmed ? ' · trimmed to 30 s' : '') + (it.an.loop ? ' · loops' : '');
+        const sel = r.querySelector('select');
+        for (let m = 24; m <= 108; m++) { const o = h('option'); o.value = m; o.textContent = noteName(m); sel.append(o); }
+        sel.value = String(Math.max(24, Math.min(108, base)));
+        const cents = r.querySelector('input'); cents.value = c0;
+        const midi = () => +sel.value + Math.max(-50, Math.min(50, +cents.value || 0)) / 100;
+        r.querySelector('.vh-imp-play').addEventListener('click', () => previewImport(it, type.value === 'drum' ? null : midi()));
+        list.append(r);
+        return { it, r, midi, sel, cents };
+      });
+      B.append(list, note);
+      const sync = () => {
+        const drum = type.value === 'drum';
+        rows.forEach((x) => x.r.querySelector('.vh-imp-pitch').classList.toggle('vh-imp-nopitch', drum));
+        note.textContent = drum ? (multi ? items.length + ' separate drum sounds for the drum lane rows.' : 'A one-shot for the drum lane rows (played at its own pitch).')
+          : multi ? 'One instrument with ' + items.length + ' zones, each at its root. Check the roots, then save.'
+          : 'Check the root (▶ plays it with a quiet reference tone at that pitch), then save.';
+      };
+      type.select.addEventListener('change', sync); sync();
+      const cancel = btnIn(D.foot, 'Cancel', () => D.close());
+      const save = btnIn(D.foot, 'Save', () => {
+        save.disabled = true; cancel.disabled = true;
+        saveImport(rows.map((x) => ({ it: x.it, midi: x.midi() })), type.value, name.value.trim() || items[0].name)
+          .then((out) => { done = true; D.close(); resolve(out); })
+          .catch((e) => { save.disabled = false; cancel.disabled = false; note.textContent = 'Could not save: ' + ((e && e.message) || e); });
+      }, 'vh-imp-save');
+      Object.assign(D, { rows, type, name, items, save: () => save.click(), cancel: () => D.close() });
+      ui.importSounds.dialog = D;
+      setTimeout(() => { if (D.back.isConnected) name.focus(); }, 0);
+    });
+  }
+  const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  async function measureLoud(s) {   // the same K-weighted render as ensureLoud, done once at import
+    try { const r = await VH.sounds.measure(s); if (r && r.loud > 0) s.loud = r.loud; } catch (_) { /* loud stays lazy (ensureLoud) */ }
+  }
+  // [{ it, midi }], type 'glide'|'hit'|'drum', name -> saved Sounds.
+  async function saveImport(sel, type, name) {
+    const drum = type === 'drum', id = 'imp-' + uid(), out = [];
+    const zoneOf = async (x, key) => {
+      await VH.store.putBlob(key, wavBlob(x.it.x, x.it.sr));
+      const z = { blobKey: key, rootMidi: drum ? 60 : Math.round(x.midi * 1000) / 1000 }, L = x.it.an.loop;
+      if (type === 'glide' && L) { z.loopStart = Math.round(L.loopStart * 1e5) / 1e5; z.loopEnd = Math.round(L.loopEnd * 1e5) / 1e5; }
+      return z;
+    };
+    const make = (it, nm, sid, zones) => ({
+      id: sid, name: nm, family: drum ? 'drums' : type === 'hit' ? 'plucked' : 'import', source: 'import', kind: 'sampler',
+      play: drum ? 'hit' : type, drum: drum || undefined, sampler: { zones, release: type === 'glide' ? 0.3 : 0.6 },
+      spectrum: it.an.spectrum, rootHz: drum ? undefined : it.an.rootHz || undefined,
+      perc: { decay: Math.round(it.an.env.decay * 1000) / 1000, sustain: Math.round(it.an.env.sustain * 1000) / 1000, centroid: Math.round(it.an.centroid) },
+    });
+    if (drum || sel.length === 1) {
+      for (let i = 0; i < sel.length; i++) {
+        const sid = sel.length > 1 ? id + '-' + i : id, s = make(sel[i].it, sel.length > 1 ? sel[i].it.name : name, sid, [await zoneOf(sel[i], sid)]);
+        await measureLoud(s);
+        out.push(VH.sounds.save(s));
+      }
+      return out;
+    }
+    const sorted = sel.slice().sort((a, b) => a.midi - b.midi), zones = [];
+    for (let i = 0; i < sorted.length; i++) zones.push(await zoneOf(sorted[i], id + '-z' + i));
+    const s = make(sorted[Math.floor(sorted.length / 2)].it, name, id, zones);
+    await measureLoud(s);
+    out.push(VH.sounds.save(s));
+    return out;
+  }
+  Object.assign(ui, {
+    noteName, isAudioFile, wavBlob, modal,
+    async importSounds(files) {
+      const fs = [...(files || [])];
+      if (!fs.length) return null;
+      const read = await Promise.all(fs.map(readImport)), ok = read.filter((r) => !r.error), bad = read.filter((r) => r.error);
+      if (!ok.length) {
+        const D = modal('vh-imp', 'Import sound');
+        D.body.append(h('div', 'vh-imp-err', bad.map((b) => esc(b.file.name) + ': ' + esc(b.error)).join('<br>')));
+        ui.importSounds.dialog = D;
+        return null;
+      }
+      return importDialog(ok, bad);
+    },
+    // Opens the system file chooser (call it from a gesture) -> Promise<File[]>.
+    pickAudioFiles() {
+      return new Promise((resolve) => {
+        const inp = h('input'); inp.type = 'file'; inp.multiple = true; inp.accept = 'audio/*,.wav,.mp3,.ogg,.flac,.m4a';
+        inp.addEventListener('change', () => resolve([...inp.files])); inp.addEventListener('cancel', () => resolve([]));
+        inp.click();
+      });
+    },
+    // Accept audio files dropped onto el: onFiles(files). Returns a remover.
+    dropTarget(el, onFiles) {
+      const has = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
+      const over = (e) => { if (!has(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; el.classList.add('vh-drop'); };
+      const leave = () => el.classList.remove('vh-drop');
+      const drop = (e) => {
+        if (!has(e)) return;
+        e.preventDefault(); e.stopPropagation(); leave();
+        const fs = [...e.dataTransfer.files].filter(isAudioFile);
+        if (fs.length) onFiles(fs);
+      };
+      el.addEventListener('dragover', over); el.addEventListener('dragleave', leave); el.addEventListener('drop', drop);
+      return () => { el.removeEventListener('dragover', over); el.removeEventListener('dragleave', leave); el.removeEventListener('drop', drop); };
+    },
+    // The user's own sounds (imported, Babel finds, tone copies).
+    userSounds: () => VH.sounds.list().filter((s) => !s.private && s.source !== 'preset' && s.source !== 'sample'),
+    // Rename / delete dialog (deleting asks for confirmation inside the dialog).
+    manageSounds() {
+      const D = modal('vh-imp vh-manage', 'Your sounds');
+      const render = () => {
+        D.body.innerHTML = '';
+        const us = ui.userSounds();
+        if (!us.length) { D.body.append(h('div', 'vh-desc', 'No sounds of your own yet. Import one (＋ Import sound…) or save a find in Babel.')); return; }
+        for (const s of us) {
+          const r = h('div', 'vh-imp-item vh-man-row');
+          r.dataset.id = s.id;
+          r.innerHTML = '<input type="text" maxlength="40" class="vh-man-name" aria-label="Name"><span class="vh-man-tag"></span><button type="button" class="vh-btn vh-man-del">Delete</button>';
+          const inp = r.querySelector('input'); inp.value = s.name;
+          r.querySelector('.vh-man-tag').textContent = (s.drum ? 'drum' : s.play || '') + ' · ' + ({ import: 'imported', babel: 'Babel', custom: 'tone' }[s.source] || s.source);
+          const commit = () => { const v = inp.value.trim(), cur = VH.sounds.get(s.id); if (v && cur && v !== cur.name) VH.sounds.save(Object.assign({}, cur, { name: v })); };
+          inp.addEventListener('change', commit);
+          inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { commit(); inp.blur(); } });
+          r.querySelector('.vh-man-del').addEventListener('click', () => {
+            const c = h('span', 'vh-man-confirm', 'Delete “<b></b>”? ');
+            c.querySelector('b').textContent = (VH.sounds.get(s.id) || s).name;
+            btnIn(c, 'Delete', () => { ui.deleteSound(s.id); render(); }, 'vh-man-yes');
+            btnIn(c, 'Keep', render, 'vh-man-no');
+            r.innerHTML = ''; r.append(c);
+          });
+          D.body.append(r);
+        }
+      };
+      render();
+      btnIn(D.foot, 'Done', () => D.close());
+      ui.manageSounds.dialog = D;
+      return D;
+    },
+    // Remove a user sound and the stored audio that no other sound uses.
+    deleteSound(id) {
+      const s = VH.sounds.get(id);
+      if (!s) return;
+      VH.sounds.remove(id);
+      const used = new Set();
+      VH.sounds.list().forEach((o) => ((o.sampler && o.sampler.zones) || []).forEach((z) => z.blobKey && used.add(z.blobKey)));
+      ((s.sampler && s.sampler.zones) || []).forEach((z) => { if (z.blobKey && !used.has(z.blobKey)) VH.store.delBlob(z.blobKey).catch(() => {}); });
+    },
+  });
   VH.ui = ui;
 
   // ---------- shortcut sheet ("?") ----------

@@ -1668,7 +1668,8 @@
       const first = !found[g.id], newKind = !Object.values(found).some((f) => f.k === g.k);
       if (first) {
         found[g.id] = { k: g.k, x: g.x, y: g.y, t: Date.now() };
-        VH.store.set('babel.gems', { v: 3, found });
+        if (VH.track) VH.track('gem-found');
+        VH.store.set('babel.gems', { v: 4, found });
         renderGems();
       }
       showParams(p); playSound(p);

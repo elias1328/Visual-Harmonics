@@ -291,3 +291,30 @@ body.vh-has-banner { grid-template-rows: var(--top) auto 1fr; }
 .vh-frame iframe { flex: 1; width: 100%; border: 0; background: #0b0d12; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* ---------- import / manage your own sounds (VH.ui.importSounds, manageSounds) ---------- */
+.vh-modal-back { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(5, 7, 12, 0.6); }
+.vh-modal { width: min(520px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; box-sizing: border-box; padding: 14px 16px; border-radius: 14px;
+  background: var(--surface); border: 1px solid var(--line); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5); }
+.vh-modal-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.vh-modal-head h2 { flex: 1; margin: 0; font-size: 16px; font-weight: 600; }
+.vh-modal-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.vh-modal-foot:empty { display: none; }
+.vh-imp-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+.vh-imp-row > span { width: 56px; color: var(--muted); font-size: 12px; flex: none; }
+.vh-imp-row input, .vh-imp-row .vh-select, .vh-man-row input { flex: 1; min-width: 0; height: 30px; box-sizing: border-box; padding: 0 8px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit; }
+.vh-imp-list { margin-top: 8px; }
+.vh-imp-item { border-top: 1px solid var(--line); padding: 8px 0; }
+.vh-imp-file { font-size: 12px; overflow-wrap: anywhere; }
+.vh-imp-det { color: var(--muted); }
+.vh-imp-pitch { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+.vh-imp-pitch .vh-select { width: auto; height: 28px; padding: 0 4px; }
+.vh-imp-cents { width: 58px; height: 28px; box-sizing: border-box; padding: 0 4px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+.vh-imp-pitch.vh-imp-nopitch label { display: none; }
+.vh-imp-err { color: #ff9a8a; font-size: 12px; margin-bottom: 8px; }
+.vh-imp-note { margin-top: 6px; }
+.vh-man-row { display: flex; align-items: center; gap: 8px; }
+.vh-man-tag { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.vh-man-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
+.vh-drop { outline: 2px dashed var(--accent) !important; outline-offset: -2px; }

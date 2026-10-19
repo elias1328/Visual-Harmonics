@@ -139,7 +139,11 @@
     function tabsOff() { M.forget(tabsT); tabsT = 0; tabsOn = tabsGlow = false; box.classList.remove('mel-coach-tabs'); }
     function go(k) {
       M.forget(advT); advT = 0; tabsOff();
-      if (k >= STEPS.length) { step = STEPS.length; VH.store.set(DONE_KEY, 'done'); render(); return; }
+      if (k >= STEPS.length) {
+        step = STEPS.length; VH.store.set(DONE_KEY, 'done'); render();
+        if (VH.track) VH.track('tutorial-complete');
+        return;
+      }
       step = k;
       if (STEPS[k].id === 'chord') chordSnap = JSON.stringify(M.song.chords);
       if (STEPS[k].id === 'inst') soundSnap = soundsOf(M.song);

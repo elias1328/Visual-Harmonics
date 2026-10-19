@@ -43,6 +43,7 @@
   <p>Which notes sound good together depends on the sound playing them. Every real sound is a stack of overtones, and when the overtones of two notes rub against each other, we hear roughness.</p>
   <p>Here harmony is <b>calculated from the sound itself</b>: we measure each instrument's overtones and compute, for every pitch, how smoothly it blends. Nothing is looked up in a music-theory table, so a bell, a piano and a sine wave each get their own map of what fits.</p>
   <p>Visual Harmonics is <b>free &amp; open source</b>. Play, break things, and look inside.</p>
+  <p>Privacy: anonymous visit counts via GoatCounter. No cookies, no personal data, and your songs never leave your browser unless you share them.</p>
   <p class="vh-credits">Credits: dissonance model after Plomp &amp; Levelt and W. A. Sethares.
     Orchestral samples: VS Chamber Orchestra: Community Edition by Versilian Studios / Sam Gossner &amp; Ivy Audio / Simon Dalzell (CC0), vis.versilstudios.net/vsco-community.html.
     Instruments marked “local” are on this computer only and are not published.</p>
@@ -73,5 +74,25 @@
 <script src="js/exp/spiral.js"></script>
 <script src="js/exp/lab.js"></script>
 <script>VH.app.start();</script>
+<script>
+  // Anonymous, cookie-free visit counts (GoatCounter). Each tab counts as its own page; the hash (and any shared
+  // song in it) is never sent. GoatCounter ignores localhost, so local testing isn't counted.
+  window.goatcounter = { no_onload: true };
+  (function () {
+    var last = null, ready = false;
+    function send(path, title, event) {
+      if (ready && window.goatcounter && window.goatcounter.count) window.goatcounter.count({ path: path, title: title, event: !!event });
+    }
+    function view() {
+      var tab = (location.hash || '#melody').slice(1).split('/')[0] || 'melody';
+      if (tab === last) return;
+      last = tab; send('/' + tab, tab);
+    }
+    VH.track = function (name) { send(name, name, true); };
+    window.addEventListener('hashchange', view);
+    window.vhGoatReady = function () { ready = true; view(); };
+  })();
+</script>
+<script data-goatcounter="https://elias1328.goatcounter.com/count" async src="https://gc.zgo.at/count.js" onload="vhGoatReady()"></script>
 </body>
 </html>

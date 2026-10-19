@@ -336,7 +336,35 @@
     });
   });
 
-  VH.sounds = { list, get, save, remove, onChange, ready, prepare, spectrumOf, custom, normSpectrum, status, DEFAULT_SPECTRUM,
+
+  // ---------- fallback for a missing sound (share links with imported sounds) ----------
+  // A spectrum as a 17-slot vector: harmonics 1..16 (within 3 %) + one slot for everything inharmonic.
+  function spectrumVec(sp) {
+    const v = new Float64Array(17);
+    for (const [r, a] of sp || []) { const k = Math.round(r); if (k >= 1 && k <= 16 && Math.abs(r / k - 1) < 0.03) v[k - 1] += a; else v[16] += a; }
+    return v;
+  }
+  // Cosine similarity of two spectra (0..1).
+  function spectralSim(a, b) {
+    const x = spectrumVec(a), y = spectrumVec(b);
+    let d = 0, nx = 0, ny = 0;
+    for (let i = 0; i < 17; i++) { d += x[i] * y[i]; nx += x[i] * x[i]; ny += y[i] * y[i]; }
+    return nx > 0 && ny > 0 ? d / Math.sqrt(nx * ny) : 0;
+  }
+  // The built-in sound closest to info = { play, spectrum } (same play type first, then spectral similarity).
+  // cands: defaults to the public built-ins (synth presets + CC0 samples). Never null while presets exist.
+  function closest(info, cands) {
+    const i = info || {}, play = i.play === 'hit' ? 'hit' : 'glide', sp = i.spectrum && i.spectrum.length ? i.spectrum : DEFAULT_SPECTRUM;
+    const pool = cands || all().filter((s) => !s.private && ((s.source === 'preset' && s.id !== 'custom') || s.source === 'sample'));
+    let best = null, bv = -Infinity;
+    for (const s of pool) {
+      const v = (playOf(s) === play ? 1 : 0) + spectralSim(sp, s.spectrum || (s.synth && s.synth.partials) || DEFAULT_SPECTRUM);
+      if (v > bv) { bv = v; best = s; }
+    }
+    return best || PRESETS[0];
+  }
+
+  VH.sounds = { spectrumVec, spectralSim, closest, list, get, save, remove, onChange, ready, prepare, spectrumOf, custom, normSpectrum, status, DEFAULT_SPECTRUM,
     derive, playOf, toneOf, toneBands, toneResponse, fromManifest, NOMINAL_ROOT,
     LOUD_REF_DB, kWeight, kRms, kMag, toDb, fromDb, loudFor, loudOf, partialPower, loudScaled, comfortMidi, measure, inferLoud, ensureLoud };
   if (typeof module !== 'undefined' && module.exports) module.exports = VH.sounds;

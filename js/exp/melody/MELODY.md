@@ -79,6 +79,15 @@ VH.melody.parts.push((M) => {
   `cx.chords`); while no bar is split, region index == bar index. `M.splitChord(t16)` / `M.mergeChord(r)` (one undo
   step each; a merge auto-fits the merged region).
 - `fx`, `drums` and `ext` must stay plain JSON. They survive autosave, share links and undo.
+- **Drum kit** (sound.js, song-wide): `ext.kit = { id, name, rows: [{ k, name, syn, sound, sname, vol }] }` (missing = built-in
+  kick / snare / hat / perc). `k` is the pattern key (`kick|snare|hat|perc|r1..r9`, patterns stay per section), `syn` the
+  built-in synth drum (`kick snare hat perc tom clap`), `sound` a VH.sounds id (imported one-shot, Babel find, CC0 sample;
+  null = synth), `vol` 0..1.5. Up to 8 rows. Saved kits: VH.store `melody.kits` (song-independent); the song keeps a
+  snapshot. `NS.sound.kitOf(S)`, `drumEvents` -> `{ drum (syn), row, ri, sound, gm }` (GM note by row: 36, 38, 42, 76, 39,
+  45, 50, 49), `playHit`, `babelKit()`. `M.kit`: `get, open, close, use(kit), save(name), saved(), fromBabel(), addSounds(sounds)`.
+- **Own sounds in links**: `M.ownSounds(S)` (imported / Babel / custom sounds the song uses). Share adds `ext.snd = { id: { name,
+  play, spectrum } }` and shows `M.SHARE_NOTE`; on load a missing sound becomes `VH.sounds.closest(info)` (same play type,
+  then spectral similarity), kit rows the synth drum, and a toast names each fallback (`M.missing`).
 - `backing.styleOpts` holds each backing style's own sub-settings (sound.js: `NS.sound.styleOptsOf(S, style)` validates and fills defaults; missing = the original fixed patterns). It is serialized only when set, so older songs serialize unchanged. Live playback, the WAV render (`NS.sound.offline`) and the MIDI export (`NS.sound.barEvents`) all read it.
 - Notes may carry extra runtime fields such as `sel: true` (B1 selection; the view draws it with a white outline). Those fields are **not** serialized.
 - Model helpers (`M.model`): `nextLayerId(layers)`, `assignIds(layers)`, `chordMidis(ch)`, `chordName(ch, names)`, `namesOf(S)`, `scaleOf(S)`, `diatonic(S)`, `secPerBar(S)`, `secPer16(S)`, `layerGain(S, i)` (0 when muted or not soloed), `serialize(S, full)`, `parse(obj)`, `newLayer(i, opts, bars)`, `COLORS`, `MAX_LAYERS` = 8, `QUALS`.

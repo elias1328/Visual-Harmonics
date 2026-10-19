@@ -473,6 +473,7 @@
   }
 
   function download(blob, name) {
+    if (VH.track) VH.track('export-' + name.split('.').pop());   // export-mid / -wav / -mp3
     const url = URL.createObjectURL(blob), a = document.createElement('a');
     a.href = url; a.download = name; a.rel = 'noopener'; a.style.display = 'none';
     document.body.append(a); a.click(); a.remove();
@@ -535,7 +536,8 @@
       const S = songOf(), B = NS.sound;
       if (B && typeof B.drumEvents === 'function') {
         const out = [];
-        for (const bl of md.barsOf(S)) for (const e of B.drumEvents({ drums: bl.drums || S.drums, ts: bl.ts, bars: 1 }, bl.b)) out.push({ t16: bl.a + e.p, note: GMD[e.drum] || drumNote(e.drum) || 37, vel: clamp(Math.round(e.vel * 110), 1, 127) });
+        // The kit decides the note: each row's General MIDI note by position (e.gm: kick, snare, hat, then other percussion).
+        for (const bl of md.barsOf(S)) for (const e of B.drumEvents({ drums: bl.drums || S.drums, ts: bl.ts, bars: 1, ext: S.ext }, bl.b)) out.push({ t16: bl.a + e.p, note: e.gm || GMD[e.drum] || drumNote(e.drum) || 37, vel: clamp(Math.round(e.vel * 110), 1, 127) });
         return out;
       }
       return drumHits(S.drums, S.bars);
@@ -691,6 +693,7 @@
       const seconds = songSec + TAIL;
       const ids = new Set(sel.layers.map((i) => M.soundOf(i).id));   // samplers must be decoded first
       if (sel.backing) ids.add(M.backingSound().id);
+      if (sel.drums && NS.sound && NS.sound.kitSoundIds) NS.sound.kitSoundIds(S).forEach((id) => ids.add(id));   // the kit's sampled rows
       await Promise.all([...ids].map((id) => (VH.sounds.prepare ? VH.sounds.prepare(id).catch(() => null) : null)));
       if (!alive) throw new Error('cancelled');
       const OAC = root.OfflineAudioContext || root.webkitOfflineAudioContext;
@@ -808,7 +811,7 @@
       return { channels: [buf.getChannelData(0), buf.getChannelData(1)], sr, seconds: buf.duration, songSeconds: songSec, fx: fxUsed, viaB2: !!b2, drums: drumsUsed };
     }
 
-    const api = { open, close, render: renderAudio, normalizePeak, last: null, state: st, songOf, sliceSong };
+    const api = { open, close, render: renderAudio, normalizePeak, last: null, state: st, songOf, sliceSong, drumList };
     VH.melody.exportPart = api;
     return {
       destroy() {

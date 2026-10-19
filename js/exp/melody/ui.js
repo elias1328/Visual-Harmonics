@@ -13,7 +13,20 @@
     // ---------- dock ----------
     const playBtn = ui.dockButton(dock, { icon: '▶', label: 'Play', title: 'Play / stop (Space)', onClick: () => M.engine.toggle() });
     const instSel = ui.soundPicker(dock, { title: 'Instrument of the active layer', value: M.song.layers[0].sound, mode: 'line',
-      onChange: (id) => M.setLayerSound(M.active, id) });
+      onChange: (id) => M.setLayerSound(M.active, id), onImport: (ss) => imported(ss) });
+    // Imported sounds (picker, or audio files dropped on the graph): instruments go on the active layer (or the backing),
+    // one-shots become new drum-lane rows (sound.js M.kit).
+    function imported(ss, backing) {
+      if (!ss || !ss.length) return;
+      const inst = ss.filter((s) => !s.drum), drums = ss.filter((s) => s.drum), msg = [];
+      if (drums.length && M.kit) { const n = M.kit.addSounds(drums); msg.push(n ? drums.map((s) => s.name).join(', ') + ' added to the drum kit' : 'The drum kit is full (8 rows)'); }
+      if (inst.length) {
+        if (backing) M.setBackingSound(inst[0].id); else M.setLayerSound(M.active, inst[0].id);
+        msg.push('Now playing ' + inst[0].name + ' on ' + (backing ? 'the backing' : (M.song.layers[M.active] || {}).name));
+      }
+      if (msg.length) U.toast(msg.join(' · '));
+    }
+    M.cleanups.push(ui.dropTarget(M.view.cv, (fs) => ui.importSounds(fs).then((ss) => imported(ss))));
     const layEl = ui.h('div', 'vh-dock-btn mel-layers'), chipBox = ui.h('span', 'ic'), layLb = ui.h('span', 'lb');
     layEl.title = 'Layers: tap to switch, tap the active one for its menu';
     layEl.append(chipBox, layLb); dock.append(layEl);
@@ -143,6 +156,10 @@
     const shRow = ui.h('div', 'vh-row'); sShare.append(shRow);
     ui.button(shRow, { label: '⤴ Copy share link', onClick: () => M.share() }).title = 'Copy a link to this song (also in the dock)';
     sShare.append(ui.h('div', 'vh-desc', 'The link holds the whole song, so anyone who opens it hears what you hear.'));
+    // Songs with the user's own sounds: their audio can't travel in a link (main.js M.SHARE_NOTE).
+    const shNote = ui.h('div', 'vh-desc mel-share-note'); sShare.append(shNote);
+    const syncShareNote = () => { const own = M.ownSounds ? M.ownSounds() : []; shNote.textContent = own.length ? M.SHARE_NOTE : ''; shNote.hidden = !own.length; };
+    M.on('song', syncShareNote); M.on('sounds', syncShareNote); setTimeout(syncShareNote, 0);
 
     // Backing (independent instrument for the chords)
     const sBack = U.addPanelSection('Backing', 25, { group: 'sound' });
@@ -150,7 +167,7 @@
     const bRow = ui.h('div', 'vh-row'); sBack.append(bRow);
     const backBtn = ui.button(bRow, { label: 'Chord backing', pressed: M.song.backing.on, onClick: () => {
       M.song.backing.on = !M.song.backing.on; M.engine.applyMix(); M.engine.restartBacking(); M.commit('Backing on/off'); } });
-    const backSel = ui.soundPicker(sBack, { title: 'Backing instrument', value: M.song.backing.sound, onChange: (id) => M.setBackingSound(id) });
+    const backSel = ui.soundPicker(sBack, { title: 'Backing instrument', value: M.song.backing.sound, onChange: (id) => M.setBackingSound(id), onImport: (ss) => imported(ss, true) });
     backSel.el.classList.add('mel-backsel');
     const backSl = ui.slider(sBack, { label: 'Backing volume', min: 0, max: md.VOL_MAX, step: 0.01, value: M.song.backing.vol, fmt: md.volLabel,
       onInput: (v) => { M.song.backing.vol = v; M.engine.applyMix(); M.save(); } });
@@ -198,7 +215,7 @@
     const pop = ui.h('div', 'mel-pop'); pop.hidden = true; pop.setAttribute('role', 'dialog');
     const lmenu = ui.h('div', 'mel-float mel-layermenu'); lmenu.hidden = true; lmenu.setAttribute('role', 'dialog');
     const mix = U.addPanelSection('Mixer', 10, { group: 'mix' }); mix.classList.add('mel-mixer');
-    const shareBox = ui.h('div', 'mel-sharebox', '<span>Copy this link:</span><input type="text" readonly aria-label="Share link"><button type="button" class="vh-btn">Done</button>');
+    const shareBox = ui.h('div', 'mel-sharebox', '<span>Copy this link:</span><input type="text" readonly aria-label="Share link"><button type="button" class="vh-btn">Done</button><div class="mel-share-note" hidden></div>');
     shareBox.hidden = true;
     const toastEl = ui.h('div', 'mel-toast', '<span class="t"></span><button type="button" class="a"></button>'); toastEl.setAttribute('role', 'status');
     const toastTxt = toastEl.firstChild, toastAct = toastEl.lastChild;
@@ -230,6 +247,7 @@
     shareBox.querySelector('input').addEventListener('focus', (e) => e.target.select());
     U.showShareBox = (url) => { const inp = shareBox.querySelector('input'); inp.value = url; shareBox.hidden = false; inp.focus(); inp.select(); };
     U.hideShareBox = () => { shareBox.hidden = true; };
+    U.showShareNote = (txt) => { const n = shareBox.querySelector('.mel-share-note'); n.textContent = txt || ''; n.hidden = !txt; };
     function floatAbove(box, anchor) {   // place a floating panel above the dock, centred on the anchor
       const er = el.getBoundingClientRect(), ar = anchor.getBoundingClientRect(), dr0 = dock.getBoundingClientRect(), w = box.offsetWidth;
       box.style.left = clamp(ar.left - er.left + ar.width / 2 - w / 2, 8, Math.max(8, er.width - w - 8)) + 'px';

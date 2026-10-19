@@ -86,16 +86,35 @@
     M.backingSound = () => backSnd || fallback();
     M.usesSound = (id, exceptLayer) => S.backing.sound === id || S.layers.some((l, i) => i !== exceptLayer && l.sound === id);
     M.soundsChanged = () => { if (!alive) return; resolveSounds(); M.bands.refresh(); M.ui.sync(); M.emit('sounds'); };
+    // A sound this song uses that is not on this device (a share link with imported sounds, a deleted sound): the closest
+    // built-in by play type + spectrum (from the link's ext.snd snapshot, see M.share), named in a toast. Drum-kit rows
+    // fall back to the built-in synth drum.
     function checkMissing() {
       if (!soundsReady) return;
-      const miss = [];
-      S.layers.forEach((l) => { if (!VH.sounds.get(l.sound)) { miss.push(l.name); l.sound = 'string'; } });
-      if (!VH.sounds.get(S.backing.sound)) { miss.push('the backing'); S.backing.sound = 'string'; }
+      const info = (S.ext && S.ext.snd) || {}, miss = [];
+      const sub = (id, who) => {
+        const f = VH.sounds.closest(info[id]), was = (info[id] && info[id].name) || 'A sound';
+        miss.push(was + ' → ' + f.name + ' (' + who + ')');
+        return f.id;
+      };
+      S.layers.forEach((l) => { if (!VH.sounds.get(l.sound)) l.sound = sub(l.sound, l.name); });
+      if (!VH.sounds.get(S.backing.sound)) S.backing.sound = sub(S.backing.sound, 'backing');
+      const kit = S.ext && S.ext.kit;
+      if (kit && Array.isArray(kit.rows)) kit.rows.forEach((r) => { if (r && r.sound && !VH.sounds.get(r.sound)) { miss.push((r.sname || r.name) + ' → built-in ' + (r.syn || 'perc') + ' (drums)'); r.sound = null; } });
+      M.missing = miss;
       if (!miss.length) return;
-      M.toast('A sound in this song isn’t available here, so ' + miss.join(' + ') + ' now use' + (miss.length > 1 ? '' : 's') + ' String');
+      M.toast('Not on this device, so the closest built-in plays instead: ' + miss.join(', '));
       lastSnap = snap();
       afterChange();
     }
+    // Sounds of the user's own (imported, Babel, tone copies) used by song S: [{ id, name, play, spectrum }].
+    M.ownSounds = function (song) {
+      const T = song || S, ids = new Set(T.layers.map((l) => l.sound).concat(T.backing.sound));
+      const kit = T.ext && T.ext.kit;
+      if (kit && Array.isArray(kit.rows)) kit.rows.forEach((r) => r && r.sound && ids.add(r.sound));
+      return [...ids].map((id) => VH.sounds.get(id)).filter((x) => x && x.source !== 'preset' && x.source !== 'sample');
+    };
+    M.SHARE_NOTE = 'Your own sounds aren’t included in the link; listeners will hear the closest built-in instrument.';
 
     // ---------- edits, undo, persistence ----------
     const snap = () => JSON.stringify(serialize(S, false));
@@ -449,7 +468,16 @@
     // ---------- share ----------
     M.share = async function () {
       M.ui.hideShareBox();
-      const code = await VH.store.encodeShare(serialize(S, true));
+      if (VH.track) VH.track('share-link');
+      // Imported audio can't travel in a link: carry each own sound's name, play type and spectrum (ext.snd) so the
+      // receiver can pick the closest built-in (checkMissing).
+      const o = serialize(S, true), own = M.ownSounds(S);
+      if (own.length) {
+        const r3 = (v) => Math.round(v * 1000) / 1000;
+        o.ext = Object.assign({}, o.ext, { snd: Object.fromEntries(own.map((x) => [x.id, { name: x.name, play: VH.sounds.playOf(x),
+          spectrum: (x.spectrum || []).slice().sort((a, b) => b[1] - a[1]).slice(0, 8).map((q) => [r3(q[0]), r3(q[1])]) }])) });
+      }
+      const code = await VH.store.encodeShare(o);
       if (!alive) return;
       // Links made while running locally (localhost / file://) point at the public site so they work for anyone.
       const local = location.protocol === 'file:' || /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
@@ -459,9 +487,11 @@
       let ok = false;
       try { if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(url); ok = true; } } catch (_) { ok = false; }
       if (!alive) return;
-      if (ok) { M.toast('Link copied'); return; }
+      const note = own.length ? ' · ' + M.SHARE_NOTE : '';
+      M.ui.showShareNote(own.length ? M.SHARE_NOTE : '');
+      if (ok) { M.toast('Link copied' + note); return; }
       M.ui.showShareBox(url);
-      M.toast('Copy the link below');
+      M.toast('Copy the link below' + note);
     };
     function loadShare(sub) {
       const m = /^s=(.+)$/.exec(sub || '');

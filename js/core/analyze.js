@@ -38,7 +38,9 @@
   }
 
   // Pitch by normalized autocorrelation (computed via FFT), first strong peak, parabolic refinement.
-  function pitchACF(frame, sr) {
+  function pitchACF(frame, sr) { return acfPitch(frame, sr).hz; }
+  // -> { hz, conf }: conf = the normalized autocorrelation at the picked period (0..1; noise ~0, a clean tone ~1).
+  function acfPitch(frame, sr) {
     const N = frame.length, M = N * 2, re = new Float64Array(M), im = new Float64Array(M);
     let mean = 0;
     for (let i = 0; i < N; i++) mean += frame[i];
@@ -51,7 +53,7 @@
     const minL = Math.floor(sr / 2000), maxL = Math.min(N / 2, Math.ceil(sr / 30));
     let best = -1, bestV = -Infinity;
     for (let l = minL + 1; l < maxL; l++) { const v = acf(l); if (v > bestV) { bestV = v; best = l; } }
-    if (best < 0 || bestV <= 0.2) return 0;
+    if (best < 0 || bestV <= 0.2) return { hz: 0, conf: Math.max(0, bestV) };
     let pick = best;   // earliest local max that is nearly as strong (avoids octave-down errors)
     for (let l = minL + 1; l < maxL; l++) {
       const v = acf(l);
@@ -59,7 +61,7 @@
     }
     const a = acf(pick - 1), b = acf(pick), c = acf(pick + 1), den = a - 2 * b + c;
     const off = den ? 0.5 * (a - c) / den : 0;
-    return sr / (pick + Math.max(-0.5, Math.min(0.5, off)));
+    return { hz: sr / (pick + Math.max(-0.5, Math.min(0.5, off))), conf: Math.min(1, b) };
   }
 
   // Hann-windowed magnitude spectrum, zero-padded x2.
@@ -193,7 +195,85 @@
     return n;
   }
 
-  const api = { fromSamples, fromBuffer, fft, findLoop, bakeLoopFade };
+
+  // ---------- imported sounds (VH.ui import dialog; Node-testable) ----------
+  // RMS envelope in hops of `hop` seconds.
+  function envelope(x, sr, hop) {
+    const n = Math.max(1, Math.round((hop || 0.01) * sr)), m = Math.max(1, Math.floor(x.length / n)), e = new Float32Array(m);
+    for (let i = 0; i < m; i++) { let s = 0; for (let k = i * n, z = Math.min(x.length, k + n); k < z; k++) s += x[k] * x[k]; e[i] = Math.sqrt(s / n); }
+    return e;
+  }
+  // Envelope shape: { peakT, attack, decay (s from the peak until -20 dB, or to the end), sustain (median level of the
+  // body after the peak, relative to the peak), dur (until the level stays below -26 dB), percussive }.
+  function envStats(x, sr) {
+    const hop = 0.01, e = envelope(x, sr, hop);
+    let ip = 0;
+    for (let i = 1; i < e.length; i++) if (e[i] > e[ip]) ip = i;
+    const pk = e[ip] || 1e-9;
+    let id = ip; while (id < e.length && e[id] >= pk * 0.1) id++;
+    let ie = e.length - 1; while (ie > ip && e[ie] < pk * 0.05) ie--;
+    const a = Math.min(ie, ip + Math.round(0.15 / hop)), b = Math.max(a + 1, Math.round(ip + (ie - ip) * 0.8));
+    const body = Array.from(e.slice(a, b)).sort((p, q) => p - q), sustain = body.length ? body[Math.floor(body.length / 2)] / pk : 0;
+    const decay = (id - ip) * hop, dur = (ie + 1) * hop;
+    return { peakT: ip * hop, attack: ip * hop, decay, sustain, dur, percussive: decay < 0.5 || sustain < 0.3 };
+  }
+  // The steady part of a sound: after the attack settles, while the level stays >= 30 % of the peak (>= 2048 samples
+  // when possible). -> [a, b) sample indices.
+  function sustainRange(x, sr) {
+    const hop = 0.01, e = envelope(x, sr, hop), n = Math.round(hop * sr);
+    let ip = 0;
+    for (let i = 1; i < e.length; i++) if (e[i] > e[ip]) ip = i;
+    const pk = e[ip] || 1e-9;
+    let ia = ip + Math.max(3, Math.round(0.04 / hop));
+    let ib = ia; while (ib < e.length && e[ib] >= pk * 0.3) ib++;
+    let a = Math.min(x.length, ia * n), b = Math.min(x.length, ib * n);
+    if (b - a < 4096) { a = Math.min(ip * n, Math.max(0, x.length - 4096)); b = Math.min(x.length, a + Math.max(4096, b - a)); }
+    return [a, b];
+  }
+  // Spectral centroid (Hz) of the first ~0.2 s from the peak: kick-like sounds are low, hats high.
+  function centroid(x, sr) {
+    const e = envelope(x, sr, 0.005);
+    let ip = 0;
+    for (let i = 1; i < e.length; i++) if (e[i] > e[ip]) ip = i;
+    const a = Math.max(0, ip * Math.round(0.005 * sr) - Math.round(0.005 * sr)), N = Math.min(8192, pow2below(Math.max(512, Math.min(x.length - a, sr * 0.2))));
+    const fr = Float64Array.from({ length: N }, (_, i) => x[a + i] || 0), mag = magSpectrum(fr), binHz = sr / (mag.length * 2);
+    let s = 0, w = 0;
+    for (let i = 1; i < mag.length; i++) { const p = mag[i] * mag[i]; s += p * i * binHz; w += p; }
+    return w > 0 ? s / w : 0;
+  }
+  // Full analysis of an imported recording (mono samples):
+  // { rootHz, rootMidi, conf, pitched, play: 'glide'|'hit', drum, spectrum (from the sustain portion), loop | null, env, centroid }
+  const MIN_CONF = 0.5;
+  function analyzeImport(x, sr) {
+    const env = envStats(x, sr), [a, b] = sustainRange(x, sr), seg = x.subarray ? x.subarray(a, b) : x.slice(a, b);
+    const fr = frameOf(seg.length >= 512 ? seg : x), ap = acfPitch(fr, sr);
+    const an = fromSamples(seg.length >= 512 ? seg : x, sr);
+    const pitched = ap.conf >= MIN_CONF && an.rootHz > 0;
+    const rootHz = pitched ? an.rootHz : 0, play = env.percussive ? 'hit' : 'glide';
+    let loop = null;
+    if (play === 'glide' && pitched) {
+      const L = findLoop(x, sr, { rootHz, minLen: 0.2, maxLen: Math.min(2.5, x.length / sr * 0.6) });
+      if (L) loop = { loopStart: L.loopStart, loopEnd: L.loopEnd, seam: L.seam, match: L.match };
+    }
+    return { rootHz, rootMidi: rootHz > 0 ? 69 + 12 * Math.log2(rootHz / 440) : 60, conf: ap.conf, pitched, play,
+      drum: !pitched, spectrum: pitched ? an.spectrum : [[1, 1]], loop, env, centroid: centroid(x, sr) };
+  }
+  // Drum kit from candidate sounds [{ id, decay, sustain, centroid, ... }]: the most percussive ones (fast decay, little
+  // sustain; sustained sounds only when nothing percussive is there) up to `max`, ordered low to high by spectral
+  // centroid (kick-like first, hat-like last).
+  function kitPick(items, max) {
+    const score = (s) => (s.decay > 0 ? s.decay : 9) + 2 * (s.sustain || 0), ok = (items || []).filter((s) => s && isFinite(s.centroid));
+    const perc = ok.filter((s) => (s.sustain || 0) < 0.4 && s.decay < 1.5);
+    return (perc.length ? perc : ok).slice().sort((p, q) => score(p) - score(q)).slice(0, max || 8).sort((p, q) => p.centroid - q.centroid);
+  }
+  // Mono mix of an AudioBuffer (first `maxSec` seconds).
+  function monoOf(buf, maxSec) {
+    const n = Math.min(buf.length, maxSec ? Math.round(maxSec * buf.sampleRate) : buf.length), ch = buf.numberOfChannels, mono = new Float32Array(n);
+    for (let c = 0; c < ch; c++) { const d = buf.getChannelData(c); for (let i = 0; i < n; i++) mono[i] += d[i] / ch; }
+    return mono;
+  }
+
+  const api = { fromSamples, fromBuffer, fft, findLoop, bakeLoopFade, acfPitch, envelope, envStats, sustainRange, centroid, analyzeImport, kitPick, monoOf, MIN_CONF };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else (root.VH = root.VH || {}).analyze = api;
 })(this);
