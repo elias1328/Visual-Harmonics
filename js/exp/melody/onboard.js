@@ -39,8 +39,9 @@
     // ---------- demo song ----------
     // Bars 1-2: hold each keyframe on the nearest bright band (snap), with a short glide into the next one.
     function fillMelody(S) {
-      const line = S.layers[0].line, A = 0;
-      line.fill(NaN);
+      const A = 0, l0 = S.layers[0];
+      l0.lines = [{ id: 's1', v: new Float32Array(S.bars * LPB).fill(NaN) }];
+      const line = l0.lines[0].v;
       const snapAt = (t16, m) => M.bands.snap(m, Math.floor(t16 / SPB), A);
       const keys = MELODY.map(([t, m]) => [t, snapAt(t, m)]);
       const GL = 3;   // glide samples
@@ -63,7 +64,7 @@
     function drawnIn(S, bars) {
       return S.layers.some((l) => {
         for (const b of bars) {
-          for (let i = b * LPB; i < (b + 1) * LPB && i < l.line.length; i++) if (!isNaN(l.line[i])) return true;
+          for (const st of md.strokes(l)) for (let i = b * LPB; i < (b + 1) * LPB && i < st.v.length; i++) if (!isNaN(st.v[i])) return true;
           if (l.notes.some((n) => n.s < (b + 1) * SPB && n.s + n.d > b * SPB)) return true;
         }
         return false;
@@ -189,7 +190,7 @@
         return b ? rel(b.getBoundingClientRect()) : null;
       }
       if (id === 'draw') {
-        const x0 = Math.max(0, V.xOf(GHOST_BARS[0] * SPB) - V.scrollX), x1 = Math.min(V.VW, V.xOf((GHOST_BARS[1] + 1) * SPB) - V.scrollX);
+        const x0 = Math.max(V.X0, V.sx(V.xOf(GHOST_BARS[0] * SPB))), x1 = Math.min(V.VW, V.sx(V.xOf((GHOST_BARS[1] + 1) * SPB)));
         if (x1 <= x0) return null;
         return { left: cr.left - er.left + x0 * k, top: cr.top - er.top + V.HDR * k, width: (x1 - x0) * k, height: V.MH * k };
       }
@@ -208,7 +209,7 @@
         return b ? rel(b.getBoundingClientRect()) : null;
       }
       if (id === 'chord') {
-        const b = Math.min(2, M.song.bars - 1), cx = (b + 0.5) * V.BW - V.scrollX, w = Math.min(V.BW - 8, 70);
+        const b = Math.min(2, M.song.bars - 1), cx = V.sx((b + 0.5) * V.BW), w = Math.min(V.BW - 8, 70);
         return { left: cr.left - er.left + (cx - w / 2) * k, top: cr.top - er.top + 3 * k, width: w * k, height: (V.HDR - 6) * k };
       }
       return null;

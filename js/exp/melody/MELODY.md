@@ -42,7 +42,7 @@ VH.melody.parts.push((M) => {
 { key: 0..11, mode: 'major'|'minor', bars: 4|8|16, bpm: 40..200 (4/4, bar = 4 beats),
   chords: [[root 0..11, 'maj'|'min'|'dim'|'aug'|'sus2'|'sus4'|'7'|'maj7'|'m7'] | null, ...]  (length = bars),
   layers: [{ id 'l1'|'l2'|..., name, color '#rrggbb', sound (VH.sounds id), mode 'line'|'notes', vol 0..1, mute, solo,
-             line: Float32Array(bars*48) of midi or NaN   (48 samples per bar),
+             lines: [{ id 's1'|'s2'|.., v: Float32Array(bars*48) of midi or NaN }]   (line strokes, 48 samples per bar; see below),
              notes: [{ s: start sixteenth, d: length in sixteenths, m: midi (float) }] }, ...]   (1..8 layers),
   backing: { sound, vol 0..1, on, style: 'drone'|'strum'|'arp'|'pulse'|'broken',
              styleOpts?: { arp: { rate, pattern, oct, gate }, strum: { speed, dir }, pulse: { rate, gate }, broken: { pattern } } },
@@ -52,6 +52,13 @@ VH.melody.parts.push((M) => {
   grid: 8|16, loop, snap }        // view prefs: autosaved and shared, but NOT part of undo
 ```
 
+- **Line strokes.** A layer's line is a list of strokes that may overlap in time (polyphonic within the layer); a stroke
+  may hold several runs. Stroke ids are stable (vibrato is keyed by them) and empty strokes are dropped on every commit.
+  Serialized (schema `v: 3`) as `lines: [{ id, segs }]`. Songs saved before strokes (v1 / v2, one `line` of segments) parse
+  into stroke `s1` (`S.migratedLines` > 0; the autosave is written back as v3), their vibrato `{ l }` into `{ s: { s1 } }`.
+  Helpers on `M.model`: `strokes(l)`, `addStroke(l, len)`, `nextStrokeId(l)`, `pruneStrokes(l)`, `lineAt(l, i)` -> `[{ id, m }]`,
+  `hasLine(l)`, `lineRuns(l)`, `MAX_STROKES` = 8. `layer.line` is a legacy accessor (not serialized): stroke #1's samples;
+  assigning an array replaces all strokes with one. New code reads `lines`.
 - **Layer ids** are stable. They are unique within the song and kept by undo/redo, autosave and share links. `M.addLayer` takes `max + 1`.
   - Songs saved before ids existed get `l1..lN` in layer order when parsed (`S.migratedIds` > 0 then). An old autosave is saved back in the new format.
   - Part data may be keyed by id, or by index and kept aligned with `'layerRemoved'`. B1's `ext.edit.vib` and B2's `fx.layers` are index-keyed and shift there.
@@ -67,6 +74,7 @@ VH.melody.parts.push((M) => {
 |---|---|
 | `M.commit(label, opts?)` | Call **after** mutating `M.song`. It records one undo step (label shown on the Undo button) if the song changed since the last commit, then re-syncs the UI, refreshes bands, autosaves, and emits `'song'`. Returns `true` if a step was recorded. For drags, mutate on every move with `M.requestRender()` and commit once on pointer-up. `opts = { chords: [bars whose chord changed], source: 'chord' \| 'generate' \| ..., keepHash }` goes to the `beforeCommit` hooks (see Hooks). `M.lastCommit` is the final context `{ label, chords, source, info }`. |
 | `M.undo()` / `M.redo()` | Undo or redo (Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y). |
+| `M.revert()` | Drop uncommitted live edits (back to the last committed song, no step). Used when a pinch cancels a drag. |
 | `M.save()` | Debounced autosave without an undo step (for view prefs). |
 | `M.requestRender()` | Redraw on the next frame. |
 | `M.toast(msg)` | Short status message. |
@@ -104,8 +112,8 @@ Sounds:
 | `'play'` / `'stop'` | none | transport |
 | `'tick'` | `(t)` | every frame while playing (also `M.onPlayTick(cb)`) |
 | `'bar'` | `(b)` | playhead entered bar b (after the backing has been told) |
-| `'draw'` | `(ctx, view)` | overlay drawing. The ctx is already scaled for dpr and translated by `-scrollX`, so draw in **content coords** with `view.xOf` / `view.yOf`. Runs after layers, before the playhead. |
-| `'layout'` / `'scroll'` | `(view)` | canvas resized or scrolled |
+| `'draw'` | `(ctx, view)` | overlay drawing. The ctx is already scaled for dpr, translated by `X0 - scrollX` and clipped to the visible map, so draw in **content coords** with `view.xOf` / `view.yOf`. Runs after layers, before the playhead. |
+| `'layout'` / `'scroll'` | `(view)` | canvas resized or scrolled (time scroll or pitch zoom / scroll) |
 | `'sounds'` | none | sound library changed (resolved sounds and bands refreshed) |
 | `'tools'` / `'tool'` | none | tool list or current tool changed |
 | `'seek'` | `(t16)` | `engine.seek`: playhead moved (playing) or the cue was set (stopped) |
@@ -153,7 +161,7 @@ backing voice ─► backingBus() ──┼─► sumBus() ─► [insert chain]
 - Transport: `play()` starts at `engine.cue` (set by a seek while stopped), else the loop region's start, else 0. `seek(t16)` while playing jumps there and playback continues (notes queued for the old position are cut); while stopped it sets the cue (drawn as a dashed line). `loopRange()` -> `{ a16, b16, on }`. With a loop region, playback loops only those bars (regardless of `song.loop`); a seek outside it plays on to the region end (or the song end) and then returns to the region start.
 - `engine.playing`, `phase`, `pos16`, `bar`, `ctx`, `play()`, `stop()`, `toggle()`, `seek(t16)`, `secPer16()`, `secPerBar()`, `playOf(sound)` ('glide' | 'hit'), `gainOf(i)`, `backingGain()`.
 - `engine.previewChord(bar)` and `engine.previewNote(i, midi, dur)` are for gesture handlers only. `engine.stopAll()`, `engine.stopLayer(i)`.
-- Line playback: 'glide' sounds play one legato voice per line run (`setFreq`). 'hit' sounds re-trigger only when the line crosses a semitone, at least `engine.MIN_GAP` = 70 ms apart on the audio clock.
+- Line playback: one voice per **stroke** (overlapping strokes sound together; `engine.lineVoices()` counts the live ones). 'glide' sounds play legato within a stroke's run (`setFreq`). 'hit' sounds re-trigger only when a stroke crosses a semitone, at least `engine.MIN_GAP` = 70 ms apart on the audio clock (per stroke).
 - Voices are started with `{ gain, dest: bus, when }`. The core applies `sound.tone` itself, so do **not** also pass `opts.tone` for the same sound. For offline export (B3), rebuild the graph in an OfflineAudioContext with `VH.audio.withContext` and the song data (or `layerBusFor`); the live buses belong to the live context.
 
 ## Hooks: `M.addHook(name, fn)` returns `off()`
@@ -172,8 +180,12 @@ the new chord moves (`fitCtx.fits`), onto equal-tempered semitones within ±2. N
 ±0.35 semitone for >= a sixteenth, not a slow slide) that move as one unit (median onto the semitone, wobble kept) and
 glides that are re-drawn between the new plateau ends (rescaled, or eased when the span collapses or flips). A held note
 coming in over the bar line keeps its pitch when it still fits (common tone), else steps the way the line goes and eases
-into the new pitch over a sixteenth. Line vibrato is index-keyed (unchanged); note vibrato is re-keyed. Tests can set
-`VH.melody.fitStats = { items: [] }` to collect `{ L, kind: 'note'|'plateau', from, to, micro, kept }`.
+into the new pitch over a sixteenth. Each line stroke is fitted on its own. Line vibrato is keyed by stroke id + sample
+index (unchanged); note vibrato is re-keyed. Tests can set `VH.melody.fitStats = { items: [] }` to collect
+`{ L, kind: 'note'|'plateau', stroke?, from, to, micro, kept }`.
+
+Vibrato store (B1): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, to, cents, hz]] }, n: [[s, m, cents, hz]] }`.
+`VH.melody.vibrato.lineAt(S, L, i, strokeId)`, `lineArray(S, L, strokeId)`; the export's `vibReader(song, L).line(i, strokeId)`.
 
 `voiceOpts`:
 - `kind` is `'note'`, `'line'` or `'backing'` (layer = -1 for the backing).
@@ -182,7 +194,7 @@ into the new pitch over a sixteenth. Line vibrato is index-keyed (unchanged); no
 
 `pitchMod`:
 - `ref` depends on `kind`:
-  - `'line'`: `{ i, m }` (line sample and midi).
+  - `'line'`: `{ i, m, k }` (line sample, midi and stroke id).
   - `'note'`: the note `{ s, d, m }`, asked only once the note has started.
   - `'backing'`: `{ m }`.
 - `t` is the tick info.
@@ -226,8 +238,18 @@ into the new pitch over a sixteenth. Line vibrato is index-keyed (unchanged); no
 ## View: `M.view`
 
 - `cv`, `ctx`, `HDR` (chord header height, 40), `VW`, `TH`, `MH` (map height), `BW` (bar width), `CW` (content width), `scrollX`.
+- **Piano strip:** `X0` (= `KW()`, 22 px; 14 px at <= 600 px) is the strip's width. The time axis starts right of it: content
+  x 0 (bar 1) is canvas x `X0`, and `GW` = `VW - X0` is the visible graph width (bar widths and time scroll use it).
+  `sx(x)` turns a content x into a canvas x (`x - scrollX + X0`); DOM placed over the canvas (pickers, coach marks, the
+  drum lane's `translateX(X0 - scrollX)`) uses it.
+- **Pitch zoom:** `span` visible semitones (36 .. `Z_MIN` 12) with `pTop` the top pitch. `yOf` / `midiOf` / `keyOf` follow
+  it, as do `PPS()` (px per semitone) and `noteH()` (note bar height). `setPitchView(span, top)`, `zoomAt(f, canvasY)`,
+  `scrollPitch(dm)`, `zoomed()`. Ctrl/Cmd + wheel zooms around the cursor, a plain wheel scrolls pitch while zoomed
+  (Shift / horizontal wheel = time), + / − keys and buttons (top-right), a two-finger pinch, a one-finger drag on the piano
+  strip, and a slim scroll bar at the right edge while zoomed. The band image is cropped at draw time (no recompute).
+  Saved in `VH.store` `melody.view` (`{ span, top }`), not in the song. Emits `'scroll'`.
 - Conversions: `U()` (px per sixteenth), `xOf(t16)`, `t16Of(x)`, `yOf(midi)`, `midiOf(y)`.
-- `xy(pointerEvent)` returns `[x, y]` in content coords.
+- `xy(pointerEvent)` returns `[x, y]` in content coords (scroll and strip offset applied).
 - `rrect(x, y, w, h, r)`, `setScroll(x)`, `relayout()`.
 - `addLane(el, { height? })` puts a DOM strip under the canvas and makes room for it. B2's drum lane is one.
   - The lane goes below the canvas's scroll bar and is as wide as the canvas. Content that should line up with the song uses `view.xOf` / `BW` / `scrollX` and listens to `'layout'` / `'scroll'` (the drum lane's step columns sit exactly under the canvas's bar and beat lines and scroll with it).
@@ -284,6 +306,13 @@ into the new pitch over a sixteenth. Line vibrato is index-keyed (unchanged); no
   - `mute.set` should commit itself.
 - For Melody, the experiment's load hint sits under the chord header (melody.css), clear of lanes and the dock.
 - The built-in tool is `M.tools.list[0]` with id `'draw'`. `M.tools.noteAt(x, y)` returns the active layer's note index under a point, or -1.
+- Line strokes (Pen and Line tool): a stroke starting within ~1 semitone of an existing stroke (± a sixteenth) edits that
+  stroke over the drawn span ("fix"); farther away it adds a new overlapping stroke ("+ new"); Alt always adds one. A
+  badge by the cursor shows which. `M.tools.strokeTarget(x, y, alt)` -> `{ st | null, i, m }`, `beginStroke(p)` (creates
+  the new stroke), `drawBadge(ctx, x, y, fix)`, `badgeState()` ('fix' | 'new' | null), `cancel()` (abort the current drag
+  with `M.revert()`). One undo step per stroke. The eraser splits a stroke it cuts: later pieces become new strokes.
+- MIDI export: a layer's line runs are packed into voices that never overlap; each voice gets its own channel (channel 10
+  skipped) with its own pitch bends. Separate mode writes one track per layer holding all of its channels.
 
 ## Tone (derived instruments)
 

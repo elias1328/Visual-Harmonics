@@ -4,8 +4,9 @@
 //   vibrato per line range / note (floating mini toolbar; stored in song.ext.edit so it is undoable and re-editable;
 //   applied live through M.hooks.pitchMod; drawn as a wavy line), and auto-fit of a bar's notes to a new chord
 //   (a beforeCommit hook, so it also fits generated progressions, in the same undo step).
-// Vibrato data lives in S.ext.edit.vib[layer] = { l: [[from, to, cents, hz], ...] (line sample ranges, to exclusive),
-//                                                  n: [[s, m, cents, hz], ...] (notes by start + pitch) }.
+// Vibrato data lives in S.ext.edit.vib[layer] = { s: { <stroke id>: [[from, to, cents, hz], ...] } (line sample ranges of
+//                                                  that stroke, to exclusive), n: [[s, m, cents, hz], ...] (notes by start + pitch) }.
+// (Songs before strokes stored one `l: ranges` list; model.parse moves it to s.s1.)
 // VH.melody.vibrato exposes the read helpers (e.g. for an offline export).
 (function () {
   'use strict';
@@ -24,26 +25,31 @@
     let v = ed.vib;
     if (!v || typeof v !== 'object') { if (!make) return null; v = ed.vib = {}; }
     let x = v[L];
-    if (!x || typeof x !== 'object') { if (!make) return null; x = v[L] = { l: [], n: [] }; }
-    x.l = arr(x.l); x.n = arr(x.n);
+    if (!x || typeof x !== 'object') { if (!make) return null; x = v[L] = { s: {}, n: [] }; }
+    x.n = arr(x.n);
+    if (!x.s || typeof x.s !== 'object' || Array.isArray(x.s)) x.s = {};
+    if (Array.isArray(x.l)) { if (x.l.length) x.s.s1 = arr(x.s.s1).concat(x.l); delete x.l; }   // legacy: one line
     return x;
   }
+  const hasLineVib = (x) => x && x.s && Object.keys(x.s).some((k) => arr(x.s[k]).length);
+  const strokeOf = (l, k) => (l && Array.isArray(l.lines) ? l.lines.find((st) => st.id === k) || null : null);
   function tidy(S) {
     const ed = S.ext && S.ext.edit;
     if (!ed || !ed.vib) return;
     for (const k of Object.keys(ed.vib)) {
       const x = ed.vib[k];
-      if (!x || +k >= S.layers.length || (!arr(x.l).length && !arr(x.n).length)) delete ed.vib[k];
+      if (x && x.s) Object.keys(x.s).forEach((q) => { if (!arr(x.s[q]).length) delete x.s[q]; });
+      if (!x || +k >= S.layers.length || (!hasLineVib(x) && !arr(x.n).length && !arr(x.l).length)) delete ed.vib[k];
     }
     if (!Object.keys(ed.vib).length) delete ed.vib;
     if (!Object.keys(ed).length) delete S.ext.edit;
   }
   const VIB = {
-    // [cents, hz] at line sample i of layer L, or null.
-    lineAt(S, L, i) {
+    // [cents, hz] at line sample i of stroke k (default 's1') of layer L, or null.
+    lineAt(S, L, i, k) {
       const x = vstore(S, L, false);
       if (!x) return null;
-      for (const r of x.l) if (i >= r[0] && i < r[1]) return [r[2], r[3]];
+      for (const r of arr(x.s[k || 's1'])) if (i >= r[0] && i < r[1]) return [r[2], r[3]];
       return null;
     },
     // [cents, hz] of note n ({ s, m }) in layer L, or null.
@@ -55,17 +61,17 @@
     },
     // Frequency factor at t seconds into the vibrato.
     factor: (cents, hz, t) => 2 ** (cents * Math.sin(2 * Math.PI * hz * t) / 1200),
-    // Per-sample array (null | [cents, hz]) for layer L's line.
-    lineArray(S, L) {
-      const out = new Array(S.layers[L].line.length).fill(null), x = vstore(S, L, false);
-      if (x) for (const r of x.l) for (let i = Math.max(0, r[0]); i < Math.min(out.length, r[1]); i++) out[i] = [r[2], r[3]];
+    // Per-sample array (null | [cents, hz]) for stroke k (default 's1') of layer L.
+    lineArray(S, L, k) {
+      const out = new Array(S.bars * LPB).fill(null), x = vstore(S, L, false);
+      if (x) for (const r of arr(x.s[k || 's1'])) for (let i = Math.max(0, r[0]); i < Math.min(out.length, r[1]); i++) out[i] = [r[2], r[3]];
       return out;
     },
     trace: null,   // tests: set to [] to log [ctxTime, hz, layer] for every modulated frequency update
   };
-  // Store a per-sample array back as ranges (only where the line has a value, so gaps split ranges).
-  function setLineArray(S, L, a) {
-    const line = S.layers[L].line, ranges = [];
+  // Store a per-sample array back as ranges of stroke k (only where the stroke has a value, so gaps split ranges).
+  function setLineArray(S, L, k, a) {
+    const st = strokeOf(S.layers[L], k), line = st ? st.v : [], ranges = [];
     let cur = null;
     for (let i = 0; i < line.length; i++) {
       const v = a[i];
@@ -74,7 +80,7 @@
       cur = [i, i + 1, v[0], v[1]]; ranges.push(cur);
     }
     const x = vstore(S, L, ranges.length > 0);
-    if (x) x.l = ranges;
+    if (x) { if (ranges.length) x.s[k] = ranges; else delete x.s[k]; }
     tidy(S);
   }
   function setNoteVib(S, L, n, v) {
@@ -92,7 +98,11 @@
       const L = +k, lay = S.layers[L], x = ed.vib[k];
       if (!lay || !x) continue;
       x.n = arr(x.n).filter((r) => lay.notes.some((n) => n.s === r[0] && Math.abs(n.m - r[1]) < 0.006));
-      setLineArray(S, L, VIB.lineArray(S, L));
+      vstore(S, L, false);
+      Object.keys(x.s || {}).forEach((k) => {
+        if (!strokeOf(lay, k)) delete x.s[k];   // the stroke is gone
+        else setLineArray(S, L, k, VIB.lineArray(S, L, k));
+      });
     }
     tidy(S);
   }
@@ -130,23 +140,34 @@
     const lay = () => M.song.layers[M.active];
     const tot16 = () => M.song.bars * SPB;
     const grid = () => (M.song.grid === 16 ? 1 : 2);
-    const nh = () => clamp(V.MH / md.SPAN * 0.8, 6, 14);
+    const nh = () => V.noteH();
     const lu = () => V.BW / LPB;
-    const idxOf = (x) => clamp(Math.floor(x / V.BW * LPB), 0, lay().line.length - 1);
-    const commitE = (label) => { prune(M.song); return M.commit(label); };
+    const LEN = () => M.song.bars * LPB;
+    const idxOf = (x) => clamp(Math.floor(x / V.BW * LPB), 0, LEN() - 1);
+    const commitE = (label) => { M.song.layers.forEach(md.pruneStrokes); prune(M.song); return M.commit(label); };
+    const newStroke = (l) => (l.lines.length < md.MAX_STROKES ? md.addStroke(l, LEN()) : null);
 
     // ---------- selection ----------
-    const sel = { notes: new Set(), line: new Set() };
+    // sel.line: Map(stroke id -> Set(sample index)) of the active layer's line strokes
+    const sel = { notes: new Set(), line: new Map() };
     let lastS = M.song;
-    const hasSel = () => sel.notes.size > 0 || sel.line.size > 0;
+    const selLineCount = () => { let n = 0; sel.line.forEach((s) => { n += s.size; }); return n; };
+    const selAdd = (k, i) => { let s = sel.line.get(k); if (!s) sel.line.set(k, (s = new Set())); s.add(i); };
+    const selDel = (k, i) => { const s = sel.line.get(k); if (s) { s.delete(i); if (!s.size) sel.line.delete(k); } };
+    const selHas = (k, i) => { const s = sel.line.get(k); return !!(s && s.has(i)); };
+    function eachSel(fn) {   // fn(stroke, i) for every selected line sample (strokes that still exist)
+      const l = lay();
+      sel.line.forEach((set, k) => { const st = strokeOf(l, k); if (st) set.forEach((i) => fn(st, i)); });
+    }
+    const hasSel = () => sel.notes.size > 0 || selLineCount() > 0;
     function clearSel() {
       sel.notes.forEach((n) => { delete n.sel; });
       sel.notes.clear(); sel.line.clear();
       M.requestRender(); syncBar();
     }
     function selNote(n, on) { if (on) { sel.notes.add(n); n.sel = true; } else { sel.notes.delete(n); delete n.sel; } }
-    function runOf(i) {   // contiguous run of line samples containing i
-      const s = lay().line;
+    function runOf(st, i) {   // contiguous run of stroke st's samples containing i
+      const s = st.v;
       let a = i, b = i;
       while (a > 0 && !isNaN(s[a - 1])) a--;
       while (b < s.length - 1 && !isNaN(s[b + 1])) b++;
@@ -156,22 +177,26 @@
       if (M.song !== lastS) { lastS = M.song; sel.notes.clear(); sel.line.clear(); syncBar(); return; }
       const l = lay(), ns = new Set(l.notes);
       sel.notes.forEach((n) => { if (!ns.has(n)) sel.notes.delete(n); });
-      sel.line.forEach((i) => { if (i >= l.line.length || isNaN(l.line[i])) sel.line.delete(i); });
+      [...sel.line.keys()].forEach((k) => {
+        const st = strokeOf(l, k);
+        if (!st) { sel.line.delete(k); return; }
+        [...sel.line.get(k)].forEach((i) => { if (i >= st.v.length || isNaN(st.v[i])) selDel(k, i); });
+      });
       syncBar();
     }
     function selectAll() {
       clearSel();
       const l = lay();
       l.notes.forEach((n) => selNote(n, true));
-      l.line.forEach((v, i) => { if (!isNaN(v)) sel.line.add(i); });
+      l.lines.forEach((st) => st.v.forEach((v, i) => { if (!isNaN(v)) selAdd(st.id, i); }));
       if (hasSel() && M.tools.current.id !== 'select') pick('select');
       M.requestRender(); syncBar();
     }
     function selBox() {   // content-coords bbox of the selection
-      const u = V.U(), h = nh(), s = lay().line;
+      const u = V.U(), h = nh();
       let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
       sel.notes.forEach((n) => { x0 = Math.min(x0, n.s * u); x1 = Math.max(x1, (n.s + n.d) * u); const y = V.yOf(n.m); y0 = Math.min(y0, y - h / 2); y1 = Math.max(y1, y + h / 2); });
-      sel.line.forEach((i) => { const x = (i + 0.5) * lu(), y = V.yOf(s[i]); x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); });
+      eachSel((st, i) => { const x = (i + 0.5) * lu(), y = V.yOf(st.v[i]); x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); });
       return x0 <= x1 ? { x0, x1, y0, y1 } : null;
     }
 
@@ -179,20 +204,23 @@
     function hit(p) {
       const k = M.tools.noteAt(p.x, p.y);
       if (k >= 0) { const n = lay().notes[k]; return { kind: 'note', n, m: n.m, t: n.s }; }
-      const s = lay().line, w = lu(), tol = touchy(p) ? 14 : 9;
-      let best = -1, bd = tol;
-      for (let i = Math.max(0, Math.floor((p.x - tol) / w)); i <= Math.min(s.length - 1, Math.ceil((p.x + tol) / w)); i++) {
-        if (isNaN(s[i])) continue;
-        const d = Math.hypot((i + 0.5) * w - p.x, V.yOf(s[i]) - p.y);
-        if (d <= bd) { bd = d; best = i; }
+      const w = lu(), tol = touchy(p) ? 14 : 9;
+      let best = -1, bs = null, bd = tol;
+      for (const st of lay().lines) {
+        const s = st.v;
+        for (let i = Math.max(0, Math.floor((p.x - tol) / w)); i <= Math.min(s.length - 1, Math.ceil((p.x + tol) / w)); i++) {
+          if (isNaN(s[i])) continue;
+          const d = Math.hypot((i + 0.5) * w - p.x, V.yOf(s[i]) - p.y);
+          if (d <= bd) { bd = d; best = i; bs = st; }
+        }
       }
-      return best >= 0 ? { kind: 'line', i: best, m: s[best], t: best / SPS } : null;
+      return best >= 0 ? { kind: 'line', st: bs, k: bs.id, i: best, m: bs.v[best], t: best / SPS } : null;
     }
-    const isSelHit = (h) => (h.kind === 'note' ? sel.notes.has(h.n) : sel.line.has(h.i));
+    const isSelHit = (h) => (h.kind === 'note' ? sel.notes.has(h.n) : selHas(h.k, h.i));
     function setHit(h, on) {
       if (h.kind === 'note') { selNote(h.n, on); return; }
-      const [a, b] = runOf(h.i);
-      for (let i = a; i <= b; i++) { if (on) sel.line.add(i); else sel.line.delete(i); }
+      const [a, b] = runOf(h.st, h.i);
+      for (let i = a; i <= b; i++) { if (on) selAdd(h.k, i); else selDel(h.k, i); }
     }
 
     // ---------- move ----------
@@ -202,13 +230,16 @@
       drag = {
         kind: 'move', t0: p.t16, y0: p.y, x0: p.x, anchorM: h.m, anchorT: h.t, moved: false,
         notes: [...sel.notes].map((n) => ({ n, s: n.s, m: n.m, v: VIB.noteOf(S, L, n) })),
-        idx: [...sel.line].sort((a, b) => a - b), line: l.line.slice(), vib: VIB.lineArray(S, L),
+        // per selected stroke: its samples and vibrato before the move, the selected indices and values
+        strokes: [...sel.line.keys()].map((k) => strokeOf(l, k)).filter(Boolean).map((st) => {
+          const idx = [...sel.line.get(st.id)].sort((a, b) => a - b), orig = st.v.slice();
+          return { st, k: st.id, orig, vib: VIB.lineArray(S, L, st.id), idx, vals: idx.map((i) => orig[i]) };
+        }),
         vstore: JSON.stringify(vstore(S, L, false) || null),
       };
-      drag.vals = drag.idx.map((i) => drag.line[i]);
       let lo = Infinity, hi = -Infinity, mlo = Infinity, mhi = -Infinity;
       drag.notes.forEach((o) => { lo = Math.min(lo, o.s); hi = Math.max(hi, o.s + o.n.d); mlo = Math.min(mlo, o.m); mhi = Math.max(mhi, o.m); });
-      drag.idx.forEach((i, k) => { lo = Math.min(lo, i / SPS); hi = Math.max(hi, (i + 1) / SPS); mlo = Math.min(mlo, drag.vals[k]); mhi = Math.max(mhi, drag.vals[k]); });
+      drag.strokes.forEach((g) => g.idx.forEach((i, k) => { lo = Math.min(lo, i / SPS); hi = Math.max(hi, (i + 1) / SPS); mlo = Math.min(mlo, g.vals[k]); mhi = Math.max(mhi, g.vals[k]); }));
       Object.assign(drag, { lo, hi, mlo, mhi });
     }
     function moveTo(p) {
@@ -233,17 +264,20 @@
       d.notes.forEach((o) => { o.n.s = o.s + dt; o.n.m = Math.round((o.m + dm) * 1000) / 1000; });
       d.notes.forEach((o) => { if (o.v) setNoteVib(S, L, { s: o.s, m: o.m }, null); });
       d.notes.forEach((o) => { if (o.v) setNoteVib(S, L, o.n, o.v); });
-      // line samples (vacated samples clear, the destination is overwritten)
-      l.line.set(d.line);
-      const va = d.vib.slice(), nv = d.idx.map((i) => d.vib[i]);
-      d.idx.forEach((i) => { l.line[i] = NaN; va[i] = null; });
+      // line samples, per stroke (vacated samples clear, the destination in the same stroke is overwritten)
       sel.line.clear();
-      d.idx.forEach((i, k) => {
-        const j = i + dS;
-        if (j < 0 || j >= l.line.length) return;
-        l.line[j] = clamp(d.vals[k] + dm, LO, HI); va[j] = nv[k]; sel.line.add(j);
+      d.strokes.forEach((g) => {
+        const v = g.st.v;
+        v.set(g.orig);
+        const va = g.vib.slice(), nv = g.idx.map((i) => g.vib[i]);
+        g.idx.forEach((i) => { v[i] = NaN; va[i] = null; });
+        g.idx.forEach((i, k) => {
+          const j = i + dS;
+          if (j < 0 || j >= v.length) return;
+          v[j] = clamp(g.vals[k] + dm, LO, HI); va[j] = nv[k]; selAdd(g.k, j);
+        });
+        setLineArray(S, L, g.k, va);
       });
-      setLineArray(S, L, va);
       d.dt = dt; d.dm = dm;
       M.requestRender();
     }
@@ -253,7 +287,7 @@
       if (!hasSel()) return;
       const S = M.song, L = M.active, l = lay();
       l.notes = l.notes.filter((n) => !sel.notes.has(n));
-      sel.line.forEach((i) => { l.line[i] = NaN; });
+      eachSel((st, i) => { st.v[i] = NaN; });
       clearSel();
       commitE('Delete selection');
     }
@@ -262,12 +296,15 @@
       const S = M.song, L = M.active, l = lay();
       let t0 = Infinity;
       sel.notes.forEach((n) => { t0 = Math.min(t0, n.s); });
-      sel.line.forEach((i) => { t0 = Math.min(t0, i / SPS); });
+      eachSel((st, i) => { t0 = Math.min(t0, i / SPS); });
       t0 = Math.floor(t0);
       let end = 0;
+      const line = [];   // { sk: source stroke, k: sample offset, m, v }
+      eachSel((st, i) => { end = Math.max(end, (i + 1) / SPS - t0); line.push({ sk: st.id, k: i - t0 * SPS, m: st.v[i], v: VIB.lineAt(S, L, i, st.id) }); });
+      line.sort((a, b) => a.k - b.k);
       clip = {
         notes: [...sel.notes].map((n) => { end = Math.max(end, n.s + n.d - t0); return { s: n.s - t0, d: n.d, m: n.m, v: VIB.noteOf(S, L, n) }; }),
-        line: [...sel.line].sort((a, b) => a - b).map((i) => { end = Math.max(end, (i + 1) / SPS - t0); return { k: i - t0 * SPS, m: l.line[i], v: VIB.lineAt(S, L, i) }; }),
+        line,
       };
       clip.len = Math.ceil(end);
       return true;
@@ -284,13 +321,16 @@
         l.notes.push(n); selNote(n, true);
         setNoteVib(S, L, n, c.v);
       });
-      const va = VIB.lineArray(S, L);
+      // each copied stroke is pasted as a new stroke, layered over what is there (the last stroke when the layer is full)
+      const dest = new Map();
       clip.line.forEach((c) => {
         const j = t * SPS + c.k;
-        if (j < 0 || j >= l.line.length) return;
-        l.line[j] = c.m; va[j] = c.v; sel.line.add(j);
+        if (j < 0 || j >= LEN()) return;
+        let g = dest.get(c.sk);
+        if (!g) { const st = newStroke(l) || l.lines[l.lines.length - 1]; g = { st, va: VIB.lineArray(S, L, st.id) }; dest.set(c.sk, g); }
+        g.st.v[j] = c.m; g.va[j] = c.v; selAdd(g.st.id, j);
       });
-      setLineArray(S, L, va);
+      dest.forEach((g) => setLineArray(S, L, g.st.id, g.va));
       if (M.tools.current.id !== 'select') pick('select');
       commitE(label || 'Paste');
       syncBar();
@@ -311,7 +351,7 @@
       if (!copySel()) return;
       let end = 0;
       sel.notes.forEach((n) => { end = Math.max(end, n.s + n.d); });
-      sel.line.forEach((i) => { end = Math.max(end, Math.ceil((i + 1) / SPS)); });
+      eachSel((st, i) => { end = Math.max(end, Math.ceil((i + 1) / SPS)); });
       pasteAt(end, 'Duplicate');
     }
 
@@ -320,11 +360,15 @@
     const delegate = (id, label, icon, title) => ({
       id, label, icon, title,
       down: (p) => D.down(p, M), move: (p) => D.move(p, M), up: (p) => D.up(p, M),
+      hover: (p) => (D.hover ? D.hover(p, M) : undefined),
+      draw: (ctx, v) => (D.draw ? D.draw(ctx, v) : undefined),
+      deactivate: () => (D.deactivate ? D.deactivate() : undefined),
       cursor: (p) => (D.cursor ? D.cursor(p, M) : 'crosshair'),
     });
 
-    // Straight line: press, drag, release = a linear glide between the two points.
-    let lt = null;
+    // Straight line: press, drag, release = a linear glide between the two points. Like the Pen, it fixes the stroke it
+    // starts near (within ~1 semitone) or adds a new overlapping stroke (always with Alt).
+    let lt = null, ltHover = null;
     function endM(p, i) {
       let m = p.midi;
       if (p.e && p.e.shiftKey) m = Math.round(m);
@@ -332,7 +376,7 @@
       return clamp(m, LO, HI);
     }
     function applyLine() {
-      const s = lay().line, { i0, i1, m0, m1 } = lt;
+      const s = lt.st.v, { i0, i1, m0, m1 } = lt;
       s.set(lt.orig);
       const a = Math.min(i0, i1), b = Math.max(i0, i1);
       for (let k = a; k <= b; k++) s[k] = i1 === i0 ? m1 : m0 + (m1 - m0) * (k - i0) / (i1 - i0);
@@ -342,14 +386,25 @@
       id: 'line', label: 'Line', icon: '╱', title: 'Straight line (L): press, drag, release. Shift = whole semitones',
       cursor: 'crosshair',
       down(p) {
+        const b = M.tools.beginStroke(p);
+        if (!b) return false;
         const i = idxOf(p.x), m = endM(p, i);
-        lt = { orig: lay().line.slice(), i0: i, i1: i, m0: m, m1: m };
+        lt = { st: b.st, fix: b.fix, orig: b.st.v.slice(), i0: i, i1: i, m0: m, m1: m };
         applyLine(); return true;
       },
       move(p) { if (!lt) return; lt.i1 = idxOf(p.x); lt.m1 = endM(p, lt.i1); applyLine(); },
-      up() { if (!lt) return; lt = null; commitE('Straight line'); },
+      up(p) { if (!lt) return; lt = null; if (touchy(p)) ltHover = null; commitE('Straight line'); },
+      hover(p) { ltHover = p.inHeader ? null : p; M.requestRender(); },
+      deactivate() { ltHover = null; },
       draw(ctx) {
-        if (!lt) return;
+        if (!lt) {
+          if (ltHover && !V.pinching() && lay().mode === 'line') {
+            const alt = !!(ltHover.e && ltHover.e.altKey);
+            M.tools.drawBadge(ctx, ltHover.x, ltHover.y, !!M.tools.strokeTarget(ltHover.x, ltHover.y, alt).st);
+          }
+          return;
+        }
+        M.tools.drawBadge(ctx, (lt.i1 + 0.5) * lu(), V.yOf(lt.m1), lt.fix);
         const w = lu();
         ctx.save(); ctx.setLineDash([4, 4]); ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo((lt.i0 + 0.5) * w, V.yOf(lt.m0)); ctx.lineTo((lt.i1 + 0.5) * w, V.yOf(lt.m1)); ctx.stroke();
@@ -362,14 +417,17 @@
     // Eraser: removes the parts of lines (splitting them) and the notes it touches.
     let er = null, erHover = null;
     function eraseSeg(x0, y0, x1, y1, r) {
-      const l = lay(), s = l.line, w = lu(), dx = x1 - x0, dy = y1 - y0, L2 = dx * dx + dy * dy;
+      const l = lay(), w = lu(), dx = x1 - x0, dy = y1 - y0, L2 = dx * dx + dy * dy;
       const dist = (px, py) => {
         const t = L2 ? clamp(((px - x0) * dx + (py - y0) * dy) / L2, 0, 1) : 0;
         return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
       };
       let changed = false;
-      for (let i = Math.max(0, Math.floor((Math.min(x0, x1) - r) / w)); i <= Math.min(s.length - 1, Math.ceil((Math.max(x0, x1) + r) / w)); i++) {
-        if (!isNaN(s[i]) && dist((i + 0.5) * w, V.yOf(s[i])) <= r) { s[i] = NaN; changed = true; }
+      for (const st of l.lines) {
+        const s = st.v;
+        for (let i = Math.max(0, Math.floor((Math.min(x0, x1) - r) / w)); i <= Math.min(s.length - 1, Math.ceil((Math.max(x0, x1) + r) / w)); i++) {
+          if (!isNaN(s[i]) && dist((i + 0.5) * w, V.yOf(s[i])) <= r) { s[i] = NaN; changed = true; }
+        }
       }
       const u = V.U(), h = nh(), steps = Math.max(1, Math.ceil(Math.sqrt(L2) / 2));
       const keep = l.notes.filter((n) => {
@@ -384,12 +442,46 @@
       if (keep.length !== l.notes.length) { l.notes = keep; changed = true; }
       if (changed) { er.changed = true; M.requestRender(); }
     }
+    // After erasing: a run of a stroke that the eraser cut in two (or more) is split into strokes of its own (the first
+    // piece stays, each later piece becomes a new stroke with its vibrato), so every stroke stays one connected phrase
+    // where it used to be one.
+    function splitCut(orig) {
+      const S = M.song, L = M.active, l = lay();
+      let made = 0;
+      for (const st of l.lines.slice()) {
+        const o = orig.get(st.id), v = st.v;
+        if (!o) continue;
+        for (let a = 0; a < o.length; a++) {
+          if (isNaN(o[a])) continue;
+          let b = a; while (b + 1 < o.length && !isNaN(o[b + 1])) b++;
+          const pieces = [];   // surviving pieces of the original run [a, b]
+          for (let i = a; i <= b; i++) {
+            if (isNaN(v[i])) continue;
+            let j = i; while (j + 1 <= b && !isNaN(v[j + 1])) j++;
+            pieces.push([i, j]); i = j;
+          }
+          for (const [i, j] of pieces.slice(1)) {
+            const ns = newStroke(l);
+            if (!ns) break;
+            const va = VIB.lineArray(S, L, st.id), nva = new Array(v.length).fill(null);
+            for (let q = i; q <= j; q++) { ns.v[q] = v[q]; nva[q] = va[q]; v[q] = NaN; va[q] = null; }
+            setLineArray(S, L, ns.id, nva); setLineArray(S, L, st.id, va);
+            made++;
+          }
+          a = b;
+        }
+      }
+      return made;
+    }
     const eraseTool = {
       id: 'erase', label: 'Eraser', icon: '⌫', title: 'Eraser (E): drag over lines or notes to remove just those parts',
       cursor: 'cell',
-      down(p) { er = { x: p.x, y: p.y, r: touchy(p) ? 16 : 10, changed: false }; erHover = p; eraseSeg(p.x, p.y, p.x, p.y, er.r); return true; },
+      down(p) {
+        er = { x: p.x, y: p.y, r: touchy(p) ? 16 : 10, changed: false, orig: new Map(lay().lines.map((st) => [st.id, st.v.slice()])) };
+        erHover = p; eraseSeg(p.x, p.y, p.x, p.y, er.r); return true;
+      },
       move(p) { if (!er) return; eraseSeg(er.x, er.y, p.x, p.y, er.r); er.x = p.x; er.y = p.y; erHover = p; M.requestRender(); },
-      up() { const e = er; er = null; if (e && e.changed) commitE('Erase'); },
+      up() { const e = er; er = null; if (e && e.changed) { splitCut(e.orig); commitE('Erase'); } },
       hover(p) { erHover = p; M.requestRender(); },
       deactivate() { erHover = null; },
       draw(ctx) {
@@ -428,7 +520,7 @@
           if (x1 - x0 > 3 || y1 - y0 > 3) {
             const l = lay(), u = V.U(), h = nh(), w = lu();
             l.notes.forEach((n) => { const y = V.yOf(n.m); if (n.s * u <= x1 && (n.s + n.d) * u >= x0 && y + h / 2 >= y0 && y - h / 2 <= y1) selNote(n, true); });
-            l.line.forEach((v, i) => { if (isNaN(v)) return; const x = (i + 0.5) * w, y = V.yOf(v); if (x >= x0 && x <= x1 && y >= y0 && y <= y1) sel.line.add(i); });
+            l.lines.forEach((st) => st.v.forEach((v, i) => { if (isNaN(v)) return; const x = (i + 0.5) * w, y = V.yOf(v); if (x >= x0 && x <= x1 && y >= y0 && y <= y1) selAdd(st.id, i); }));
           }
           M.requestRender(); syncBar(); return;
         }
@@ -446,7 +538,7 @@
 
     // ---------- palette ----------
     const PAL = [
-      ['pen', '✎', 'Pen', 'P', 'Pen (P): freehand line'],
+      ['pen', '✎', 'Pen', 'P', 'Pen (P): freehand line. Start on a line to fix it; start away from it (or hold Alt) to layer a new line'],
       ['line', '╱', 'Line', 'L', lineTool.title],
       ['notes', '♩', 'Notes', 'N', 'Notes (N): click to place, drag right to lengthen, click a note to delete'],
       ['select', '⬚', 'Select', 'V', selectTool.title],
@@ -504,11 +596,12 @@
       if (!hasSel()) return;
       const S = M.song, L = M.active, v = vibDepth > 0 ? [Math.round(vibDepth), Math.round(vibRate * 10) / 10] : null;
       sel.notes.forEach((n) => setNoteVib(S, L, n, v));
-      if (sel.line.size) {
-        const a = VIB.lineArray(S, L);
-        sel.line.forEach((i) => { a[i] = v; });
-        setLineArray(S, L, a);
-      }
+      sel.line.forEach((set, k) => {
+        if (!strokeOf(lay(), k)) return;
+        const a = VIB.lineArray(S, L, k);
+        set.forEach((i) => { a[i] = v; });
+        setLineArray(S, L, k, a);
+      });
       M.requestRender();
     }
     let barPos = '';
@@ -518,11 +611,11 @@
       if (!show) { barPos = ''; return; }
       const S = M.song, L = M.active;
       bar.querySelector('.vhte-n').textContent = (sel.notes.size ? sel.notes.size + ' note' + (sel.notes.size > 1 ? 's' : '') : '') +
-        (sel.notes.size && sel.line.size ? ' + ' : '') + (sel.line.size ? 'line' : '');
+        (sel.notes.size && selLineCount() ? ' + ' : '') + (selLineCount() ? (sel.line.size > 1 ? sel.line.size + ' lines' : 'line') : '');
       if (!editing) {
         let v = null;
         for (const n of sel.notes) { v = VIB.noteOf(S, L, n); if (v) break; }
-        if (!v) for (const i of sel.line) { v = VIB.lineAt(S, L, i); if (v) break; }
+        if (!v) eachSel((st, i) => { if (!v) v = VIB.lineAt(S, L, i, st.id); });
         vibDepth = v ? v[0] : 0; vibRate = v ? v[1] : vibRate;
         depthSl.set(vibDepth); rateSl.set(vibRate);
       }
@@ -535,7 +628,7 @@
       if (!b) return;
       const er0 = M.el.getBoundingClientRect(), cr = cv.getBoundingClientRect(), k = cr.width / V.VW, ky = cr.height / V.TH;
       const bw = bar.offsetWidth || 300, bh = bar.offsetHeight || 60;
-      const cx = cr.left - er0.left + ((b.x0 + b.x1) / 2 - V.scrollX) * k, ct = cr.top - er0.top;
+      const cx = cr.left - er0.left + V.sx((b.x0 + b.x1) / 2) * k, ct = cr.top - er0.top;
       const top = b.y0 * ky < bh + 10 ? ct + cr.height - bh - 4 : ct + 4;
       const lo = Math.max(8, cr.left - er0.left), hi = Math.min(er0.width - 8, cr.right - er0.left) - bw;
       const left = clamp(cx - bw / 2, lo, Math.max(lo, hi));
@@ -546,18 +639,21 @@
 
     // ---------- overlay: selection highlight + vibrato waves ----------
     M.on('draw', (ctx) => {
-      const S = M.song, u = V.U(), w = lu(), sec16 = md.secPer16(S), xa = V.scrollX, xb = V.scrollX + V.VW, px1 = V.MH / md.SPAN;
+      const S = M.song, u = V.U(), w = lu(), sec16 = md.secPer16(S), xa = V.scrollX, xb = V.scrollX + V.GW, px1 = V.PPS();
       ctx.save();
       ctx.lineJoin = ctx.lineCap = 'round';
       // selected line samples: white halo
       if (sel.line.size) {
-        const s = lay().line;
         ctx.beginPath();
-        let prev = -2;
-        [...sel.line].sort((a, b) => a - b).forEach((i) => {
-          const x = (i + 0.5) * w, y = V.yOf(s[i]);
-          if (i === prev + 1) ctx.lineTo(x, y); else { ctx.moveTo(x - 1, y); ctx.lineTo(x, y); }
-          prev = i;
+        sel.line.forEach((set, k) => {
+          const st = strokeOf(lay(), k);
+          if (!st) return;
+          let prev = -2;
+          [...set].sort((a, b) => a - b).forEach((i) => {
+            const x = (i + 0.5) * w, y = V.yOf(st.v[i]);
+            if (i === prev + 1) ctx.lineTo(x, y); else { ctx.moveTo(x - 1, y); ctx.lineTo(x, y); }
+            prev = i;
+          });
         });
         ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 10; ctx.stroke();
         ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
@@ -567,15 +663,17 @@
         const x = vstore(S, L, false);
         if (!x) return;
         ctx.globalAlpha = L === M.active ? 1 : 0.55;
-        for (const r of x.l) {
-          const a = Math.max(0, r[0]), b = Math.min(l.line.length, r[1]), amp = r[2] / 100 * px1;
+        for (const [k, rs] of Object.entries(x.s || {})) for (const r of arr(rs)) {
+          const st = strokeOf(l, k);
+          if (!st) continue;
+          const line = st.v, a = Math.max(0, r[0]), b = Math.min(line.length, r[1]), amp = r[2] / 100 * px1;
           const xs = Math.max(xa, (a + 0.5) * w), xe = Math.min(xb, (b - 0.5) * w);
           if (xe < xs) continue;
           ctx.beginPath();
           let pen = false;
           for (let X = xs; X <= xe + 0.01; X += 1) {
             const f = X / w - 0.5, i = Math.floor(f), t = f - i;
-            const v0 = l.line[clamp(i, a, b - 1)], v1 = l.line[clamp(i + 1, a, b - 1)];
+            const v0 = line[clamp(i, a, b - 1)], v1 = line[clamp(i + 1, a, b - 1)];
             if (isNaN(v0) || isNaN(v1)) { pen = false; continue; }
             const m = v0 + (v1 - v0) * t, y = V.yOf(m) - amp * Math.sin(2 * Math.PI * r[3] * (X / u) * sec16);
             if (pen) ctx.lineTo(X, y); else { ctx.moveTo(X, y); pen = true; }
@@ -614,7 +712,8 @@
         const tot = tot16();
         el = ((((t.pos16 - ref.s) % tot) + tot) % tot) * t.secPer16;
       } else if (kind === 'line') {
-        if (!isNaN(l.line[ref.i])) vr = VIB.lineAt(S, L, ref.i);
+        const k = ref.k || 's1', st = strokeOf(l, k);
+        if (st && !isNaN(st.v[ref.i])) vr = VIB.lineAt(S, L, ref.i, k);
         el = t.pos16 * t.secPer16;
       }
       if (!vr || !(vr[0] > 0)) return 0;
@@ -663,11 +762,14 @@
           if (t == null || Math.abs(t - n.m) < 0.005) return;
           moveNote(S, L, n, Math.round(clamp(t, LO, HI) * 100) / 100); notes++;
         });
-        for (let i = b * LPB; i < Math.min(l.line.length, (b + 1) * LPB); i++) {
-          const m = l.line[i];
-          if (isNaN(m)) continue;
-          const t = near(m);
-          if (t != null && Math.abs(t - m) >= 0.005) { l.line[i] = clamp(t, LO, HI); pts++; }
+        for (const st of md.strokes(l)) {   // every stroke
+          const line = st.v;
+          for (let i = b * LPB; i < Math.min(line.length, (b + 1) * LPB); i++) {
+            const m = line[i];
+            if (isNaN(m)) continue;
+            const t = near(m);
+            if (t != null && Math.abs(t - m) >= 0.005) { line[i] = clamp(t, LO, HI); pts++; }
+          }
         }
       });
       return { notes, pts };
@@ -716,7 +818,7 @@
       }
     }
     // st (tests: VH.melody.fitStats = { items: [] }) collects { L, kind, from, to, micro, kept } per note / plateau.
-    function fitBarET(b, st) {
+    function fitBarET(b, stats) {
       const S = M.song, snap = !!S.snap;
       let notes = 0, pts = 0;
       S.layers.forEach((l, L) => {
@@ -729,12 +831,13 @@
           const base = Math.round(n.m), off = n.m - base, micro = !snap && Math.abs(off) > 0.3;
           const prev = ord[k - 1], dir = prev && Math.abs(n.m - prev.m) >= 0.25 ? Math.sign(n.m - prev.m) : 0;
           const t = X.best(base, dir, prev ? prev.m - (micro ? off : 0) : null), nm = Math.round(clamp(t + (micro ? off : 0), LO, HI) * 1000) / 1000;
-          if (st) st.items.push({ L, kind: 'note', from: n.m, to: nm, micro, kept: t === base });
+          if (stats) stats.items.push({ L, kind: 'note', from: n.m, to: nm, micro, kept: t === base });
           if (Math.abs(nm - n.m) < 0.0005) return;
           moveNote(S, L, n, nm); notes++;
         });
-        // ---- line: plateaus move as units, glides are re-drawn ----
-        const s = l.line, i0 = b * LPB, i1 = Math.min(s.length, (b + 1) * LPB), o = s.slice();
+        // ---- line: per stroke, plateaus move as units, glides are re-drawn ----
+        for (const st of md.strokes(l)) {
+        const s = st.v, i0 = b * LPB, i1 = Math.min(s.length, (b + 1) * LPB), o = s.slice();
         let i = i0;
         while (i < i1) {
           if (isNaN(o[i])) { i++; continue; }
@@ -757,7 +860,7 @@
               if (!way) { let q = i - 1; while (q >= 0 && !isNaN(s[q]) && Math.abs(s[q] - tie) < 0.25) q--; if (q >= 0 && !isNaN(s[q])) way = Math.sign(tie - s[q]); }
               p.to = X.best(tie, way, way ? tie : null);
             }
-            if (st) st.items.push({ L, kind: 'plateau', from: p.med, to: p.to, micro: false, kept: p.to === Math.round(p.med) });
+            if (stats) stats.items.push({ L, kind: 'plateau', stroke: st.id, from: p.med, to: p.to, micro: false, kept: p.to === Math.round(p.med) });
             const d = p.to - p.med;
             if (Math.abs(d) >= 0.0005) for (let q = p.a; q < p.z; q++) s[q] = clamp(o[q] + d, LO, HI);
           });
@@ -786,6 +889,7 @@
           i = j;
         }
         for (let q = i0; q < i1; q++) if (!isNaN(s[q]) && Math.abs(s[q] - o[q]) >= 0.0005) pts++;
+        }
       });
       return { notes, pts };
     }

@@ -1,5 +1,5 @@
 /* melody experiment styles (owned by the melody builder) */
-.mel-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 100%; }
+.mel-wrap { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 100%; }
 .mel-scroll { height: 14px; margin: 0; accent-color: var(--accent); cursor: ew-resize; max-width: 100%; }
 /* strips under the canvas (M.view.addLane): the view subtracts their height from the canvas */
 .mel-wrap > .mel-lane { flex: none; }
@@ -191,3 +191,12 @@
 .mel-coach-arrow.left { right: -7px; margin-top: -6px; border-bottom: 0; border-left: 0; }
 .mel-coach-arrow.right { left: -7px; margin-top: -6px; border-top: 0; border-right: 0; }
 @media (prefers-reduced-motion: reduce) { .mel-coach-ring { animation: none; } }
+
+/* pitch zoom buttons (view.js): top-right of the map, left of the slim pitch scroll bar */
+.mel-zoom { position: absolute; z-index: 4; display: flex; flex-direction: column; gap: 4px; }
+.mel-zoom-b { width: 26px; height: 26px; padding: 0; border-radius: 7px; border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(11, 13, 18, 0.72); color: #dfe4f2; font: 600 16px/1 system-ui, sans-serif; cursor: pointer; }
+.mel-zoom-b:hover:not(:disabled) { border-color: var(--accent, #6fa3ff); }
+.mel-zoom-b:focus-visible { outline: 2px solid var(--accent, #6fa3ff); outline-offset: 1px; }
+.mel-zoom-b:disabled { opacity: 0.35; cursor: default; }
+@media (max-width: 600px) { .mel-zoom-b { width: 30px; height: 30px; } }

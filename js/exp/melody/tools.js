@@ -38,9 +38,63 @@
     }
 
     // ---------- built-in: draw (line pen / notes) ----------
-    let pen = null, drag = null;
+    // Line strokes: a pen stroke that starts within ~1 semitone of an existing stroke (around that time) edits that
+    // stroke over the drawn span ("fix"); one that starts farther away adds a new, overlapping stroke ("+ new").
+    // Alt always adds a new stroke. A badge by the cursor tells which, before and while drawing.
+    let pen = null, drag = null, penHover = null, altHeld = false;
+    const NEAR = 1.05;   // semitones
+    const idxAt = (x) => clamp(Math.floor(x / V.BW * LPB), 0, M.song.bars * LPB - 1);
+    // The stroke of layer l nearest to midi m within NEAR around sample i (± a sixteenth), or null.
+    function strokeNear(l, i, m) {
+      let best = null, bd = NEAR;
+      for (const st of md.strokes(l)) {
+        for (let k = Math.max(0, i - 3); k <= Math.min(st.v.length - 1, i + 3); k++) {
+          const v = st.v[k];
+          if (isNaN(v)) continue;
+          const d = Math.abs(v - m) + Math.abs(k - i) * 0.01;
+          if (d <= bd) { bd = d; best = st; }
+        }
+      }
+      return best;
+    }
+    // Where a line stroke starting at content (x, y) goes: { st (stroke to fix) | null (new), i, m }.
+    function strokeTarget(x, y, alt) {
+      const l = M.song.layers[M.active], i = idxAt(x), m = V.midiOf(y);
+      return { st: alt ? null : strokeNear(l, i, m), i, m };
+    }
+    T.strokeTarget = strokeTarget;
+    T.strokeNear = strokeNear;
+    // Stroke to draw into for a press at p (creates the new one). null when the layer is full.
+    T.beginStroke = function (p) {
+      const l = M.song.layers[M.active], tg = strokeTarget(p.x, p.y, (p.e && p.e.altKey) || altHeld);
+      if (tg.st) return { st: tg.st, fix: true };
+      if (l.lines.length >= md.MAX_STROKES) { M.toast('Up to ' + md.MAX_STROKES + ' line strokes per layer: draw near one to fix it'); return null; }
+      return { st: md.addStroke(l, M.song.bars * LPB), fix: false };
+    };
+    // "fix" / "+ new" pill by the cursor (content coords)
+    T.drawBadge = function (ctx, x, y, fix) {
+      const t = fix ? 'fix' : '+ new';
+      ctx.save();
+      ctx.font = '600 11px system-ui, sans-serif'; ctx.textAlign = 'left';
+      const w = ctx.measureText(t).width + 10, bx = x + 12, by = y + 12;
+      V.rrect(bx, by, w, 17, 8.5);
+      ctx.fillStyle = fix ? 'rgba(255,201,60,0.92)' : 'rgba(125,255,138,0.92)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.fillStyle = '#0b0d12'; ctx.fillText(t, bx + 5, by + 12.5);
+      ctx.restore();
+    };
+    T.badgeState = () => {   // tests: what the badge shows now ('fix' | 'new' | null)
+      if (drag && drag.kind === 'line') return drag.fix ? 'fix' : 'new';
+      if (!penHover || M.song.layers[M.active].mode !== 'line') return null;
+      return strokeTarget(penHover.x, penHover.y, penHover.alt || altHeld).st ? 'fix' : 'new';
+    };
+    const onAlt = (e) => { if (e.key === 'Alt') { const a = e.type === 'keydown'; if (a !== altHeld) { altHeld = a; M.requestRender(); } } };
+    document.addEventListener('keydown', onAlt); document.addEventListener('keyup', onAlt);
+    const onBlur = () => { altHeld = false; };
+    window.addEventListener('blur', onBlur);
+    if (M.cleanups) M.cleanups.push(() => { document.removeEventListener('keydown', onAlt); document.removeEventListener('keyup', onAlt); window.removeEventListener('blur', onBlur); });
     function penTo(x, y) {
-      const S = M.song, s = S.layers[M.active].line, i = clamp(Math.floor(x / V.BW * LPB), 0, s.length - 1), m = V.midiOf(y);
+      const S = M.song, s = drag.st.v, i = clamp(Math.floor(x / V.BW * LPB), 0, s.length - 1), m = V.midiOf(y);
       const from = pen ? pen.i : i, m0 = pen ? pen.m : m, st = i >= from ? 1 : -1;
       for (let k = from; ; k += st) {
         const t = i === from ? 1 : (k - from) / (i - from), mm = m0 + (m - m0) * t;
@@ -50,7 +104,7 @@
       pen = { i, m }; M.requestRender();
     }
     function noteAt(x, y) {
-      const ns = M.song.layers[M.active].notes, u = V.U(), tol = Math.max(6, V.MH / md.SPAN / 2 + 2);
+      const ns = M.song.layers[M.active].notes, u = V.U(), tol = Math.max(6, V.noteH() / 2 + 2);
       for (let k = ns.length - 1; k >= 0; k--) {
         const n = ns[k];
         if (x >= n.s * u && x <= (n.s + n.d) * u && Math.abs(y - V.yOf(n.m)) <= tol) return k;
@@ -62,7 +116,12 @@
       id: 'draw', label: 'Draw', icon: '✎', title: 'Draw: line pen or notes (per layer mode)',
       down(p) {
         const S = M.song, l = S.layers[M.active];
-        if (l.mode === 'line') { pen = null; drag = { kind: 'line' }; penTo(p.x, p.y); return true; }
+        if (l.mode === 'line') {
+          const b = T.beginStroke(p);
+          if (!b) return false;
+          pen = null; drag = { kind: 'line', st: b.st, fix: b.fix }; penHover = { x: p.x, y: p.y };
+          penTo(p.x, p.y); return true;
+        }
         const hit = noteAt(p.x, p.y);
         if (hit >= 0) { l.notes.splice(hit, 1); M.commit('Delete note'); return false; }
         const g = S.grid === 16 ? 1 : 2, s = Math.floor(p.x / V.U() / g) * g;
@@ -74,13 +133,24 @@
         return true;
       },
       move(p) {
-        if (drag && drag.kind === 'line' && pen) { penTo(p.x, p.y); return; }
+        if (drag && drag.kind === 'line' && pen) { penHover = { x: p.x, y: p.y }; penTo(p.x, p.y); return; }
         if (drag && drag.kind === 'note') {
           const n = drag.n, end = Math.ceil(p.x / V.U() / drag.g) * drag.g;
           n.d = clamp(end - n.s, drag.g, M.song.bars * SPB - n.s); M.requestRender();
         }
       },
-      up() { const d = drag; pen = null; drag = null; if (d) M.commit(d.kind === 'line' ? 'Draw line' : 'Add note'); },
+      up(p) {
+        const d = drag; pen = null; drag = null;
+        if (p && p.e && p.e.pointerType === 'touch') penHover = null;
+        if (d) M.commit(d.kind === 'line' ? (d.fix ? 'Draw line' : 'Draw new line') : 'Add note');
+      },
+      hover(p) { const o = penHover; penHover = p.inHeader ? null : { x: p.x, y: p.y, alt: !!(p.e && p.e.altKey) }; if (o || penHover) M.requestRender(); },
+      deactivate() { penHover = null; },
+      draw(ctx) {
+        if (M.song.layers[M.active].mode !== 'line') return;
+        if (drag && drag.kind === 'line' && penHover) { T.drawBadge(ctx, penHover.x, penHover.y, drag.fix); return; }
+        if (penHover && !V.pinching()) T.drawBadge(ctx, penHover.x, penHover.y, !!strokeTarget(penHover.x, penHover.y, penHover.alt || altHeld).st);
+      },
       cursor(p) { return M.song.layers[M.active].mode === 'notes' && noteAt(p.x, p.y) >= 0 ? 'pointer' : 'crosshair'; },
     });
 
@@ -140,9 +210,19 @@
 
     // ---------- pointer dispatch ----------
     function call(fn, p) { try { return fn.call(cur, p, M); } catch (err) { console.error('[melody] tool ' + cur.id, err); return false; } }
+    let lastP = null;
+    // Abort the current drag (a second finger starts a pinch): back to the last committed song, then end the tool.
+    T.cancel = function () {
+      hideReadout();
+      if (!capture) return;
+      capture = false;
+      M.revert();
+      if (cur && cur.up && lastP) call(cur.up, lastP);
+      penHover = null; M.requestRender();
+    };
     cv.addEventListener('pointerdown', (e) => {
       if (e.button > 0) return;
-      const p = info(e);
+      const p = info(e); lastP = p;
       if (p.inHeader) { hideReadout(); headerDown(e, p); return; }
       if (M.picker.isOpen) { M.picker.close(); return; }
       if (e.pointerType === 'touch') showReadout(e, p);
@@ -151,7 +231,7 @@
       if (capture) { try { cv.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ } }
     });
     cv.addEventListener('pointermove', (e) => {
-      const p = info(e);
+      const p = info(e); lastP = p;
       if (hdr) { headerMove(p); return; }
       showReadout(e, p);
       if (capture) { if (cur.move) call(cur.move, p); return; }
@@ -168,7 +248,10 @@
     };
     cv.addEventListener('pointerup', end);
     cv.addEventListener('pointercancel', end);
-    cv.addEventListener('pointerleave', (e) => { if (!capture || e.pointerType === 'touch') hideReadout(); });
+    cv.addEventListener('pointerleave', (e) => {
+      if (!capture || e.pointerType === 'touch') hideReadout();
+      if (!capture && penHover) { penHover = null; M.requestRender(); }
+    });
     return T;
   };
 })();

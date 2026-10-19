@@ -183,3 +183,27 @@ test('vlq encoding', () => {
   assert.deepStrictEqual(X.vlq(0), [0]); assert.deepStrictEqual(X.vlq(127), [127]);
   assert.deepStrictEqual(X.vlq(128), [0x81, 0]); assert.deepStrictEqual(X.vlq(0x0fffffff), [0xff, 0xff, 0xff, 0x7f]);
 });
+
+test('MIDI: overlapping line strokes get a channel each (own pitch bends); Separate keeps one track per layer', () => {
+  const NaNs = (n) => new Float32Array(n).fill(NaN);
+  const a = NaNs(192), b = NaNs(192);
+  for (let i = 0; i < 96; i++) a[i] = 60 + i / 95 * 4;        // glide C4 -> E4
+  for (let i = 24; i < 120; i++) b[i] = 67 - (i - 24) / 95 * 3; // overlapping glide G4 -> E4
+  const song = { bars: 4, bpm: 120, chords: [null, null, null, null],
+    layers: [{ name: 'L1', sound: 'string', vol: 0.8, lines: [{ id: 's1', v: a }, { id: 's2', v: b }], notes: [] }],
+    backing: { sound: 'string', vol: 0.4 }, drums: {} };
+  const m = parseMidi(X.songToMidi(song, { mode: 'mixed', backing: false, drums: false }));
+  const ev = m.tracks[0], ons = ev.filter((e) => e.st === 0x90 && e.d[1] > 0), bends = ev.filter((e) => e.st === 0xe0 && e.t > 0);
+  const chs = [...new Set(ons.map((e) => e.ch))].sort();
+  assert.strictEqual(chs.length, 2, 'two channels for two simultaneous voices');
+  assert.ok(!chs.includes(9), 'channel 10 skipped');
+  for (const c of chs) assert.ok(bends.filter((e) => e.ch === c).length > 10, 'channel ' + c + ' has its own bends');
+  // non-overlapping strokes share one channel
+  const c2 = NaNs(192); for (let i = 120; i < 150; i++) c2[i] = 62;
+  const song2 = Object.assign({}, song, { layers: [{ name: 'L1', sound: 'string', vol: 0.8, lines: [{ id: 's1', v: a }, { id: 's3', v: c2 }], notes: [] }] });
+  const m2 = parseMidi(X.songToMidi(song2, { mode: 'mixed' }));
+  assert.strictEqual(new Set(m2.tracks[0].filter((e) => e.st === 0x90).map((e) => e.ch)).size, 1);
+  const s = parseMidi(X.songToMidi(song, { mode: 'separate' }));
+  assert.strictEqual(s.ntr, 2, 'conductor + one layer track');
+  assert.strictEqual(new Set(s.tracks[1].filter((e) => e.st === 0x90).map((e) => e.ch)).size, 2);
+});

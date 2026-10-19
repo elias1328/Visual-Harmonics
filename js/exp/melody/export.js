@@ -20,7 +20,7 @@
     o.bars = n; o.loopRegion = null;
     o.chords = S.chords.slice(a, b).map((c) => (c ? c.slice() : null));
     o.layers = S.layers.map((l) => Object.assign({}, l, {
-      line: l.line.slice(l0, l1),
+      lines: strokesOf(l).map((st) => ({ id: st.id, v: st.v.slice(l0, l1) })).filter((st) => st.v.some((v) => !isNaN(v))),
       notes: l.notes.filter((x) => x.s >= s0 && x.s < s1).map((x) => ({ s: x.s - s0, d: Math.min(x.d, s1 - x.s), m: x.m })),
     }));
     o.drums = copy(S.drums);
@@ -34,7 +34,9 @@
     if (vib && typeof vib === 'object') {
       Object.keys(vib).forEach((k) => {
         const x = vib[k] || {};
-        x.l = (Array.isArray(x.l) ? x.l : []).map((r) => [Math.max(0, r[0] - l0), Math.min(l1, r[1]) - l0, r[2], r[3]]).filter((r) => r[1] > r[0]);
+        const cut = (rs) => (Array.isArray(rs) ? rs : []).map((r) => [Math.max(0, r[0] - l0), Math.min(l1, r[1]) - l0, r[2], r[3]]).filter((r) => r[1] > r[0]);
+        if (Array.isArray(x.l)) x.l = cut(x.l);
+        if (x.s && typeof x.s === 'object') Object.keys(x.s).forEach((q) => { x.s[q] = cut(x.s[q]); });
         x.n = (Array.isArray(x.n) ? x.n : []).filter((r) => r[0] >= s0 && r[0] < s1).map((r) => [r[0] - s0, r[1], r[2], r[3]]);
       });
     }
@@ -168,31 +170,42 @@
     return { rate, depth };
   }
 
-  // Vibrato of layer L. B1 stores it in song.ext.edit.vib[L] = { l: [[from, to (exclusive), cents, hz]] (line sample
-  // ranges), n: [[s, m, cents, hz]] (notes by start + pitch) }; cents = sine amplitude. Also accepts note.vib / vibrato.
-  // -> { line(i) -> { depth (semitones), rate } | null, note(n) -> same }
+  // A layer's line strokes [{ id, v }]: runtime songs have `lines`; plain objects with one `line` array (older callers,
+  // tests) count as stroke 's1'.
+  function strokesOf(l) {
+    if (!l) return [];
+    if (Array.isArray(l.lines)) return l.lines.filter((st) => st && st.v && st.v.length != null);
+    return l.line && l.line.length != null ? [{ id: 's1', v: l.line }] : [];
+  }
+  // Vibrato of layer L. B1 stores it in song.ext.edit.vib[L] = { s: { <stroke id>: [[from, to (exclusive), cents, hz]] }
+  // (line sample ranges per stroke), n: [[s, m, cents, hz]] (notes by start + pitch) }; cents = sine amplitude. The
+  // older { l: ranges } (one line) counts as stroke 's1'. Also accepts note.vib / vibrato.
+  // -> { line(i, strokeId = 's1') -> { depth (semitones), rate } | null, note(n) -> same }
   function vibReader(song, L) {
     const v = song && song.ext && song.ext.edit && song.ext.edit.vib, x = v && v[L];
-    const lr = x && Array.isArray(x.l) ? x.l : [], nr = x && Array.isArray(x.n) ? x.n : [];
+    const sr = Object.assign({}, x && x.s && typeof x.s === 'object' ? x.s : {});
+    if (x && Array.isArray(x.l) && x.l.length) sr.s1 = (Array.isArray(sr.s1) ? sr.s1 : []).concat(x.l);
+    const nr = x && Array.isArray(x.n) ? x.n : [];
     const mk = (r) => (r && r[2] > 0 ? { depth: r[2] / 100, rate: r[3] > 0 ? r[3] : 5.5 } : null);
     return {
-      line(i) { for (const r of lr) if (i >= r[0] && i < r[1]) return mk(r); return null; },
+      line(i, k) { const lr = sr[k || 's1']; if (Array.isArray(lr)) for (const r of lr) if (i >= r[0] && i < r[1]) return mk(r); return null; },
       note(n) { for (const r of nr) if (r[0] === n.s && Math.abs(r[1] - n.m) < 0.006) return mk(r); return vibOf(n); },
     };
   }
-  // One line layer -> note + bend events on channel ch, offset by off16 sixteenths.
-  function lineEvents(line, ch, off16, secPer16, vr, vel) {
+  // Line runs -> note + bend events on channel ch, offset by off16 sixteenths. `line` = the stroke's samples; `runs`
+  // (optional, [[i, j]] inclusive) limits it to those runs (default: every run); k = the stroke id (vibrato).
+  function lineEvents(line, ch, off16, secPer16, vr, vel, runs, k) {
     const ev = [], n = line.length, base0 = off16 * T16;
-    let i = 0;
-    while (i < n) {
-      if (isNaN(line[i])) { i++; continue; }
-      let j = i;
-      while (j + 1 < n && !isNaN(line[j + 1])) j++;
+    if (!runs) {
+      runs = [];
+      for (let i = 0; i < n; i++) { if (isNaN(line[i])) continue; let j = i; while (j + 1 < n && !isNaN(line[j + 1])) j++; runs.push([i, j]); i = j; }
+    }
+    for (const [i, j] of runs) {
       // segment i..j; value at tick t (relative to i*TLINE) linear between samples, last sample held
       const t0 = i * TLINE, t1 = (j + 1) * TLINE;
       const at = (t) => {   // vibrato phase runs on song time, like the live hook
-        const f = t / TLINE, k = Math.min(j, Math.floor(f)), u = f - k, v = vr ? vr.line(k) : null;
-        let m = k >= j ? line[j] : line[k] * (1 - u) + line[k + 1] * u;
+        const f = t / TLINE, q = Math.min(j, Math.floor(f)), u = f - q, v = vr ? vr.line(q, k) : null;
+        let m = q >= j ? line[j] : line[q] * (1 - u) + line[q + 1] * u;
         if (v) m += v.depth * Math.sin(2 * Math.PI * v.rate * (t / T16) * secPer16);
         return m;
       };
@@ -214,9 +227,26 @@
         if (bv !== lastBend) { ev.push(bendEv(base0 + t, ch, bv)); lastBend = bv; }
       }
       ev.push({ t: base0 + t1, o: O.off, b: [0x80 | ch, note, 0] });
-      i = j + 1;
     }
     return ev;
+  }
+  // Line voices of a layer: every run of every stroke, packed greedily into voices so that runs sharing a voice never
+  // overlap in time (pitch bends are per MIDI channel, so overlapping glides need channels of their own).
+  // -> [[{ st, a, b }, ...], ...] (one list per voice)
+  function lineVoices(l) {
+    const runs = [];
+    for (const st of strokesOf(l)) {
+      const v = st.v;
+      for (let i = 0; i < v.length; i++) { if (isNaN(v[i])) continue; let j = i; while (j + 1 < v.length && !isNaN(v[j + 1])) j++; runs.push({ st, a: i, b: j }); i = j; }
+    }
+    runs.sort((x, y) => x.a - y.a || x.b - y.b);
+    const voices = [], ends = [];
+    for (const r of runs) {
+      let k = ends.findIndex((e) => e < r.a);
+      if (k < 0) { k = voices.length; voices.push([]); ends.push(-1); }
+      voices[k].push(r); ends[k] = r.b;
+    }
+    return voices;
   }
   function noteEvents(notes, ch, off16, secPer16, vel, vr) {
     const ev = [];
@@ -236,7 +266,9 @@
   // song: { bars, bpm, chords, layers: [{ name, sound, vol, line, notes }], backing: { sound, vol }, drums }
   // opts: { mode: 'mixed'|'separate', layers: [indices], backing: bool, drums: bool, loops: 1|2,
   //         soundOf(i) -> Sound, backingSound -> Sound, chordMidis(ch) }
-  // Returns Uint8Array. Mixed = format 0 (one track, one channel per part), Separate = format 1 (conductor + a track per part).
+  // Returns Uint8Array. Mixed = format 0 (one track, one channel per part), Separate = format 1 (conductor + a track per
+  // layer / backing / drums). A layer whose line strokes overlap gets one channel per simultaneous voice (channel 10 is
+  // skipped), each with its own pitch bends; in Separate mode those channels share the layer's track.
   function songToMidi(song, opts) {
     const o = opts || {}, loops = Math.max(1, o.loops | 0 || 1), bars = song.bars, tot = bars * SPB;
     const secPer16 = 15 / song.bpm, cm = o.chordMidis || chordMidisLocal;
@@ -248,19 +280,24 @@
     const vel = 100;
     for (const i of chosen) {
       const l = song.layers[i], snd = soundOf(i) || {}, label = l.name + ' – ' + (snd.name || l.sound);
-      const hasLine = l.line && Array.prototype.some.call(l.line, (v) => !isNaN(v)), hasNotes = l.notes && l.notes.length > 0;
+      const voices = lineVoices(l), hasLine = voices.length > 0, hasNotes = l.notes && l.notes.length > 0;
       if (!hasLine && !hasNotes) continue;
-      const chL = takeCh(0), chN = hasLine && hasNotes ? takeCh(chL) : chL;
-      const evL = [], evN = [], vr = vibReader(song, i);
+      const vr = vibReader(song, i), prog = gmProgram(snd), vol = l.vol ?? 0.8;
+      const chs = voices.map((_, k) => takeCh(k ? -1 : 0)).map((c, k, a) => (c < 0 ? a[0] : c));
+      const chL = hasLine ? chs[0] : takeCh(0), chN = hasLine && hasNotes ? takeCh(chL) : chL;
+      const evV = voices.map(() => []), evN = [];
       for (let r = 0; r < loops; r++) {
-        if (hasLine) evL.push(...lineEvents(l.line, chL, r * tot, secPer16, vr, vel));
+        voices.forEach((runs, k) => {
+          for (const x of runs) evV[k].push(...lineEvents(x.st.v, chs[k], r * tot, secPer16, vr, vel, [[x.a, x.b]], x.st.id));
+        });
         if (hasNotes) evN.push(...noteEvents(l.notes, chN, r * tot, secPer16, vel, vr));
       }
-      if (chN === chL) parts.push({ name: label, ch: chL, program: gmProgram(snd), vol: l.vol ?? 0.8, events: evL.concat(evN) });
-      else {
-        parts.push({ name: label, ch: chL, program: gmProgram(snd), vol: l.vol ?? 0.8, events: evL });
-        parts.push({ name: label + ' (notes)', ch: chN, program: gmProgram(snd), vol: l.vol ?? 0.8, events: evN });
-      }
+      const many = voices.length > 1;
+      voices.forEach((_, k) => {
+        const same = chs[k] === chN && k === 0;   // a layer with one line voice and notes on the same channel
+        parts.push({ name: label + (many ? ' (line ' + (k + 1) + ')' : ''), ch: chs[k], program: prog, vol, track: i, events: same ? evV[k].concat(evN) : evV[k] });
+      });
+      if (hasNotes && !(hasLine && chN === chs[0])) parts.push({ name: label + (hasLine ? ' (notes)' : ''), ch: chN, program: prog, vol, track: i, events: evN });
     }
     if (o.backing && song.chords && song.chords.some(Boolean)) {
       const ch = takeCh(8), ev = [], snd = o.backingSound || { id: song.backing && song.backing.sound };
@@ -302,9 +339,21 @@
     const endT = loops * tot * T16;
     const tail = (ch) => [bendEv(endT, ch, 8192)];
     let tracks;
-    if (o.mode === 'separate') {
-      tracks = [conductor].concat(parts.map((p) =>
-        [{ t: 0, o: -1, b: meta(0x03, txt(p.name)) }].concat(setupEvents(p.ch, p.program, p.vol, '', false), p.events, p.ch === 9 ? [] : tail(p.ch))));
+    if (o.mode === 'separate') {   // one track per layer (all its channels), backing, drums
+      const groups = [];
+      parts.forEach((p) => {
+        const g = p.track != null ? groups.find((x) => x.track === p.track) : null;
+        if (g) g.parts.push(p); else groups.push({ track: p.track, parts: [p] });
+      });
+      tracks = [conductor].concat(groups.map((g) => {
+        const nm = g.parts.length > 1 ? g.parts[0].name.replace(/ \((line 1|notes)\)$/, '') : g.parts[0].name;
+        let ev = [{ t: 0, o: -1, b: meta(0x03, txt(nm)) }];
+        const done = new Set();
+        g.parts.forEach((p) => { if (!done.has(p.ch)) { done.add(p.ch); ev = ev.concat(setupEvents(p.ch, p.program, p.vol, '', false)); } });
+        g.parts.forEach((p) => { ev = ev.concat(p.events); });
+        done.forEach((ch) => { if (ch !== 9) ev = ev.concat(tail(ch)); });
+        return ev;
+      }));
     } else {
       let ev = conductor.slice();
       for (const p of parts) ev = ev.concat(setupEvents(p.ch, p.program, p.vol, p.name, true), p.events, p.ch === 9 ? [] : tail(p.ch));
@@ -333,7 +382,7 @@
     return new Uint8Array(buf);
   }
 
-  const X = { songToMidi, sliceSong, encodeWav, drumHits, drumNote, gmProgram, vibReader, vlq, PPQ, T16, TBEND, TLINE };
+  const X = { songToMidi, sliceSong, encodeWav, drumHits, drumNote, gmProgram, vibReader, strokesOf, lineVoices, vlq, PPQ, T16, TBEND, TLINE };
   if (typeof module !== 'undefined' && module.exports) module.exports = X;
   const VH = root && root.VH;
   if (!VH || !VH.melody || !root.document) return;
@@ -670,10 +719,12 @@
               const vb = vr.note(n);
               if (vb) for (let t = t0 + VIB_DT; t < t1; t += VIB_DT) { const f = hz(n.m + vb.depth * Math.sin(2 * Math.PI * vb.rate * (t - t0))); at(t, () => v.setFreq(f, 0.01, t)); }
             }
-            const line = l.line, dtL = sec16 * SPB / LPB, hit = plays[L] === 'hit';
+            const dtL = sec16 * SPB / LPB, hit = plays[L] === 'hit';
+            for (const st of strokesOf(l)) {   // one voice per stroke (strokes may overlap)
+            const line = st.v, sk = st.id;
             let cur = null, lastHit = -1e9;
             const vibSteps = (x, i, m) => {   // vibrato between this sample and the next
-              const vb = vr.line(i);
+              const vb = vr.line(i, sk);
               if (!vb) return;
               const m1 = i + 1 < line.length && !isNaN(line[i + 1]) ? line[i + 1] : m;
               for (let k = 0; k < 4; k++) {
@@ -697,6 +748,7 @@
                 lastHit = t;
               } else if (cur) { const x = cur; at(t, () => x.v && x.v.setFreq(hz(m), 0.03, t)); }
               vibSteps(cur, i, m);
+            }
             }
           }
         }

@@ -171,8 +171,8 @@
     const eRow = ui.h('div', 'vh-row'); sEdit.append(eRow);
     const undoBtn = ui.button(eRow, { label: '↶ Undo', onClick: () => M.undo() });
     const redoBtn = ui.button(eRow, { label: '↷ Redo', onClick: () => M.redo() });
-    ui.button(eRow, { label: 'Clear layer', onClick: () => { const l = M.song.layers[M.active]; l.line.fill(NaN); l.notes = []; M.commit('Clear layer'); } });
-    ui.button(eRow, { label: 'Clear all', onClick: () => { M.song.layers.forEach((l) => { l.line.fill(NaN); l.notes = []; }); M.commit('Clear all'); } });
+    ui.button(eRow, { label: 'Clear layer', onClick: () => { const l = M.song.layers[M.active]; l.lines = []; l.notes = []; M.commit('Clear layer'); } });
+    ui.button(eRow, { label: 'Clear all', onClick: () => { M.song.layers.forEach((l) => { l.lines = []; l.notes = []; }); M.commit('Clear all'); } });
     const sNote = U.addPanelSection('', 85, { group: 'sound' });
     ui.samplesNote(sNote);
     U.addPanelSection('How to read it', 90, { group: 'song', collapsed: true }).append(ui.h('div', 'vh-desc',
@@ -295,7 +295,7 @@
     function positionPicker() {
       if (pop.hidden) return;
       const V = M.view, er = el.getBoundingClientRect(), cr = V.cv.getBoundingClientRect(), k = cr.width / V.VW || 1, pw = pop.offsetWidth;
-      const left = clamp(cr.left - er.left + ((popBar + 0.5) * V.BW - V.scrollX) * k - pw / 2, 8, Math.max(8, er.width - pw - 8));
+      const left = clamp(cr.left - er.left + V.sx((popBar + 0.5) * V.BW) * k - pw / 2, 8, Math.max(8, er.width - pw - 8));
       const top = cr.top - er.top + V.HDR * k + 4;
       pop.style.left = left + 'px'; pop.style.top = top + 'px'; pop.style.maxHeight = Math.max(160, er.height - top - 10) + 'px';
     }
@@ -600,7 +600,7 @@
       const S = M.song, names = namesOf(S);
       let html = 'bar ' + (t.bar + 1) + ' · <b>' + chordName(S.chords[t.bar], names) + '</b>';
       S.layers.forEach((l, L) => {
-        const m = l.line[t.lineIndex], nm = !isNaN(m) ? m : (l.notes.find((n) => t.pos16 >= n.s && t.pos16 < n.s + n.d) || {}).m;
+        const q = md.lineAt(l, t.lineIndex), nm = q.length ? q.map((x) => x.m).sort((a, b) => b - a)[0] : (l.notes.find((n) => t.pos16 >= n.s && t.pos16 < n.s + n.d) || {}).m;
         let txt = '—';
         if (nm != null && !isNaN(nm)) {
           const k = Math.round(nm), c = Math.round((nm - k) * 100), cs = M.bands.consonance(nm, t.bar, L);

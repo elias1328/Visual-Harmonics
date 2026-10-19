@@ -18,6 +18,8 @@
   NS.Engine = function (M) {
     const E = { playing: false, phase: 0, MIN_GAP, LOOKAHEAD };
     let prevPos = 0, ahead = 0, backingBar = -1, buses = null, insert = null, backingImpl = null, live = null;
+    // lineV[L] = Map(stroke id -> { v, base, m, semi, cents }): one voice per line stroke (strokes may overlap);
+    // lastHit[L] = Map(stroke id -> audio ms of the last re-trigger) for 'hit' sounds.
     let lineV = [], noteV = [], lastHit = [], droneV = [];
     const offBuses = new WeakMap();   // offline context -> its own bus set (layerBusFor)
     // Does the core honour opts.dest? (A2's core API adds withContext with it.) If not, mix with per-voice gain.
@@ -99,7 +101,7 @@
         setParam(buses.master.gain, s.master, now);
       }
       if (!routed()) {
-        lineV.forEach((x, L) => { if (x) x.v.setGain(gainFor(L, x.base)); });
+        lineV.forEach((mp, L) => { if (mp) mp.forEach((x) => x.v.setGain(gainFor(L, x.base))); });
         noteV.forEach((x) => x.v.setGain(gainFor(x.L, x.base)));
         droneV.forEach((x) => x.v.setGain(backGain(x.base)));
       }
@@ -137,7 +139,8 @@
     };
 
     // ---------- voices ----------
-    function stopLine(L, rel) { const x = lineV[L]; if (x) { x.v.stop(rel); lineV[L] = null; } }
+    function stopLine(L, rel) { const mp = lineV[L]; if (mp) { mp.forEach((x) => x.v.stop(rel)); lineV[L] = null; } }
+    E.lineVoices = () => lineV.reduce((a, mp) => a + (mp ? mp.size : 0), 0);   // live line voices (tests)
     function cut(x, rel) {   // stop a scheduled note; one that has not started yet is silenced first, so it never blips
       const c = x.v.ctx;
       if (c && x.t0 > c.currentTime + 0.002) x.v.setGain(0);
@@ -302,29 +305,35 @@
           if (c !== x.cents) { x.v.setFreq(H.midiToHz(x.m + c / 100), 0.02); x.cents = c; }
         });
         s.layers.forEach((l, L) => {
-          const m = l.line[i], on = !isNaN(m) && layerGain(s, L) > 0, snd = M.soundOf(L), x = lineV[L];
-          const hit = E.playOf(snd) === 'hit';
-          if (!on) { if (x) stopLine(L, hit ? 0.25 : 0.03); return; }
-          const ref = { i, m };
-          if (!hit) {
-            if (!x) { const p = play(L, 'line', snd, m, G_LINE, undefined, ref, info); lineV[L] = { v: p.v, base: p.o.gain, m, semi: Math.round(m), cents: p.cents }; }
-            else {
-              const c = pitchMod(L, 'line', info, ref);
-              x.v.setFreq(H.midiToHz(m + c / 100), c || x.cents ? 0.02 : 0.045); x.m = m; x.cents = c;
+          // one voice per stroke: glide sounds play legato within a stroke's run; hit sounds re-trigger per stroke
+          const audible = layerGain(s, L) > 0, snd = M.soundOf(L), hit = E.playOf(snd) === 'hit';
+          const mp = lineV[L] || (lineV[L] = new Map()), hits = lastHit[L] || (lastHit[L] = new Map()), seen = new Set();
+          if (audible) for (const st of md.strokes(l)) {
+            const m = st.v[i];
+            if (isNaN(m)) continue;
+            const k = st.id, x = mp.get(k), ref = { i, m, k };
+            seen.add(k);
+            if (!hit) {
+              if (!x) { const p = play(L, 'line', snd, m, G_LINE, undefined, ref, info); mp.set(k, { v: p.v, base: p.o.gain, m, semi: Math.round(m), cents: p.cents }); }
+              else {
+                const c = pitchMod(L, 'line', info, ref);
+                x.v.setFreq(H.midiToHz(m + c / 100), c || x.cents ? 0.02 : 0.045); x.m = m; x.cents = c;
+              }
+              continue;
             }
-            return;
+            // the re-trigger gap is measured on the audio clock (when the voices actually start), not on frame time
+            const semi = Math.round(m), at = actx.currentTime * 1000, gapOk = !(at - (hits.has(k) ? hits.get(k) : -1e9) < MIN_GAP);
+            if ((!x || semi !== x.semi) && gapOk) {
+              if (x) x.v.stop(0.12);
+              const p = play(L, 'line', snd, m, G_LINE, undefined, ref, info);
+              mp.set(k, { v: p.v, base: p.o.gain, m, semi, cents: p.cents });
+              hits.set(k, at);
+            } else if (x) {
+              const c = pitchMod(L, 'line', info, ref);
+              x.v.setFreq(H.midiToHz(m + c / 100), c || x.cents ? 0.02 : 0.03); x.m = m; x.cents = c;
+            }
           }
-          // the re-trigger gap is measured on the audio clock (when the voices actually start), not on frame time
-          const semi = Math.round(m), at = actx.currentTime * 1000, gapOk = !(at - (lastHit[L] != null ? lastHit[L] : -1e9) < MIN_GAP);
-          if ((!x || semi !== x.semi) && gapOk) {
-            if (x) x.v.stop(0.12);
-            const p = play(L, 'line', snd, m, G_LINE, undefined, ref, info);
-            lineV[L] = { v: p.v, base: p.o.gain, m, semi, cents: p.cents };
-            lastHit[L] = at;
-          } else if (x) {
-            const c = pitchMod(L, 'line', info, ref);
-            x.v.setFreq(H.midiToHz(m + c / 100), c || x.cents ? 0.02 : 0.03); x.m = m; x.cents = c;
-          }
+          mp.forEach((x, k) => { if (!seen.has(k)) { x.v.stop(hit ? 0.25 : 0.03); mp.delete(k); } });
         });
       }
       M.emit('tick', info);

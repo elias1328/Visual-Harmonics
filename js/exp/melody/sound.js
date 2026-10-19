@@ -674,20 +674,23 @@
       sparks = sparks.filter((p) => t.now - p.born < p.life);
       S.layers.forEach((l, L) => {
         if (!md.layerGain(S, L)) return;
-        let m = l.line[t.lineIndex];
-        if (isNaN(m)) { const n = l.notes.find((x) => t.pos16 >= x.s && t.pos16 < x.s + x.d); m = n ? n.m : NaN; }
-        if (isNaN(m)) return;
-        const prev = lastSpark[L] || { t: -1e9, k: -1 }, k = Math.round(m);
-        if (t.now - prev.t < (k === prev.k ? 420 : 160)) return;
+        const ms = md.lineAt(l, t.lineIndex).map((q) => q.m);   // every stroke of the layer
+        if (!ms.length) { const n = l.notes.find((x) => t.pos16 >= x.s && t.pos16 < x.s + x.d); if (n) ms.push(n.m); }
+        if (!ms.length) return;
         const pk = peaksOf(t.pos16, L);   // bright band = within 0.3 semitone of a consonance peak (V < 0.5)
-        if (!pk.some((q) => Math.abs(q - m) < 0.3)) return;
-        lastSpark[L] = { t: t.now, k };
-        const x = V.xOf(t.pos16), y = V.yOf(m);
-        for (let i = 0; i < 4; i++) {
-          const a = Math.random() * Math.PI * 2, sp = 0.025 + Math.random() * 0.045;
-          sparks.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 0.01, born: t.now, life: 420 + Math.random() * 300, col: l.color, r: 1.2 + Math.random() * 1.3 });
-          dbg.sparkSpawned++;
-        }
+        ms.forEach((m, si) => {
+          const key = L + ':' + si;
+          const prev = lastSpark[key] || { t: -1e9, k: -1 }, k = Math.round(m);
+          if (t.now - prev.t < (k === prev.k ? 420 : 160)) return;
+          if (!pk.some((q) => Math.abs(q - m) < 0.3)) return;
+          lastSpark[key] = { t: t.now, k };
+          const x = V.xOf(t.pos16), y = V.yOf(m);
+          for (let i = 0; i < 4; i++) {
+            const a = Math.random() * Math.PI * 2, sp = 0.025 + Math.random() * 0.045;
+            sparks.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 0.01, born: t.now, life: 420 + Math.random() * 300, col: l.color, r: 1.2 + Math.random() * 1.3 });
+            dbg.sparkSpawned++;
+          }
+        });
         if (sparks.length > MAX_SPARKS) sparks.splice(0, sparks.length - MAX_SPARKS);
       });
     }
@@ -966,7 +969,7 @@
       focusIdx = i;
       const V = M.view, n = cols.length / M.song.bars, x0 = (+b.dataset.b * n + +b.dataset.j) * V.BW / n, w = V.BW / n;
       if (paged) setPage(+b.dataset.b);
-      else if (x0 < V.scrollX) V.setScroll(x0 - w); else if (x0 + w > V.scrollX + V.VW) V.setScroll(x0 + 2 * w - V.VW);
+      else if (x0 < V.scrollX) V.setScroll(x0 - w); else if (x0 + w > V.scrollX + V.GW) V.setScroll(x0 + 2 * w - V.GW);
       b.focus({ preventScroll: true });
     }
     function layoutLane() {
@@ -984,7 +987,7 @@
         pager.querySelector('[data-d="1"]').disabled = page >= nb - 1;
       } else {
         track.style.width = V.CW + 'px';
-        track.style.transform = 'translateX(' + (-V.scrollX) + 'px)';
+        track.style.transform = 'translateX(' + (V.X0 - V.scrollX) + 'px)';   // the time axis starts right of the piano strip
       }
       lane.classList.toggle('mel-dr-wide', paged || (cols.length && V.BW / (cols.length / nb) >= 16));
     }

@@ -15,7 +15,7 @@
     // done, and the first Melody mount of this page session. Never overrides an autosave or a share link.
     const firstVisit = !saved && !shareSub && !(Array.isArray(inbox0) && inbox0.length) && !VH.store.get('melody.tutorial', null) && !NS.mountedOnce;
     NS.mountedOnce = true;
-    const upgraded = S.migratedIds > 0;   // autosave from before layer ids: save it back in the new format
+    const upgraded = S.migratedIds > 0 || S.migratedLines > 0;   // autosave from before layer ids: save it back in the new format
     const cleanups = [], timers = new Set(), subs = new Map(), parts = [];
     const hookFns = { voiceOpts: [], pitchMod: [], beforeCommit: [] };
     const later = (fn, ms) => { const t = setTimeout(() => { timers.delete(t); if (alive) fn(); }, ms); timers.add(t); return t; };
@@ -113,6 +113,7 @@
       const o = opts === true ? { keepHash: true } : opts && typeof opts === 'object' ? opts : {};
       const cx = { label: label || 'Edit', chords: Array.isArray(o.chords) ? o.chords : [], source: o.source || '', song: S, info: null };
       for (const f of hookFns.beforeCommit) { try { f(cx); } catch (err) { console.error('[melody] beforeCommit hook', err); } }
+      S.layers.forEach(md.pruneStrokes);   // strokes emptied by an edit disappear
       M.lastCommit = cx;
       const keepHash = !!o.keepHash;
       label = cx.label;
@@ -133,6 +134,8 @@
       const b = S.chords.findIndex((c, i) => JSON.stringify(c) !== JSON.stringify(old[i] || null));
       if (b >= 0) M.engine.previewChord(b);   // chord changed by undo/redo -> preview the first changed bar
     }
+    // Drop uncommitted live edits (e.g. a drag cancelled by a two-finger pinch): back to the last committed song, no step.
+    M.revert = () => { if (snap() !== lastSnap) applySnap(lastSnap); };
     M.undo = () => { if (!hist.past.length) return; const e = hist.past.pop(); hist.future.push({ s: snap(), label: e.label }); applySnap(e.s); };
     M.redo = () => { if (!hist.future.length) return; const e = hist.future.pop(); hist.past.push({ s: snap(), label: e.label }); applySnap(e.s); };
     let saveT = 0;
@@ -162,9 +165,12 @@
       const old = S.bars, tot = n * SPB;
       S.chords = Array.from({ length: n }, (_, b) => { const c = S.chords[b < old ? b : b % old]; return c ? c.slice() : null; });
       S.layers.forEach((l) => {
-        const line = new Float32Array(n * LPB).fill(NaN);
-        line.set(l.line.subarray(0, Math.min(l.line.length, line.length)));
-        l.line = line;
+        l.lines.forEach((st) => {
+          const v = new Float32Array(n * LPB).fill(NaN);
+          v.set(st.v.subarray(0, Math.min(st.v.length, v.length)));
+          st.v = v;
+        });
+        md.pruneStrokes(l);
         l.notes = l.notes.filter((x) => x.s < tot);
         l.notes.forEach((x) => { x.d = Math.min(x.d, tot - x.s); });
       });

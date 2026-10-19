@@ -127,8 +127,7 @@
     const SPB = md.SPB, LPB = md.LPB, res = new Map(), l = S.layers[L], step = SPB / cols;
     for (let c = 0; c < cols; c++) {
       const t16 = bar * SPB + (c + 0.5) * step, ps = new Set();
-      const v = l.line[Math.floor(t16 * LPB / SPB)];
-      if (!isNaN(v)) ps.add(Math.round(v * 10) / 10);
+      for (const q of md.lineAt(l, Math.floor(t16 * LPB / SPB))) ps.add(Math.round(q.m * 10) / 10);   // every stroke
       for (const n of l.notes) if (n.s <= t16 && t16 < n.s + n.d) ps.add(Math.round(n.m * 10) / 10);
       for (const m of ps) { const e = res.get(m) || { m, w: 0 }; e.w += 1 / cols; res.set(m, e); }
     }
@@ -185,9 +184,9 @@
       }
       const S = M.song, L = M.active, l = S.layers[L], asNotes = l.mode === 'notes';
       const notes = melody(M, L, { density: opts.density, range: opts.range, notes: asNotes }, rnd);
-      l.line.fill(NaN); l.notes = [];
+      l.lines = []; l.notes = [];   // the roll replaces the layer (all its strokes)
       if (asNotes) l.notes = notes.map((n) => ({ s: n.s, d: n.d, m: Math.round(n.m * 100) / 100 }));
-      else l.line = toLine(notes, S.bars * md.LPB, md.LPB, md.SPB);
+      else l.lines = [{ id: 's1', v: toLine(notes, S.bars * md.LPB, md.LPB, md.SPB) }];
       M.commit('Random melody');
       lastGen = { snap: snapOf(), layer: L, targets: notes, mode: l.mode };
       api.last = lastGen;

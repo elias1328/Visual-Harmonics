@@ -5,6 +5,7 @@
   const VH = window.VH, H = VH.harmony, ui = VH.ui, NS = VH.melody, md = NS.model;
   const { LO, HI, SPAN, LPB, SPB, NATURAL, clamp, chordMidis, chordName, namesOf } = md;
   const HDR = 40, LANE_GAP = 6;   // LANE_GAP = .mel-wrap's flex gap
+  const Z_MIN = 12;               // pitch zoom: at least one octave stays visible
 
   NS.View = function (M, box) {
     const wrap = ui.h('div', 'mel-wrap'), cv = document.createElement('canvas'), ctx = cv.getContext('2d');
@@ -13,22 +14,69 @@
     cv.style.cursor = 'crosshair'; cv.setAttribute('aria-label', 'Melody drawing area over the harmony map');
     wrap.append(cv, scroller); box.append(wrap);
 
-    const V = { cv, ctx, wrap, scroller, HDR, VW: 800, TH: 540, MH: 500, BW: 200, CW: 800, scrollX: 0, dpr: 1, highlightBar: -1, regionPreview: null };
+    // X0 = the piano strip's width: the time axis starts right of it (content x 0 = bar 1 = canvas x X0). GW = graph width.
+    // Pitch zoom: `span` semitones are visible (SPAN .. Z_MIN), the top row is `pTop`. Persisted in VH.store 'melody.view'.
+    const V = { cv, ctx, wrap, scroller, HDR, VW: 800, TH: 540, MH: 500, BW: 200, CW: 800, scrollX: 0, dpr: 1, highlightBar: -1, regionPreview: null,
+      X0: 22, GW: 778, span: SPAN, pTop: HI, Z_MIN };
     let boxW = 800, boxH = 600;
     const lanes = [];   // { el, h, fixed, ro } added with V.addLane, stacked under the canvas (and its scroll bar)
     V.U = () => V.BW / SPB;                                   // px per sixteenth
     V.xOf = (t16) => t16 * V.U();
     V.t16Of = (x) => x / V.U();
-    V.yOf = (m) => HDR + (HI - m) / SPAN * V.MH;
-    V.midiOf = (y) => clamp(HI - (y - HDR) / V.MH * SPAN, LO, HI);
-    // Pointer event -> content coords [x, y] (scroll included).
-    V.xy = (e) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * V.VW / r.width + V.scrollX, (e.clientY - r.top) * V.TH / r.height]; };
+    V.sx = (x) => x - V.scrollX + V.X0;                       // content x -> canvas x
+    V.PPS = () => V.MH / V.span;                              // px per semitone (zoom)
+    V.noteH = () => clamp(V.PPS() * 0.8, 6, 20);              // note bar height
+    V.yOf = (m) => HDR + (V.pTop - m) / V.span * V.MH;
+    V.midiOf = (y) => clamp(V.pTop - (y - HDR) / V.MH * V.span, LO, HI);
+    // Pointer event -> content coords [x, y] (scroll and the piano strip included).
+    V.xy = (e) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * V.VW / r.width + V.scrollX - V.X0, (e.clientY - r.top) * V.TH / r.height]; };
+    // canvas px of a pointer event (no scroll / strip offset)
+    const cxy = (e) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * V.VW / r.width, (e.clientY - r.top) * V.TH / r.height]; };
+
+    // ---------- pitch zoom ----------
+    const ZKEY = 'melody.view';
+    let zSave = 0;
+    V.zoomed = () => V.span < SPAN - 1e-6;
+    V.setPitchView = function (span, top, quiet) {
+      const sp = clamp(+span || SPAN, Z_MIN, SPAN), tp = clamp(+top || HI, LO + sp, HI);
+      if (Math.abs(sp - V.span) < 1e-6 && Math.abs(tp - V.pTop) < 1e-6) return;
+      V.span = sp; V.pTop = tp;   // the cached band image is only cropped at draw time: nothing to recompute
+      syncZoomUi(); M.requestRender();
+      if (!quiet) {
+        M.emit('scroll', V);
+        if (M.forget) M.forget(zSave);
+        zSave = M.later ? M.later(() => VH.store.set(ZKEY, { span: Math.round(V.span * 1000) / 1000, top: Math.round(V.pTop * 1000) / 1000 }), 250) : 0;
+      }
+    };
+    // Zoom by factor f (< 1 = in) keeping the pitch under canvas y in place.
+    V.zoomAt = function (f, y) {
+      const yy = clamp(y == null ? HDR + V.MH / 2 : y, HDR, HDR + V.MH), m = V.pTop - (yy - HDR) / V.MH * V.span;
+      const sp = clamp(V.span * f, Z_MIN, SPAN);
+      V.setPitchView(sp, m + (yy - HDR) / V.MH * sp);
+    };
+    V.scrollPitch = (dm) => V.setPitchView(V.span, V.pTop + dm);
+    const zs = VH.store.get(ZKEY, null);
+    if (zs && typeof zs === 'object') { V.span = clamp(+zs.span || SPAN, Z_MIN, SPAN); V.pTop = clamp(+zs.top || HI, LO + V.span, HI); }
+    const zoomEl = ui.h('div', 'mel-zoom');
+    zoomEl.setAttribute('role', 'group'); zoomEl.setAttribute('aria-label', 'Pitch zoom');
+    const zBtn = (t, label, f) => {
+      const b = ui.h('button', 'mel-zoom-b', t); b.type = 'button'; b.title = label; b.setAttribute('aria-label', label);
+      b.addEventListener('click', () => V.zoomAt(f)); zoomEl.append(b); return b;
+    };
+    const zIn = zBtn('+', 'Zoom in on pitch (+, Ctrl + wheel, pinch)', 1 / 1.4), zOut = zBtn('−', 'Zoom out on pitch (−)', 1.4);
+    wrap.append(zoomEl);
+    function syncZoomUi() {
+      zIn.disabled = V.span <= Z_MIN + 1e-6; zOut.disabled = !V.zoomed();
+      zoomEl.classList.toggle('zoomed', V.zoomed());
+    }
+    syncZoomUi();
 
     V.relayout = function () {
       const S = M.song;
       V.VW = Math.max(240, Math.min(1600, boxW));
-      V.BW = Math.max(V.VW / S.bars, Math.min(120, V.VW / 4)); V.CW = V.BW * S.bars;
-      const scrolls = V.CW > V.VW + 0.5;
+      V.X0 = V.KW(); V.GW = V.VW - V.X0;
+      V.BW = Math.max(V.GW / S.bars, Math.min(120, V.GW / 4)); V.CW = V.BW * S.bars;
+      const scrolls = V.CW > V.GW + 0.5;
       scroller.hidden = !scrolls;
       const laneH = lanes.reduce((a, l) => a + (l.el.hidden ? 0 : l.h + LANE_GAP), 0);
       V.TH = Math.max(200, boxH - (scrolls ? 20 : 0) - laneH); V.MH = V.TH - HDR; V.dpr = ui.dpr();
@@ -36,12 +84,14 @@
       const w = Math.round(V.VW * V.dpr), h = Math.round(V.TH * V.dpr);
       if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
       cv.style.width = V.VW + 'px'; cv.style.height = V.TH + 'px'; scroller.style.width = V.VW + 'px';
-      scroller.max = Math.max(0, Math.round(V.CW - V.VW));
+      scroller.max = Math.max(0, Math.round(V.CW - V.GW));
+      zoomEl.style.top = (HDR + 6) + 'px';
+      zoomEl.style.right = 'calc(50% - ' + (V.VW / 2 - (V.VW <= 600 ? 12 : 16)) + 'px)';
       V.setScroll(V.scrollX);
       M.emit('layout', V);
     };
     V.setScroll = function (x) {
-      V.scrollX = clamp(x, 0, Math.max(0, V.CW - V.VW)); scroller.value = Math.round(V.scrollX);
+      V.scrollX = clamp(x, 0, Math.max(0, V.CW - V.GW)); scroller.value = Math.round(V.scrollX);
       M.requestRender(); M.emit('scroll', V);
     };
     V.fit = () => ui.fit(box, (w, h) => { boxW = w; boxH = h; V.relayout(); });
@@ -78,16 +128,22 @@
     };
     V.lanes = () => lanes.map((l) => ({ el: l.el, height: l.h }));
     scroller.addEventListener('input', () => V.setScroll(+scroller.value));
+    // Wheel: Ctrl/Cmd = pitch zoom around the cursor; plain vertical = pitch scroll while zoomed; Shift / horizontal =
+    // time scroll (a plain vertical wheel also scrolls time while not zoomed).
     cv.addEventListener('wheel', (e) => {
-      if (V.CW <= V.VW + 0.5) return;
+      const k = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1, dx = e.deltaX * k, dy = e.deltaY * k;
+      if (e.ctrlKey || e.metaKey) { e.preventDefault(); V.zoomAt(Math.exp(clamp(dy, -200, 200) * 0.002), cxy(e)[1]); return; }
+      const horiz = e.shiftKey || Math.abs(dx) > Math.abs(dy);
+      if (!horiz && V.zoomed()) { e.preventDefault(); V.scrollPitch(-dy / V.PPS()); return; }
+      if (V.CW <= V.GW + 0.5) return;
       e.preventDefault();
-      V.setScroll(V.scrollX + (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY));
+      V.setScroll(V.scrollX + (Math.abs(dx) > Math.abs(dy) ? dx : dy));
     }, { passive: false });
     // Keep the playhead in view while playing.
     V.follow = function (phase) {
-      if (V.CW <= V.VW + 0.5) return;
+      if (V.CW <= V.GW + 0.5) return;
       const px = phase * V.CW;
-      if (px < V.scrollX + V.VW * 0.08 || px > V.scrollX + V.VW * 0.8) V.setScroll(px - V.VW * 0.2);
+      if (px < V.scrollX + V.GW * 0.08 || px > V.scrollX + V.GW * 0.8) V.setScroll(px - V.GW * 0.2);
     };
 
     function label(t, x, y) {
@@ -114,7 +170,7 @@
     V.rrect = function (x, y, w, h, r) { ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x, y, w, h, r); else ctx.rect(x, y, w, h); };
 
 
-    // ---------- piano strip on the left edge (over the map; content/bar x positions are unchanged) ----------
+    // ---------- piano strip on the left edge (the time axis starts right of it, at X0) ----------
     // Rows use V.yOf, so every key is centred on its graph row. Lit keys: layer colours (stripes if shared), chord glow, 120 ms fade.
     const FADE = 120, BLACK = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     [1, 3, 6, 8, 10].forEach((k) => { BLACK[k] = 1; });
@@ -129,7 +185,7 @@
         const tot = S.bars * SPB, pos = E.phase * tot, i = Math.min(S.bars * LPB - 1, Math.floor(E.phase * S.bars * LPB));
         S.layers.forEach((l, L) => {
           if (md.layerGain(S, L) <= 0) return;
-          if (!isNaN(l.line[i])) add(l.line[i], l.color);
+          for (const x of md.lineAt(l, i)) add(x.m, l.color);   // every stroke lights its key
           for (const n of l.notes) if (pos >= n.s && pos < n.s + n.d) add(n.m, l.color);
         });
         const ch = S.backing.on && S.chords[Math.min(S.bars - 1, Math.floor(E.phase * S.bars))];
@@ -139,13 +195,15 @@
       return { out, glow };
     }
     function drawKeys() {
-      const now = performance.now(), { out, glow } = soundingNow(now), KW = V.KW(), rh = V.MH / SPAN, bw = KW * 0.62;
+      const now = performance.now(), { out, glow } = soundingNow(now), KW = V.X0, rh = V.PPS(), bw = KW * 0.62;
       out.forEach((cols, m) => lit.set(m, { cols, t: now }));
       let fading = false;
       ctx.save();
       ctx.beginPath(); ctx.rect(0, HDR, KW, V.MH); ctx.clip();
       ctx.fillStyle = '#e9ecf4'; ctx.fillRect(0, HDR, KW, V.MH);
+      const mLo = Math.floor(V.pTop - V.span) - 1, mHi = Math.ceil(V.pTop) + 1;
       for (let m = LO; m <= HI; m++) {
+        if (m < mLo || m > mHi) { const q = lit.get(m); if (q && !out.has(m) && now - q.t >= FADE) lit.delete(m); continue; }
         const y = V.yOf(m), y0 = y - rh / 2, black = BLACK[m % 12], w = black ? bw : KW;
         ctx.fillStyle = black ? '#171a24' : '#e9ecf4'; ctx.fillRect(0, y0, w, rh);
         if (!black) { ctx.fillStyle = 'rgba(0,0,0,0.28)'; ctx.fillRect(0, Math.round(y0), KW, 1); }
@@ -166,37 +224,118 @@
         if (m % 12 === 0) {
           ctx.font = (KW < 20 ? 8 : 9) + 'px system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.fillStyle = '#2a3042';
           ctx.fillText(H.noteName(m), 2, Math.min(y0 + rh, V.yOf(m) + 3.5));
+        } else if (rh >= 22 && !black) {   // zoomed in: name every white key
+          ctx.font = (KW < 20 ? 7 : 8) + 'px system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(42,48,66,0.7)';
+          ctx.fillText(H.noteName(m), 2, V.yOf(m) + 3);
         }
       }
       ctx.restore();
       ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(KW, HDR, 1, V.MH);
       if (fading || lit.size) { if (fading) M.requestRender(); }
     }
-    cv.addEventListener('pointerdown', (e) => {   // click / tap a key: play it with the active layer's instrument
+    // Pointer handling that runs before the tools (registered first): two-finger pinch (zoom + pan), the pitch scroll
+    // bar (right edge, while zoomed), and the piano strip (click / tap = play the key; drag = scroll pitch).
+    const touches = new Map();
+    let pinch = null, pinchHold = false, keyDrag = null, sbDrag = null;
+    const SBW = 10;
+    const inBar = (cx, cy) => V.zoomed() && cx >= V.VW - SBW && cy >= HDR && cy <= HDR + V.MH;
+    function pinchState() {
+      const p = [...touches.values()];
+      return { d: Math.max(8, Math.hypot(p[0][0] - p[1][0], p[0][1] - p[1][1])), my: (p[0][1] + p[1][1]) / 2 };
+    }
+    V.pinching = () => !!pinch || pinchHold;
+    cv.addEventListener('pointerdown', (e) => {
+      const [cx, cy] = cxy(e);
+      if (e.pointerType === 'touch') {
+        touches.set(e.pointerId, [cx, cy]);
+        if (touches.size === 2) {   // second finger: cancel the first finger's tool drag, start the pinch
+          e.stopImmediatePropagation(); e.preventDefault();
+          if (M.tools && M.tools.cancel) M.tools.cancel();
+          keyDrag = null; sbDrag = null;
+          const st = pinchState(), my = clamp(st.my, HDR, HDR + V.MH);
+          pinch = { d0: st.d, span0: V.span, m: V.pTop - (my - HDR) / V.MH * V.span };
+          pinchHold = true;
+          return;
+        }
+        if (touches.size > 2 || pinchHold) { e.stopImmediatePropagation(); e.preventDefault(); return; }
+      }
       if (e.button > 0) return;
-      const [, y] = V.xy(e), r = cv.getBoundingClientRect();
-      if ((e.clientX - r.left) * V.VW / r.width > V.KW()) return;
-      const m = V.keyOf(y);
+      if (inBar(cx, cy)) {
+        e.stopImmediatePropagation(); e.preventDefault();
+        const th = HDR + (HI - V.pTop) / SPAN * V.MH, tl = V.span / SPAN * V.MH;
+        sbDrag = { off: cy >= th && cy <= th + tl ? cy - th : tl / 2, id: e.pointerId };
+        try { cv.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+        sbMove(cy);
+        return;
+      }
+      if (cx >= V.X0) return;
+      const m = V.keyOf(cy);
       if (m == null) return;
       e.stopImmediatePropagation(); e.preventDefault();
-      M.engine.previewNote(M.active, m, 0.5);
+      keyDrag = { id: e.pointerId, y0: cy, top0: V.pTop, m, moved: false, touch: e.pointerType === 'touch' };
+      try { cv.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+      if (!keyDrag.touch) M.engine.previewNote(M.active, m, 0.5);
     });
+    function sbMove(cy) { V.setPitchView(V.span, HI - (cy - sbDrag.off - HDR) / V.MH * SPAN); }
     cv.addEventListener('pointermove', (e) => {
-      const m = e.pointerType === 'touch' ? null : V.keyOf(V.xy(e)[1]);
+      const [cx, cy] = cxy(e);
+      if (e.pointerType === 'touch' && touches.has(e.pointerId)) touches.set(e.pointerId, [cx, cy]);
+      if (pinch && touches.size >= 2) {
+        e.stopImmediatePropagation();
+        const st = pinchState(), my = clamp(st.my, HDR, HDR + V.MH), sp = clamp(pinch.span0 * pinch.d0 / st.d, Z_MIN, SPAN);
+        V.setPitchView(sp, pinch.m + (my - HDR) / V.MH * sp);
+        return;
+      }
+      if (pinchHold && e.pointerType === 'touch') { e.stopImmediatePropagation(); return; }
+      if (sbDrag && e.pointerId === sbDrag.id) { e.stopImmediatePropagation(); sbMove(cy); return; }
+      if (keyDrag && e.pointerId === keyDrag.id) {
+        e.stopImmediatePropagation();
+        if (!keyDrag.moved && Math.abs(cy - keyDrag.y0) > 6) keyDrag.moved = true;
+        if (keyDrag.moved) V.setPitchView(V.span, keyDrag.top0 + (cy - keyDrag.y0) / V.PPS());
+        return;
+      }
+      const m = e.pointerType === 'touch' || cx >= V.X0 ? null : V.keyOf(cy);
       if (m !== V.hoverMidi) { V.hoverMidi = m; M.requestRender(); }
+      if (inBar(cx, cy)) { e.stopImmediatePropagation(); cv.style.cursor = 'ns-resize'; }
     });
+    const ptrEnd = (e) => {
+      if (e.pointerType === 'touch') {
+        touches.delete(e.pointerId);
+        if (touches.size < 2) pinch = null;
+        if (pinchHold) { e.stopImmediatePropagation(); if (!touches.size) pinchHold = false; return; }
+      }
+      if (sbDrag && e.pointerId === sbDrag.id) { e.stopImmediatePropagation(); sbDrag = null; return; }
+      if (keyDrag && e.pointerId === keyDrag.id) {
+        e.stopImmediatePropagation();
+        const k = keyDrag; keyDrag = null;
+        if (k.touch && !k.moved && e.type === 'pointerup') M.engine.previewNote(M.active, k.m, 0.5);
+      }
+    };
+    cv.addEventListener('pointerup', ptrEnd);
+    cv.addEventListener('pointercancel', ptrEnd);
+    // keys + (or =) / - : pitch zoom (not while typing)
+    const onKey = (e) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented || !cv.isConnected) return;
+      const t = e.target, tag = t && t.tagName;
+      if (tag === 'TEXTAREA' || tag === 'SELECT' || (tag === 'INPUT' && !/^(range|checkbox|radio|button)$/.test(t.type)) || (t && t.isContentEditable)) return;
+      if (e.key === '+' || e.key === '=') { e.preventDefault(); V.zoomAt(1 / 1.4); } else if (e.key === '-' || e.key === '_') { e.preventDefault(); V.zoomAt(1.4); }
+    };
+    document.addEventListener('keydown', onKey);
+    if (M.cleanups) M.cleanups.push(() => document.removeEventListener('keydown', onKey));
     cv.addEventListener('pointerleave', () => { if (V.hoverMidi != null) { V.hoverMidi = null; M.requestRender(); } });
 
     V.draw = function () {
       const S = M.song, E = M.engine, A = M.active, names = namesOf(S), tot = S.bars * SPB, u = V.U();
-      const playing = E.playing, phase = E.phase, pos = phase * tot, { VW, TH, MH, BW, CW, scrollX, dpr } = V;
+      const playing = E.playing, phase = E.phase, pos = phase * tot, { VW, TH, MH, BW, CW, scrollX, dpr, X0, GW } = V;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, VW, TH);
       ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(M.bands.off, 0, 0, S.bars, M.bands.R, -scrollX, HDR, CW, MH);
-      ctx.translate(-scrollX, 0);
-      const b0 = Math.max(0, Math.floor(scrollX / BW)), b1 = Math.min(S.bars - 1, Math.floor((scrollX + VW) / BW));
-      const curBar = playing ? Math.floor(phase * S.bars) : -1, xa = scrollX, xb = scrollX + VW, hb = V.highlightBar;
+      // the cached band image (1 px per bar x R rows, top row = HI) cropped to the visible pitch range
+      const RPS = M.bands.R / SPAN;
+      ctx.drawImage(M.bands.off, 0, (HI - V.pTop) * RPS, S.bars, V.span * RPS, X0 - scrollX, HDR, CW, MH);
+      ctx.translate(X0 - scrollX, 0);
+      const b0 = Math.max(0, Math.floor(scrollX / BW)), b1 = Math.min(S.bars - 1, Math.floor((scrollX + GW) / BW));
+      const curBar = playing ? Math.floor(phase * S.bars) : -1, xa = scrollX, xb = scrollX + GW, hb = V.highlightBar;
       for (let b = b0; b <= b1; b++) {   // chord header strip: name big, notes small
         const x = b * BW, ch = S.chords[b];
         ctx.fillStyle = b === hb ? '#24345a' : b === curBar ? '#22345e' : '#141824'; ctx.fillRect(x, 0, BW, HDR);
@@ -218,7 +357,10 @@
         ctx.strokeStyle = 'rgba(111,163,255,0.55)'; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, HDR + MH); ctx.moveTo(x1 - 0.5, 0); ctx.lineTo(x1 - 0.5, HDR + MH); ctx.stroke();
       }
-      for (let m = LO; m <= HI; m++) {   // pitch grid
+      ctx.save();   // graph area: everything below is clipped to the visible map (zoom / scroll)
+      ctx.beginPath(); ctx.rect(xa, HDR, GW, MH); ctx.clip();
+      const mLo = Math.max(LO, Math.floor(V.pTop - V.span)), mHi = Math.min(HI, Math.ceil(V.pTop));
+      for (let m = mLo; m <= mHi; m++) {   // pitch grid
         const pc = m % 12, y = Math.round(V.yOf(m)) + 0.5;
         ctx.strokeStyle = pc === 0 ? 'rgba(255,255,255,0.32)' : NATURAL[pc] ? 'rgba(255,255,255,0.13)' : 'rgba(255,255,255,0.05)';
         ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(xb, y); ctx.stroke();
@@ -231,20 +373,23 @@
         ctx.beginPath(); ctx.moveTo(x, HDR); ctx.lineTo(x, HDR + MH); ctx.stroke();
       }
       ctx.lineJoin = ctx.lineCap = 'round';
-      const nh = clamp(MH / SPAN * 0.8, 6, 14), order = S.layers.map((_, i) => i).filter((i) => i !== A).concat(A);
+      const nh = V.noteH(), order = S.layers.map((_, i) => i).filter((i) => i !== A).concat(A);
       for (const L of order) {   // layers, active on top; silent (muted / not soloed) layers are faint
-        const lay = S.layers[L], s = lay.line, isA = L === A, lu = BW / LPB, quiet = md.layerGain(S, L) === 0;
+        const lay = S.layers[L], isA = L === A, lu = BW / LPB, quiet = md.layerGain(S, L) === 0;
         ctx.globalAlpha = (isA ? 1 : 0.55) * (quiet ? 0.4 : 1);
-        ctx.beginPath();
-        let any = false;
-        for (let i = Math.max(0, Math.floor(xa / lu) - 1); i < Math.min(s.length, Math.ceil(xb / lu) + 1); i++) {
-          if (isNaN(s[i])) continue;
-          const x = (i + 0.5) * lu, y = V.yOf(s[i]); any = true;
-          if (i > 0 && !isNaN(s[i - 1])) ctx.lineTo(x, y); else { ctx.moveTo(x - 1, y); ctx.lineTo(x, y); }
-        }
-        if (any) {
-          ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = isA ? 6 : 5; ctx.stroke();
-          ctx.strokeStyle = lay.color; ctx.lineWidth = isA ? 3 : 2; ctx.stroke();
+        for (const st of md.strokes(lay)) {   // each line stroke (strokes may overlap)
+          const s = st.v;
+          ctx.beginPath();
+          let any = false;
+          for (let i = Math.max(0, Math.floor(xa / lu) - 1); i < Math.min(s.length, Math.ceil(xb / lu) + 1); i++) {
+            if (isNaN(s[i])) continue;
+            const x = (i + 0.5) * lu, y = V.yOf(s[i]); any = true;
+            if (i > 0 && !isNaN(s[i - 1])) ctx.lineTo(x, y); else { ctx.moveTo(x - 1, y); ctx.lineTo(x, y); }
+          }
+          if (any) {
+            ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = isA ? 6 : 5; ctx.stroke();
+            ctx.strokeStyle = lay.color; ctx.lineWidth = isA ? 3 : 2; ctx.stroke();
+          }
         }
         for (const n of lay.notes) {   // notes: rounded bars in the layer colour
           const x = n.s * u + 1, w = Math.max(3, n.d * u - 2);
@@ -256,9 +401,19 @@
         }
         ctx.globalAlpha = 1;
       }
-      M.emit('draw', ctx, V);   // overlays (content coords, scroll already applied)
+      M.emit('draw', ctx, V);   // overlays (content coords, scroll + strip offset already applied, clipped to the map)
       const tool = M.tools && M.tools.current;
       if (tool && tool.draw) { try { tool.draw(ctx, V); } catch (err) { console.error('[melody] tool draw', err); } }
+      if (playing) {   // playhead dots on every sounding stroke
+        const x = phase * CW, i = Math.min(S.bars * LPB - 1, Math.floor(phase * S.bars * LPB));
+        S.layers.forEach((l) => {
+          for (const q of md.lineAt(l, i)) {
+            ctx.fillStyle = l.color; ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.arc(x, V.yOf(q.m), 6, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+          }
+        });
+      }
+      ctx.restore();
       const lr = !V.regionPreview && md.regionOf(S);
       if (lr) {   // ✕ that clears the loop region (top-right of its last bar)
         const cx = lr[1] * BW - 11;
@@ -273,17 +428,18 @@
         ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(x - 5, HDR - 7); ctx.lineTo(x + 5, HDR - 7); ctx.lineTo(x, HDR); ctx.fill();
       }
       if (playing) {   // playback cursor
-        const x = phase * CW, i = Math.min(S.bars * LPB - 1, Math.floor(phase * S.bars * LPB));
+        const x = phase * CW;
         ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, HDR + MH); ctx.stroke();
-        S.layers.forEach((l) => {
-          if (isNaN(l.line[i])) return;
-          ctx.fillStyle = l.color; ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5;
-          ctx.beginPath(); ctx.arc(x, V.yOf(l.line[i]), 6, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
-        });
       }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = '#0d1019'; ctx.fillRect(0, 0, X0, HDR);   // corner over the piano strip (header scrolls under it)
       drawKeys();
+      if (V.zoomed()) {   // slim pitch scroll bar (right edge)
+        const th = HDR + (HI - V.pTop) / SPAN * MH, tl = Math.max(16, V.span / SPAN * MH), x = VW - 7;
+        ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(x, HDR, 6, MH);
+        ctx.fillStyle = 'rgba(207,213,230,0.7)'; V.rrect(x + 0.5, Math.min(th, HDR + MH - tl), 5, tl, 2.5); ctx.fill();
+      }
     };
     return V;
   };
