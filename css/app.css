@@ -60,7 +60,7 @@ a { color: var(--accent); }
 }
 
 /* ---------- stage + experiment layout ---------- */
-.vh-stage { position: relative; overflow: hidden; min-height: 0; }
+.vh-stage { position: relative; overflow: hidden; overflow: clip; min-height: 0; }   /* clip: programmatic scrolls can't shift it */
 .vh-exp { position: absolute; inset: 0; }
 .vh-canvas-box {
   position: absolute; inset: 0; padding: 14px 16px 118px; display: flex; align-items: center; justify-content: center;
@@ -85,7 +85,7 @@ a { color: var(--accent); }
   flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
   min-width: 58px; height: 54px; padding: 4px 8px; border: 1px solid transparent; border-radius: var(--radius);
   background: transparent; color: var(--text); cursor: pointer; transition: background var(--ease), border-color var(--ease), color var(--ease);
-  position: relative; user-select: none;
+  position: relative; -webkit-user-select: none; user-select: none;
 }
 .vh-dock-btn:hover { background: var(--surface-2); }
 .vh-dock-btn .ic { font-size: 18px; line-height: 20px; height: 20px; display: flex; align-items: center; gap: 4px; }

@@ -1,0 +1,11 @@
+{
+  "name": "visual-harmonics-e2e",
+  "private": true,
+  "description": "Cross-browser smoke tests (Chromium, Firefox, WebKit). Run: npm install && npx playwright install && npx playwright test",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

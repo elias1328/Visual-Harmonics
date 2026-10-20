@@ -67,8 +67,21 @@
       ({ master, limiter, glue } = makeOut(ctx));
       noiseBuf = makeNoise(ctx);
     }
-    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    // 'suspended' (autoplay policy) or WebKit's 'interrupted' (iOS: a call, Siri, another app took the audio session).
+    if (ctx.state !== 'running' && ctx.state !== 'closed') { const p = ctx.resume(); if (p && p.catch) p.catch(() => {}); }
     return ctx;
+  }
+  // Unlock on any user gesture until the context runs, not only on gestures that play a note: WebKit lets resume() start
+  // audio only inside a gesture handler, so a context first created (or interrupted) outside one - after an await, a
+  // timer, a backgrounded tab - would stay silent. Capture phase, so handlers that stop propagation can't block it.
+  if (root.addEventListener && root.document) {
+    const MODS = /^(Shift|Control|Alt|Meta|Tab|Escape|CapsLock|Fn)$/;   // not a gesture that may start audio
+    const unlock = (e) => {
+      if (ctx && ctx.state === 'running') return;
+      if (e.type === 'keydown' && (MODS.test(e.key) || e.ctrlKey || e.metaKey || e.altKey)) return;
+      ensure();
+    };
+    ['pointerdown', 'pointerup', 'touchend', 'mousedown', 'keydown', 'click'].forEach((t) => root.addEventListener(t, unlock, true));
   }
   function outsOf(c) {
     if (c === ctx) return { master, limiter, glue };
@@ -83,6 +96,14 @@
   }
   // Run fn with voice/trigger targeting c (and its own master + limiter). Schedule synchronously inside fn;
   // samplers must be loaded first (VH.sounds.prepare / VH.audio.load). Returns fn's result.
+  // OfflineAudioContext.startRendering() -> Promise<AudioBuffer>. Old WebKit returns nothing and fires oncomplete.
+  function render(c) {
+    return new Promise((res, rej) => {
+      c.oncomplete = (e) => res(e.renderedBuffer);
+      const p = c.startRendering();
+      if (p && p.then) p.then(res, rej);
+    });
+  }
   function withContext(c, fn) {
     const prev = bound;
     bound = { ctx: c, out: outFor(c) };
@@ -97,9 +118,11 @@
 
   // ---------- sample buffers (decoded once, shared by all contexts) ----------
   function decode(ab) {
-    if (ctx) return ctx.decodeAudioData(ab);
     const OAC = root.OfflineAudioContext || root.webkitOfflineAudioContext;   // decoding needs no gesture
-    return new OAC(1, 1, 44100).decodeAudioData(ab);
+    const c = ctx || (OAC ? new OAC(1, 1, 44100) : null);
+    if (!c) return Promise.reject(new Error('Web Audio is not available'));
+    // Old WebKit only has the callback form (it returns undefined); newer engines return a Promise as well.
+    return new Promise((res, rej) => { const p = c.decodeAudioData(ab, res, rej); if (p && p.then) p.then(res, rej); });
   }
   const loopable = (z, buf) => z && z.loopEnd > z.loopStart && z.loopStart >= 0 && (!buf || z.loopEnd <= buf.duration);
   // Crossfade the tail before loopEnd into the material before loopStart, once per buffer, so the seam is click-free.
@@ -154,10 +177,21 @@
   }
   // Release from whatever the envelope is at t. (A linear ramp after cancelAndHoldAtTime(future t) ramps from
   // the previous event in Chrome, i.e. fades the whole note; setTargetAtTime starts from the value at t.)
-  function release(param, rel, t) {
-    if (param.cancelAndHoldAtTime) param.cancelAndHoldAtTime(t);   // keeps the envelope shape up to t
-    else param.cancelScheduledValues(t);
+  function release(param, rel, t, shape) {
+    holdAt(param, t, shape);
     param.setTargetAtTime(0, t, rel / 5);   // < 1 % left when the sources stop at t + rel
+  }
+  // cancelAndHoldAtTime(t) keeps the envelope shape up to t. Firefox lacks it, and cancelScheduledValues(t) drops a ramp
+  // still running at t, so the value falls back to the event before it (a note released mid-attack went silent, a pluck
+  // released mid-decay jumped back to full level). Without it, re-add the cut ramp so it ends at t with the envelope's
+  // value there. shape = { t0, a, d, s, peak } of the attack (linear 0 -> peak) / decay (s <= 0: exponential to 0.0005).
+  function holdAt(param, t, shape) {
+    if (param.cancelAndHoldAtTime) { param.cancelAndHoldAtTime(t); return; }
+    param.cancelScheduledValues(t);
+    if (!shape || !(t > shape.t0)) return;
+    const { t0, a, d, s } = shape, peak = shape.peak ?? 1;
+    if (t < t0 + a) param.linearRampToValueAtTime(peak * (t - t0) / a, t);
+    else if (s <= 0 && t < t0 + a + d) param.exponentialRampToValueAtTime(peak * Math.pow(0.0005 / peak, (t - t0 - a) / d), t);
   }
   const toneFor = (sound, o) => (VH.sounds && VH.sounds.toneOf ? VH.sounds.toneOf(sound, o.tone) : o.tone);
   const startAt = (c, when) => (when != null && isFinite(when) && when > c.currentTime ? when : c.currentTime + 0.005);
@@ -219,7 +253,7 @@
         const t = Math.max(c.currentTime, when || 0, t0);
         if (t >= stopT) return;
         stopT = t;
-        release(env.gain, rel, t);
+        release(env.gain, rel, t, { t0, a: A, d: D, s: S });
         srcs.forEach((x) => { try { x.stop(t + rel + 0.02); } catch (_) { /* already stopped */ } });
         retire(v, t + rel + 0.02, c);
       },
@@ -344,9 +378,9 @@
         const t = Math.max(c.currentTime, when || 0, t0);
         if (t >= stopT) return;
         stopT = t;
-        release(env.gain, rel, t);
+        release(env.gain, rel, t, { t0, a: ae.a, d: ae.d, s: ae.s });
         if (fenv) for (const b of filts) {
-          if (b.detune.cancelAndHoldAtTime) b.detune.cancelAndHoldAtTime(t); else b.detune.cancelScheduledValues(t);
+          holdAt(b.detune, t, { t0, a: fe.a, d: fe.d, s: 1, peak: fenv });
           b.detune.setTargetAtTime(0, t, fe.r / 3);
         }
         const tEnd = t + rel + 0.02;
@@ -438,7 +472,7 @@
         const t = Math.max(c.currentTime, when || 0, t0);
         if (t >= stopT) return;
         stopT = t; relInfo = { rel, t };
-        if (layer) { release(env.gain, rel, t); stopLayers(t + rel + 0.02); }
+        if (layer) { release(env.gain, rel, t, { t0: layer.t, a: 0.005, d: 0, s: 1 }); stopLayers(t + rel + 0.02); }
         retire(v, t + rel + 0.02, c);
       },
     };
@@ -469,7 +503,7 @@
   function stopAll(rel = 0.05) { [...live].forEach((v) => v.stop(rel)); }
 
   VH.audio = {
-    ensure, voice, trigger, stopAll, load, decode, withContext, midiToHz, hzToMidi,
+    ensure, voice, trigger, stopAll, load, decode, render, withContext, midiToHz, hzToMidi,
     // For experiments with their own synth (babel): register a handle with stop() so it is counted/stopped.
     track, retire,
     get ctx() { return (bound && bound.ctx) || ctx; },

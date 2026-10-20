@@ -178,7 +178,7 @@
         const v = VH.audio.voice(s, 440 * 2 ** ((midi - 69) / 12), { gain: 1, dest: g, when: 0, loud: false });
         v.stop(undefined, 1.5);
       });
-      return c.startRendering();
+      return VH.audio.render ? VH.audio.render(c) : c.startRendering();
     }).then((buf) => {
       const db = toDb(kRms(buf.getChannelData(0), sr, 0, 1));
       return { db, loud: loudFor(db), midi };

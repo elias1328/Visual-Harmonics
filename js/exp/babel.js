@@ -1867,6 +1867,24 @@
       view.cx = wx - (px / S - 0.5) * span(); view.cy = wy - (py / S - 0.5) * span();
       saveView();
     }, { passive: false });
+    // Safari sends a trackpad (and touch) pinch as gesturestart / gesturechange with a scale, not as Ctrl + wheel;
+    // unhandled, it zooms the whole page. Zoom the map around the pinch instead. (Other browsers never fire these.)
+    {
+      let gs = 1;
+      const gest = (e) => {
+        e.preventDefault();
+        if (!(e.scale > 0)) return;
+        if (e.type === 'gesturechange') {
+          anim = null;
+          const [px, py] = pos(e), [wx, wy] = toWorld(px, py);
+          view.zoom = clamp(view.zoom * e.scale / gs, 0.05, 1e9);
+          view.cx = wx - (px / S - 0.5) * span(); view.cy = wy - (py / S - 0.5) * span();
+          saveView();
+        }
+        gs = e.type === 'gesturestart' ? 1 : e.scale;
+      };
+      ['gesturestart', 'gesturechange', 'gestureend'].forEach((t) => cv.addEventListener(t, gest));
+    }
 
     renderDisc(); renderSaved(); renderGems();
     raf = requestAnimationFrame(frame);

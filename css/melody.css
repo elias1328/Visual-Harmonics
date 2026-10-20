@@ -231,7 +231,7 @@
 .mel-arr-blocks { flex: none; display: flex; gap: 4px; touch-action: pan-x; }
 .mel-arr-b {
   --c: #6fa3ff; flex: none; display: flex; align-items: center; gap: 4px; height: 24px; max-width: 140px; padding: 0 9px;
-  border: 1px solid transparent; border-left: 4px solid var(--c); border-radius: 6px; cursor: pointer; user-select: none;
+  border: 1px solid transparent; border-left: 4px solid var(--c); border-radius: 6px; cursor: pointer; -webkit-user-select: none; user-select: none;
   background: color-mix(in srgb, var(--c) 16%, #141824); color: #cfd5e6; font: 12px system-ui, sans-serif; white-space: nowrap;
 }
 .mel-arr-b .nm { overflow: hidden; text-overflow: ellipsis; }
@@ -261,7 +261,7 @@
 .mel-tunrow .mel-tuning { min-width: 0; flex: 1 1 auto; }
 
 /* automation lanes (export.js part): a collapsible area under the drum lane, one 36 px canvas row per lane */
-.mel-auto { position: relative; flex: none; box-sizing: border-box; max-width: 100%; font-size: 11px; color: var(--muted); user-select: none; }
+.mel-auto { position: relative; flex: none; box-sizing: border-box; max-width: 100%; font-size: 11px; color: var(--muted); -webkit-user-select: none; user-select: none; }
 .mel-au-head { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
 .mel-au-tog, .mel-au-add { height: 24px; padding: 0 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface-2, #1b2030);
   color: var(--muted); font-size: 12px; cursor: pointer; white-space: nowrap; flex: none; font-family: inherit; }

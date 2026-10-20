@@ -239,6 +239,19 @@
       e.preventDefault();
       V.setScroll(V.scrollX + (Math.abs(dx) > Math.abs(dy) ? dx : dy));
     }, { passive: false });
+    // Safari (macOS) sends a trackpad pinch as gesturestart / gesturechange with a scale, not as Ctrl + wheel like
+    // Chrome and Firefox; unhandled, it zooms the whole page. A touch pinch is handled by the pointer code below.
+    // (Other browsers never fire these events.)
+    {
+      let gs = 1;
+      const gest = (e) => {
+        e.preventDefault();
+        if (touches.size || !(e.scale > 0)) return;
+        if (e.type === 'gesturechange') V.zoomAt(gs / e.scale, cxy(e)[1]);
+        gs = e.type === 'gesturestart' ? 1 : e.scale;
+      };
+      ['gesturestart', 'gesturechange', 'gestureend'].forEach((t) => cv.addEventListener(t, gest));
+    }
     // Keep the playhead in view while playing.
     V.follow = function (phase) {
       if (V.CW <= V.GW + 0.5) return;

@@ -1039,7 +1039,7 @@
         }, (err) => console.warn('[melody] export: a render step was skipped', err));
       }
       let buf;
-      try { buf = await c.startRendering(); } finally { if (b2 && b2.dispose) { try { b2.dispose(); } catch (_) { /* ignore */ } } }
+      try { buf = await (VH.audio.render ? VH.audio.render(c) : c.startRendering()); } finally { if (b2 && b2.dispose) { try { b2.dispose(); } catch (_) { /* ignore */ } } }
       onProgress(1);
       return { channels: [buf.getChannelData(0), buf.getChannelData(1)], sr, seconds: buf.duration, songSeconds: songSec, fx: fxUsed, viaB2: !!b2, drums: drumsUsed };
     }

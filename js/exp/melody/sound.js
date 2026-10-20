@@ -253,7 +253,7 @@
         for (const k of Object.keys(A)) {
           const want = !!(kinds && kinds.has(k));
           if (want && !A[k]) {
-            if (k === 'pan') A[k] = c.createStereoPanner();
+            if (k === 'pan') A[k] = c.createStereoPanner ? c.createStereoPanner() : null;   // old WebKit: no pan lane
             else if (k === 'cut') { A[k] = c.createBiquadFilter(); A[k].type = 'lowpass'; A[k].Q.value = 0; A[k].frequency.value = 20000; }
             else { A[k] = c.createGain(); A[k].gain.value = k === 'vol' ? 1 : clamp(+last[k] || 0, 0, 1); if (k === 'rev') A[k].connect(revIn); if (k === 'dly') A[k].connect(dlyIn); }
           } else if (!want && A[k]) { try { A[k].disconnect(); } catch (_) { /* ignore */ } A[k] = null; }
@@ -638,7 +638,7 @@
     const st = document.createElement('style');
     st.id = 'vh-melody-sound';
     st.textContent = `
-.mel-drums { flex: none; box-sizing: border-box; max-width: 100%; font-size: 11px; color: var(--muted); user-select: none; }
+.mel-drums { flex: none; box-sizing: border-box; max-width: 100%; font-size: 11px; color: var(--muted); -webkit-user-select: none; user-select: none; }
 .mel-dr-head { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: nowrap; }
 .mel-dr-head .vh-select { width: auto; min-width: 0; max-width: 150px; padding: 2px 6px; font-size: 12px; height: 26px; }
 .mel-dr-btn { height: 26px; padding: 0 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface-2, #1b2030);
