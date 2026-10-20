@@ -227,6 +227,136 @@
     return main ? track(v) : v;
   }
 
+  // ---------- synth.v2: subtractive voice (VH.synth model) ----------
+  // oscs (native / PeriodicWave / additive bank / noise, each with unison) -> 24 dB filter (2 biquads; env + LFO on
+  // their detune, cents) -> panner -> tremolo -> [tone] -> amp env -> lvl -> out. Legato setFreq glides every source.
+  const waves = new WeakMap();   // ctx -> Map(key -> PeriodicWave)
+  function periodicWave(c, parts) {
+    if (!waves.has(c)) waves.set(c, new Map());
+    const m = waves.get(c), key = JSON.stringify(parts);
+    if (!m.has(key)) {
+      const n = Math.min(64, Math.max(...parts.map((p) => Math.round(p[0])))) + 1, re = new Float32Array(n), im = new Float32Array(n);
+      for (const [r, a] of parts) { const k = Math.round(r); if (k >= 1 && k < n) im[k] += a; }
+      m.set(key, c.createPeriodicWave(re, im));
+    }
+    return m.get(key);
+  }
+  const NATIVE = { sine: 'sine', saw: 'sawtooth', square: 'square', triangle: 'triangle' };
+  const v2Count = () => { let n = 0; for (const v of live) if (v.v2) n++; return n; };
+  function synthV2Voice(sound, freq, gain, T, o) {
+    const Y = VH.synth, c = T.c, m = Y.normalize(sound.synth), main = c === ctx, t0 = startAt(c, o.when), nyq = c.sampleRate / 2 - 1;
+    const ae = m.ampEnv, fe = m.filtEnv, F = m.filter, trim = o.loud === false ? 1 : m.gain;
+    const { env, lvl, input } = chain(c, T.out, gain * trim, toneFor(sound, o));
+    // CPU guard: thin out unison when many v2 voices are live.
+    const nLive = main ? v2Count() : 0, uMax = nLive > 20 ? 1 : nLive > 12 ? 2 : 7;
+    // amp envelope
+    env.gain.setValueAtTime(0, t0);
+    env.gain.linearRampToValueAtTime(1, t0 + ae.a);
+    if (ae.s > 0) env.gain.setTargetAtTime(ae.s, t0 + ae.a, ae.d / 3);
+    else { env.gain.exponentialRampToValueAtTime(0.0005, t0 + ae.a + ae.d); env.gain.setValueAtTime(0, t0 + ae.a + ae.d + 0.01); }
+    // amp LFO (tremolo) and pan stages
+    const trem = c.createGain(); trem.connect(input);
+    let pan = null;
+    if (c.createStereoPanner) { pan = c.createStereoPanner(); pan.connect(trem); }
+    // filter: two cascaded biquads
+    const kt = (f) => Math.min(nyq, F.cutoff * (f / Y.NOMINAL_ROOT) ** F.keyTrack);
+    const filts = Y.stageQ(F).map((q) => {
+      const b = c.createBiquadFilter(); b.type = F.type; b.Q.value = Y.nodeQ(F.type, q); b.frequency.value = kt(freq); return b;
+    });
+    filts[0].connect(filts[1]); filts[1].connect(pan || trem);
+    const fenv = F.envAmt * 1200;   // cents at full envelope
+    if (fenv) for (const b of filts) {
+      b.detune.setValueAtTime(0, t0);
+      b.detune.linearRampToValueAtTime(fenv, t0 + fe.a);
+      b.detune.setTargetAtTime(fenv * fe.s, t0 + fe.a, fe.d / 3);
+    }
+    // sources
+    const srcs = [], tuned = [];   // tuned: { o (osc node), mul, g (gain node or null), a (amp) }
+    const sumLv = Math.max(1, m.oscs.reduce((a, x) => a + (x.wave === 'noise' ? 0 : x.level), 0));
+    const mix = c.createGain(); mix.gain.value = 1 / sumLv; mix.connect(filts[0]);
+    for (const x of m.oscs) {
+      if (!(x.level > 0)) continue;
+      const og = c.createGain(); og.gain.value = x.level; og.connect(mix);
+      if (x.wave === 'noise') {
+        const n = c.createBufferSource(), buf = noiseFor(c);
+        n.buffer = buf; n.loop = true; n.connect(og); n.start(t0, Math.random() * (buf.duration - 0.1)); srcs.push(n);
+        continue;
+      }
+      const mul = Y.oscMul(x), add = Y.additive(x);
+      let parts = null, psum = 1;
+      if (add) {
+        parts = Y.waveHarmonics(x, 16).map(([r, a]) => [r ** x.stretch, a]);
+        psum = parts.reduce((a, p) => a + p[1], 0) || 1;
+      }
+      let u = Math.min(x.unison, uMax);
+      if (add) u = Math.max(1, Math.min(u, Math.floor(48 / parts.length)));
+      og.gain.value = x.level / Math.sqrt(u);
+      for (let i = 0; i < u; i++) {
+        const cents = u > 1 ? x.spread * (i / (u - 1) - 0.5) : 0;
+        let dst = og;
+        if (u > 1 && x.spread > 0 && c.createStereoPanner) {   // spread unison voices across the stereo field
+          const sp = c.createStereoPanner(); sp.pan.value = 0.7 * (i / (u - 1) * 2 - 1); sp.connect(og); dst = sp;
+        }
+        const mk = (r, a) => {
+          const osc = c.createOscillator(), fr = freq * mul * r;
+          if (x.wave === 'partials' && !add) osc.setPeriodicWave(periodicWave(c, x.partials));
+          else if (!add) osc.type = NATIVE[x.wave];
+          osc.frequency.value = Math.min(fr, nyq); osc.detune.value = cents;
+          let g = null;
+          if (add) { g = c.createGain(); g.gain.value = fr < nyq ? a / psum : 0; osc.connect(g); g.connect(dst); } else osc.connect(dst);
+          osc.start(t0); srcs.push(osc); tuned.push({ o: osc, mul: mul * r, g, a: a / psum });
+        };
+        if (add) for (const [r, a] of parts) mk(r, a); else mk(1, 1);
+      }
+    }
+    // LFOs
+    for (const l of m.lfos) {
+      if (!(l.depth > 0)) continue;
+      const lfo = c.createOscillator(), lg = c.createGain();
+      lfo.type = l.shape; lfo.frequency.value = l.rate; lfo.connect(lg); lfo.start(t0); srcs.push(lfo);
+      const d = l.depth * Y.LFO_SCALE[l.target];
+      if (l.target === 'pitch') { lg.gain.value = d; tuned.forEach((x) => lg.connect(x.o.detune)); }
+      else if (l.target === 'cutoff') { lg.gain.value = d; filts.forEach((b) => lg.connect(b.detune)); }
+      else if (l.target === 'amp') { lg.gain.value = d / 2; trem.gain.value = 1 - d / 2; lg.connect(trem.gain); }
+      else if (pan) { lg.gain.value = d; lg.connect(pan.pan); }
+    }
+    counters.starts += srcs.length;
+    let stopT = Infinity, cur = freq;
+    const v = {
+      t0, ctx: c, v2: true,
+      get freq() { return cur; },
+      get sources() { return srcs.length; }, uMax,
+      // Legato: glides every oscillator (and the keytracked cutoff); never retriggers. Default glide: synth.glide.
+      setFreq(f, glideSec, at) {
+        const t = Math.max(c.currentTime, at || 0);
+        if (t >= stopT || !(f > 0)) return;
+        const tc = Math.max(0.001, (glideSec ?? (m.glide || 0.015)) / 3);
+        for (const x of tuned) {
+          x.o.frequency.setTargetAtTime(Math.min(f * x.mul, nyq), t, tc);
+          if (x.g) x.g.gain.setTargetAtTime(f * x.mul < nyq ? x.a : 0, t, tc);
+        }
+        if (F.keyTrack) for (const b of filts) b.frequency.setTargetAtTime(kt(f), t, tc);
+        cur = f;
+      },
+      setGain(g) { if (c.currentTime < stopT) lvl.gain.setTargetAtTime(g * trim, c.currentTime, 0.01); },
+      stop(rel, when) {
+        rel = Math.max(0.01, rel ?? ae.r);
+        const t = Math.max(c.currentTime, when || 0, t0);
+        if (t >= stopT) return;
+        stopT = t;
+        release(env.gain, rel, t);
+        if (fenv) for (const b of filts) {
+          if (b.detune.cancelAndHoldAtTime) b.detune.cancelAndHoldAtTime(t); else b.detune.cancelScheduledValues(t);
+          b.detune.setTargetAtTime(0, t, fe.r / 3);
+        }
+        const tEnd = t + rel + 0.02;
+        srcs.forEach((x) => { try { x.stop(tEnd); } catch (_) { /* already stopped */ } });
+        retire(v, tEnd, c);
+      },
+    };
+    return main ? track(v) : v;
+  }
+
   // Legato sampler voice: one looping buffer source per "layer"; setFreq glides playbackRate (never retriggers);
   // drifting > 4 semitones from the zone root crossfades (60 ms) into the nearest zone.
   function zoneGain(z) { const g = z && z.gain; return g > 0 && isFinite(g) ? g : 1; }
@@ -326,7 +456,8 @@
       k = VH.sounds && VH.sounds.loudOf ? VH.sounds.loudOf(sound) : 1;
     }
     const gain = (o.gain != null ? o.gain : 0.3) * k;
-    const v = sound.kind === 'sampler' ? samplerVoice(sound, freq, gain, T, o) : synthVoice(sound, freq, gain, T, o);
+    const v = sound.kind === 'sampler' ? samplerVoice(sound, freq, gain, T, o)
+      : sound.synth && sound.synth.v === 2 && VH.synth ? synthV2Voice(sound, freq, gain, T, o) : synthVoice(sound, freq, gain, T, o);
     if (k !== 1 && !v.silent) { const sg = v.setGain; v.setGain = (g) => sg(g * k); }
     return v;
   }
@@ -347,6 +478,6 @@
     // The output limiter of a context (live or offline); its .reduction shows how hard it works.
     limiterFor: (c) => (c ? outsOf(c).limiter : limiter),
     glueFor: (c) => (c ? outsOf(c).glue : glue),
-    stats() { return { live: live.size, releasing: releasing.size, state: ctx ? ctx.state : 'none', starts: counters.starts, xfades: counters.xfades }; },
+    stats() { return { v2Live: v2Count(), live: live.size, releasing: releasing.size, state: ctx ? ctx.state : 'none', starts: counters.starts, xfades: counters.xfades }; },
   };
 })(this);

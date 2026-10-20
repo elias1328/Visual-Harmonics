@@ -163,7 +163,8 @@
     },
 
     // Unified instrument picker fed by VH.sounds.list(): Synths / Instruments / Your sounds / Local.
-    // opts: { value, onChange(id), title, mode: 'line'|undefined, filter(sound), imports (false hides ＋ Import), onImport(sounds) }.
+    // opts: { value, onChange(id), title, mode: 'line'|undefined, filter(sound), imports (false hides ＋ Import), onImport(sounds),
+    // synths (false hides ＋ New synth… / ✎ Edit, see VH.synthEditor) }.
     // In a .vh-dock it is a dock item, anywhere else a plain select. Audio files dropped on it are imported.
     // Returns { value, set(id), setMode(mode), refresh(), importFiles(files), destroy(), el, select }.
     soundPicker(parent, o) {
@@ -171,9 +172,15 @@
       let mode = o.mode, last = o.value;
       // Action rows at the end: import (file chooser) and rename / delete (when the user has sounds of their own).
       const ACT = { value: '__import', label: '＋ Import sound…' }, MAN = { value: '__manage', label: '✎ Rename / delete your sounds…' };
-      const acts = () => (o.imports === false ? [] : [ACT].concat(ui.userSounds().length ? [MAN] : []));
+      const NEW = { value: '__newsynth', label: '＋ New synth…' };
+      const synthActs = () => {
+        if (o.synths === false || !VH.synthEditor) return [];
+        const cur = VH.sounds.get(last);
+        return [NEW].concat(cur && VH.sounds.isV2 && VH.sounds.isV2(cur) ? [{ value: '__editsynth', label: '✎ Edit “' + cur.name + '”…' }] : []);
+      };
+      const acts = () => synthActs().concat(o.imports === false ? [] : [ACT].concat(ui.userSounds().length ? [MAN] : []));
       const opts = () => ui.soundOptions({ mode, filter: o.filter }).concat(acts());
-      const pick = (id) => { last = id; if (o.onChange) o.onChange(id); };
+      const pick = (id) => { last = id; if (o.onChange) o.onChange(id); refresh(); };
       // After an import: the host's onImport(sounds) (return false to fall through), else the first instrument is picked.
       const imported = (ss) => {
         if (!ss || !ss.length) return;
@@ -183,6 +190,12 @@
       };
       const importFiles = (fs) => ui.importSounds(fs).then(imported);
       const onSel = (id) => {
+        if (id === '__newsynth' || id === '__editsynth') {
+          sel.value = last;
+          // A new synth is picked once saved; edits apply live (same id) and re-pick on save so hosts refresh.
+          VH.synthEditor.open({ soundId: id === '__editsynth' ? last : null, onSave: (s) => { refresh(); sel.value = s.id; pick(s.id); } });
+          return;
+        }
         if (id === '__import' || id === '__manage') {
           sel.value = last;
           if (id === '__import') ui.pickAudioFiles().then((fs) => { if (fs.length) importFiles(fs); });
@@ -199,7 +212,7 @@
       const off = VH.sounds.onChange(refresh);
       const offDrop = o.imports === false ? () => {} : ui.dropTarget(sel.el, importFiles);
       return {
-        get value() { return sel.value; }, set(id) { last = id; sel.value = id; },
+        get value() { return sel.value; }, set(id) { const ch = id !== last; last = id; if (ch) refresh(); sel.value = id; },
         setMode(m) { if (m !== mode) { mode = m; refresh(); } },
         importFiles, refresh, destroy() { off(); offDrop(); }, el: sel.el, select: sel.select,
       };

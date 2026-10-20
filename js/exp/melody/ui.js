@@ -191,7 +191,7 @@
     sShare.append(ui.h('div', 'vh-desc', 'The link holds the whole song, so anyone who opens it hears what you hear.'));
     // Songs with the user's own sounds: their audio can't travel in a link (main.js M.SHARE_NOTE).
     const shNote = ui.h('div', 'vh-desc mel-share-note'); sShare.append(shNote);
-    const syncShareNote = () => { const own = M.ownSounds ? M.ownSounds() : []; shNote.textContent = own.length ? M.SHARE_NOTE : ''; shNote.hidden = !own.length; };
+    const syncShareNote = () => { const own = M.unsharedSounds ? M.unsharedSounds() : (M.ownSounds ? M.ownSounds() : []); shNote.textContent = own.length ? M.SHARE_NOTE : ''; shNote.hidden = !own.length; };
     M.on('song', syncShareNote); M.on('sounds', syncShareNote); setTimeout(syncShareNote, 0);
 
     // Backing (independent instrument for the chords)

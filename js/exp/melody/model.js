@@ -256,7 +256,7 @@
     const dr = Object.assign({}, S.drums); delete dr.vol;
     const ed = S.ext && S.ext.edit, layers = {};
     S.layers.forEach((l) => { layers[l.id] = { lines: l.lines, notes: l.notes }; });
-    return { bars: S.bars, ts: S.ts || '4/4', key: S.key, mode: S.mode, chords: S.chords, loopRegion: S.loopRegion || null, tension: S.tension || 0, drums: dr, vib: ed && ed.vib ? ed.vib : null, layers };
+    return { bars: S.bars, ts: S.ts || '4/4', key: S.key, mode: S.mode, chords: S.chords, loopRegion: S.loopRegion || null, tension: S.tension || 0, drums: dr, vib: ed && ed.vib ? ed.vib : null, auto: S.auto || [], layers };
   }
   function copyContent(d) {
     const layers = {};
@@ -265,12 +265,12 @@
       layers[id] = { lines: c.lines.map((st) => ({ id: st.id, v: new Float32Array(st.v) })), notes: c.notes.map((n) => ({ s: n.s, d: n.d, m: n.m })) };
     });
     return { bars: d.bars, ts: d.ts, key: d.key, mode: d.mode, chords: d.chords.map((e) => ({ at: e.at, chord: e.chord ? e.chord.slice() : null })),
-      loopRegion: d.loopRegion ? d.loopRegion.slice() : null, tension: d.tension || 0, drums: plain(d.drums), vib: d.vib ? plain(d.vib) : null, layers };
+      loopRegion: d.loopRegion ? d.loopRegion.slice() : null, tension: d.tension || 0, drums: plain(d.drums), vib: d.vib ? plain(d.vib) : null, auto: autoCopy(d.auto), layers };
   }
   const contentOf = (S, k) => (k === S.cur ? liveContent(S) : S.sections[k].data);
   function applyContent(S, d) {
     S.bars = d.bars; S.ts = d.ts; S.chords = d.chords;
-    if (d.key != null) { S.key = d.key; S.mode = d.mode; } S.loopRegion = d.loopRegion || null; S.tension = d.tension || 0;
+    if (d.key != null) { S.key = d.key; S.mode = d.mode; } S.loopRegion = d.loopRegion || null; S.tension = d.tension || 0; S.auto = d.auto || [];
     const vol = S.drums && typeof S.drums.vol === 'number' ? { vol: S.drums.vol } : {};
     S.drums = Object.assign({}, d.drums, vol);
     if (!S.ext || typeof S.ext !== 'object') S.ext = {};
@@ -287,7 +287,7 @@
     return true;
   }
   function emptyContent(S, bars, ts) {
-    const c = { bars, ts, key: S.key, mode: S.mode, chords: [], loopRegion: null, tension: 0, drums: {}, vib: null, layers: {} };
+    const c = { bars, ts, key: S.key, mode: S.mode, chords: [], loopRegion: null, tension: 0, drums: {}, vib: null, auto: [], layers: {} };
     const tonic = diatonic(S)[0];
     c.chords = normChords({ bars, ts, chords: [{ at: 0, chord: tonic }] });
     return c;
@@ -298,7 +298,7 @@
     if (k === S.cur) return S;
     const d = S.sections[k].data, ed = Object.assign({}, S.ext && S.ext.edit);
     if (d.vib) ed.vib = d.vib; else delete ed.vib;
-    return Object.assign({}, S, { bars: d.bars, ts: d.ts, key: d.key != null ? d.key : S.key, mode: d.mode || S.mode, chords: d.chords, loopRegion: d.loopRegion, tension: d.tension || 0, cur: k,
+    return Object.assign({}, S, { bars: d.bars, ts: d.ts, key: d.key != null ? d.key : S.key, mode: d.mode || S.mode, chords: d.chords, loopRegion: d.loopRegion, tension: d.tension || 0, auto: d.auto || [], cur: k,
       drums: Object.assign({}, d.drums, S.drums && typeof S.drums.vol === 'number' ? { vol: S.drums.vol } : {}),
       ext: Object.assign({}, S.ext, { edit: ed }),
       layers: S.layers.map((l) => { const c = d.layers[l.id]; return Object.assign({}, l, { lines: c ? c.lines : [], notes: c ? c.notes : [] }); }) });
@@ -321,7 +321,7 @@
     o = o || {};
     const items = o.only != null ? [{ k: o.only, r: 0, a: 0, n: k16(S, o.only) }] : arrangement(S);
     const tot = items.reduce((s, it) => s + it.n, 0), F = Object.assign({}, S, { loopRegion: null });
-    const bars = [], chords = [], tsl = [], vib = {};
+    const bars = [], chords = [], tsl = [], vib = {}, fa = {};
     const layers = S.layers.map((l) => Object.assign({}, l, { lines: [], notes: [] }));
     items.forEach((it) => {
       const s = sectionSong(S, it.k), n = spb(s);
@@ -329,6 +329,8 @@
       // kp: the section's key root, so tuned chords (chordMidis(ch, F)) follow modulations in the flat song
       s.chords.forEach((e) => { const c = e.chord ? e.chord.slice() : null; if (c) c.kp = s.key; chords.push({ at: it.a + e.at, chord: c }); });
       if (!tsl.length || tsl[tsl.length - 1].ts !== (s.ts || '4/4')) tsl.push({ at: it.a, ts: s.ts || '4/4' });
+      // automation lanes: pieces per target ({ a, n, pts }); time not covered by a piece is neutral
+      (s.auto || []).forEach((ln) => { (fa[ln.target] = fa[ln.target] || []).push({ a: it.a, n: it.n, pts: ln.points }); });
       s.layers.forEach((l, L) => {
         const F1 = layers[L];
         l.notes.forEach((x) => F1.notes.push({ s: x.s + it.a, d: x.d, m: x.m }));
@@ -350,6 +352,7 @@
     F.layers = layers; F.chords = chords; F.bars = bars.length; F.ts = tsl.length ? tsl[0].ts : '4/4';
     F.ext = Object.assign({}, S.ext, { edit: Object.assign({}, S.ext && S.ext.edit, { vib }) });
     F.flat = { tot, bars, items, ts: tsl };
+    F.auto = []; F.flatAuto = fa;
     return F;
   }
   const k16 = (S, k) => (k === S.cur ? S.bars * spb(S) : secTot(S.sections[k].data));
@@ -365,6 +368,7 @@
     if (lr) o.loopRegion = lr;
     if (d.tension > 0) o.tension = r3(d.tension);   // written only when set
     if (d.vib) o.vib = plain(d.vib);
+    if (d.auto && d.auto.length) o.auto = autoOut(d.auto);   // automation lanes: written only when set
     return o;
   }
 
@@ -382,6 +386,7 @@
     if (lr) o.loopRegion = lr;   // written only when set, so songs without one serialize unchanged
     if (S.tension > 0) o.tension = r3(S.tension);   // Tension dial (0..1) of the shown section; only when set
     if (tuningOf(S) !== '12tet') o.tuning = tuningOf(S);
+    if (S.auto && S.auto.length) o.auto = autoOut(S.auto);   // automation lanes of the shown section; only when set
     o.sections = (S.sections || []).map((x, k) => (k === S.cur ? secMeta(x) : Object.assign(secMeta(x), serContent(x.data, S.layers))));
     o.cur = S.cur | 0;
     if (full) Object.assign(o, { grid: S.grid, loop: S.loop, snap: S.snap });
@@ -427,6 +432,7 @@
     S.loopRegion = regionOf({ loopRegion: o.loopRegion, bars });
     S.tension = tensionOf(o.tension);
     S.migratedIds = assignIds(S.layers);   // > 0 for songs saved before layer ids (runtime info, not serialized)
+    S.auto = autoIn(o.auto, S.layers);     // automation lanes of the shown section
     S.migratedLines = migratedLines;       // > 0 for songs saved before strokes (v < 3)
     // vibrato (B1, ext.edit.vib[L]) was keyed by line sample of the one line: { l: ranges } -> { s: { s1: ranges } }
     const vib = S.ext.edit && S.ext.edit.vib;
@@ -459,6 +465,27 @@
     S.migratedSections = secs.length ? 0 : 1;
     return S;
   }
+  // ---------- automation lanes (per section): [{ id, target, points: [[t16, v 0..1, smooth?]] }] ----------
+  // target: '<layer id>.vol|pan|cut|rev|dly' or 'backing.vol' | 'drums.vol' | 'master.vol'. A point's 3rd value 1 = the
+  // segment after it is smooth (eased), else linear. See export.js (X.auto) for values, curves, playback and MIDI CC.
+  const AUTO_RE = /^(?:(l\d{1,3})\.(vol|pan|cut|rev|dly)|(backing|drums|master)\.vol)$/, MAX_AUTO = 16, MAX_PTS = 400;
+  function autoIn(a, layers) {
+    if (!Array.isArray(a)) return [];
+    const out = [], seen = new Set();
+    for (const x of a) {
+      if (!x || typeof x !== 'object' || typeof x.target !== 'string' || out.length >= MAX_AUTO) continue;
+      const m = AUTO_RE.exec(x.target);
+      if (!m || seen.has(x.target) || (m[1] && layers && !layers.some((l) => l.id === m[1]))) continue;
+      seen.add(x.target);
+      const pts = (Array.isArray(x.points) ? x.points : []).filter((p) => Array.isArray(p) && isFinite(+p[0]) && isFinite(+p[1])).slice(0, MAX_PTS)
+        .map((p) => (p[2] ? [Math.max(0, r3(+p[0])), r3(clamp(+p[1], 0, 1)), 1] : [Math.max(0, r3(+p[0])), r3(clamp(+p[1], 0, 1))]))
+        .sort((p, q) => p[0] - q[0]);
+      out.push({ id: typeof x.id === 'string' && /^a\d{1,4}$/.test(x.id) ? x.id : 'a' + (out.length + 1), target: x.target, points: pts });
+    }
+    return out;
+  }
+  const autoOut = (a) => a.map((x) => ({ id: x.id, target: x.target, points: x.points.map((p) => (p[2] ? [r3(p[0]), r3(p[1]), 1] : [r3(p[0]), r3(p[1])])) }));
+  const autoCopy = (a) => (Array.isArray(a) ? a.map((x) => ({ id: x.id, target: x.target, points: x.points.map((p) => p.slice()) })) : []);
   const tensionOf = (v) => (typeof v === 'number' && isFinite(v) ? Math.round(clamp(v, 0, 1) * 1000) / 1000 : 0);
 
   // ---------- Tension dial (0..1, per section) ----------
@@ -527,7 +554,7 @@
       layers[l.id] = c;
     });
     const dr = plain(x.drums); delete dr.vol;
-    return { bars, ts, key: typeof x.key === 'number' ? num(x.key, 0, 11, 0) | 0 : S.key, mode: modeIn(x.mode, S.mode), chords: parseChords(x.chords || [], true, bars, ts), loopRegion: regionOf({ loopRegion: x.loopRegion, bars }), tension: tensionOf(x.tension),
+    return { bars, ts, key: typeof x.key === 'number' ? num(x.key, 0, 11, 0) | 0 : S.key, mode: modeIn(x.mode, S.mode), chords: parseChords(x.chords || [], true, bars, ts), loopRegion: regionOf({ loopRegion: x.loopRegion, bars }), tension: tensionOf(x.tension), auto: autoIn(x.auto, S.layers),
       drums: dr, vib: x.vib && typeof x.vib === 'object' ? plain(x.vib) : null, layers };
   }
 
@@ -587,5 +614,5 @@
     TS, TS_LIST, tsOf, spb, lpb, tot16, barsOf, barAt, beatGrid,
     normChords, regionAt, regionEnd, chordAt, regionChord, regions, barChords, isBarStart, splitAt, mergeAt, serChords, parseChords,
     MAX_SECTIONS, MAX_BARS, MAX_REP, SEC_COLORS, SEC_NAMES, nextSecId, liveContent, copyContent, contentOf, applyContent, selectSection,
-    emptyContent, sectionSong, arrangement, songTot, flatten };
+    emptyContent, sectionSong, arrangement, songTot, flatten, autoIn, autoOut, autoCopy, AUTO_RE, MAX_AUTO };
 })();

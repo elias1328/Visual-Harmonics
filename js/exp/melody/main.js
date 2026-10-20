@@ -91,8 +91,21 @@
     // fall back to the built-in synth drum.
     function checkMissing() {
       if (!soundsReady) return;
-      const info = (S.ext && S.ext.snd) || {}, miss = [];
+      const info = (S.ext && S.ext.snd) || {}, miss = [], added = new Map();
       const sub = (id, who) => {
+        // A synth made in the editor travels exactly (ext.snd[id].syn): rebuild and keep it instead of a fallback.
+        const syn = info[id] && info[id].syn;
+        if (syn && VH.sounds.fromPortable) {
+          if (added.has(id)) return added.get(id);
+          const made = VH.sounds.fromPortable(syn);
+          if (made) {
+            try {
+              const s = VH.sounds.get(made.id) || VH.sounds.save(Object.assign(made, { source: 'custom' }));
+              added.set(id, s.id);
+              return s.id;
+            } catch (_) { /* fall through to the closest built-in */ }
+          }
+        }
         const f = VH.sounds.closest(info[id]), was = (info[id] && info[id].name) || 'A sound';
         miss.push(was + ' → ' + f.name + ' (' + who + ')');
         return f.id;
@@ -102,6 +115,10 @@
       const kit = S.ext && S.ext.kit;
       if (kit && Array.isArray(kit.rows)) kit.rows.forEach((r) => { if (r && r.sound && !VH.sounds.get(r.sound)) { miss.push((r.sname || r.name) + ' → built-in ' + (r.syn || 'perc') + ' (drums)'); r.sound = null; } });
       M.missing = miss;
+      if (added.size && !miss.length) {
+        M.toast('Added ' + added.size + ' synth' + (added.size > 1 ? 's' : '') + ' from the link to your sounds.');
+        lastSnap = snap(); afterChange(); return;
+      }
       if (!miss.length) return;
       M.toast('Not on this device, so the closest built-in plays instead: ' + miss.join(', '));
       lastSnap = snap();
@@ -114,7 +131,9 @@
       if (kit && Array.isArray(kit.rows)) kit.rows.forEach((r) => r && r.sound && ids.add(r.sound));
       return [...ids].map((id) => VH.sounds.get(id)).filter((x) => x && x.source !== 'preset' && x.source !== 'sample');
     };
-    M.SHARE_NOTE = 'Your own sounds aren’t included in the link; listeners will hear the closest built-in instrument.';
+    // Own sounds whose audio can't travel in a link (synths from the editor can: VH.sounds.portable).
+    M.unsharedSounds = (song) => M.ownSounds(song).filter((x) => !(VH.sounds.portable && VH.sounds.portable(x)));
+    M.SHARE_NOTE = 'Imported and Babel sounds aren’t included in the link; listeners will hear the closest built-in instrument. Synths you made are included.';
 
     // ---------- edits, undo, persistence ----------
     const snap = () => JSON.stringify(serialize(S, false));
@@ -481,9 +500,15 @@
       const o = serialize(S, true), own = M.ownSounds(S);
       if (own.length) {
         const r3 = (v) => Math.round(v * 1000) / 1000;
-        o.ext = Object.assign({}, o.ext, { snd: Object.fromEntries(own.map((x) => [x.id, { name: x.name, play: VH.sounds.playOf(x),
-          spectrum: (x.spectrum || []).slice().sort((a, b) => b[1] - a[1]).slice(0, 8).map((q) => [r3(q[0]), r3(q[1])]) }])) });
+        o.ext = Object.assign({}, o.ext, { snd: Object.fromEntries(own.map((x) => {
+          const e = { name: x.name, play: VH.sounds.playOf(x),
+            spectrum: (x.spectrum || []).slice().sort((a, b) => b[1] - a[1]).slice(0, 8).map((q) => [r3(q[0]), r3(q[1])]) };
+          const syn = VH.sounds.portable ? VH.sounds.portable(x) : null;
+          if (syn) e.syn = syn;
+          return [x.id, e];
+        })) });
       }
+      const unshared = M.unsharedSounds(S);
       const code = await VH.store.encodeShare(o);
       if (!alive) return;
       // Links made while running locally (localhost / file://) point at the public site so they work for anyone.
@@ -494,8 +519,8 @@
       let ok = false;
       try { if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(url); ok = true; } } catch (_) { ok = false; }
       if (!alive) return;
-      const note = own.length ? ' · ' + M.SHARE_NOTE : '';
-      M.ui.showShareNote(own.length ? M.SHARE_NOTE : '');
+      const note = unshared.length ? ' · ' + M.SHARE_NOTE : '';
+      M.ui.showShareNote(unshared.length ? M.SHARE_NOTE : '');
       if (ok) { M.toast('Link copied' + note); return; }
       M.ui.showShareBox(url);
       M.toast('Copy the link below' + note);
@@ -617,6 +642,10 @@
       { keys: 'Ctrl+C / Ctrl+X / Ctrl+V', label: 'Copy, cut, paste (at the pointer or playhead)' },
       { keys: 'Ctrl+A', label: 'Select the whole layer' },
       { keys: 'Esc', label: 'Close a menu, clear the selection, cancel placing a chord' },
+      { keys: 'Click', label: 'Automation lane: add a point (snaps to 1/16)' },
+      { keys: 'Drag', label: 'Automation lane: move a point (hold Shift: no snap)' },
+      { keys: 'Double-click / Right-click', label: 'Automation lane: delete a point' },
+      { keys: 'Alt+Click', label: 'Automation lane: smooth or linear curve after a point' },
     ]);
   }
 

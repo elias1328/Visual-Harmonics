@@ -232,19 +232,55 @@
     function Channel(src) {
       const sR = c.createGain(), sD = c.createGain();
       sR.gain.value = 0; sD.gain.value = 0; sR.connect(revIn); sD.connect(dlyIn);
-      let chain = null, sig = null;
+      let chain = null, sig = null, aSig = '', last = DEF_REC;
+      // Automation (export.js X.auto): only while a lane targets this channel, src -> [gain] [panner] [lowpass] -> chain,
+      // and the sends go through their own gains (aR / aD, set by the lane) instead of sR / sD. No lane: the plain graph.
+      const A = { vol: null, pan: null, cut: null, rev: null, dly: null };
+      const pre = () => [A.vol, A.pan, A.cut].filter(Boolean);
+      function wire() {
+        try { src.disconnect(); } catch (_) { /* ignore */ }
+        pre().forEach((n) => { try { n.disconnect(); } catch (_) { /* ignore */ } });
+        try { chain.output.disconnect(); } catch (_) { /* ignore */ }
+        let h = src;
+        for (const n of pre()) { h.connect(n); h = n; }
+        h.connect(chain.input);
+        chain.output.connect(dest); chain.output.connect(A.rev || sR); chain.output.connect(A.dly || sD);
+      }
+      function setAuto(kinds) {
+        const s2 = kinds ? [...kinds].sort().join(',') : '';
+        if (s2 === aSig) return false;
+        aSig = s2;
+        for (const k of Object.keys(A)) {
+          const want = !!(kinds && kinds.has(k));
+          if (want && !A[k]) {
+            if (k === 'pan') A[k] = c.createStereoPanner();
+            else if (k === 'cut') { A[k] = c.createBiquadFilter(); A[k].type = 'lowpass'; A[k].Q.value = 0; A[k].frequency.value = 20000; }
+            else { A[k] = c.createGain(); A[k].gain.value = k === 'vol' ? 1 : clamp(+last[k] || 0, 0, 1); if (k === 'rev') A[k].connect(revIn); if (k === 'dly') A[k].connect(dlyIn); }
+          } else if (!want && A[k]) { try { A[k].disconnect(); } catch (_) { /* ignore */ } A[k] = null; }
+        }
+        return true;
+      }
       return {
         src,
         get items() { return chain ? chain.items.length : 0; },
-        update(rec, bpm) {
+        // the automated AudioParams of this channel (null when not automated) + their neutral (no-lane) values
+        params() { return { vol: A.vol && A.vol.gain, pan: A.pan && A.pan.pan, cut: A.cut && A.cut.frequency, rev: A.rev && A.rev.gain, dly: A.dly && A.dly.gain }; },
+        neutral(k) { return k === 'vol' ? 1 : k === 'pan' ? 0 : k === 'cut' ? 20000 : clamp(+last[k] || 0, 0, 1); },
+        get autoSig() { return aSig; },
+        update(rec, bpm, kinds) {
+          last = rec;
           const list = rec.chain.slice(0, MAX_INS), s = list.map((x) => x.type).join(',');
-          if (chain && s === sig) list.forEach((x, i) => chain.items[i].set(paramsFor(x, bpm)));
+          const re = setAuto(kinds);
+          if (chain && s === sig) { list.forEach((x, i) => chain.items[i].set(paramsFor(x, bpm))); if (re) wire(); }
           else {
             const nc = buildChain(c, list, bpm);
-            try { src.disconnect(); } catch (_) { /* ignore */ }
-            src.connect(nc.input); nc.output.connect(dest); nc.output.connect(sR); nc.output.connect(sD);
-            if (chain) chain.dispose();
-            chain = nc; sig = s;
+            if (aSig || re) { const old = chain; chain = nc; sig = s; wire(); if (old) old.dispose(); }
+            else {
+              try { src.disconnect(); } catch (_) { /* ignore */ }
+              src.connect(nc.input); nc.output.connect(dest); nc.output.connect(sR); nc.output.connect(sD);
+              if (chain) chain.dispose();
+              chain = nc; sig = s;
+            }
           }
           setP(c, sR.gain, clamp(+rec.rev || 0, 0, 1)); setP(c, sD.gain, clamp(+rec.dly || 0, 0, 1));
         },
@@ -253,6 +289,7 @@
           if (chain) chain.dispose();
           try { sR.disconnect(); } catch (_) { /* ignore */ }
           try { sD.disconnect(); } catch (_) { /* ignore */ }
+          Object.keys(A).forEach((k) => { if (A[k]) { try { A[k].disconnect(); } catch (_) { /* ignore */ } A[k] = null; } });
         },
       };
     }
@@ -270,19 +307,19 @@
         const dp = { time: delayTime(d, S.bpm), feedback: d.feedback, tone: d.tone, mix: 1 };
         if (!dly) { dly = VH.fx.create(c, 'delay', dp); dlyIn.connect(dly.input); dly.output.connect(dlyOut); } else dly.set(dp);
       },
-      channel(key, src, rec, bpm) {
+      channel(key, src, rec, bpm, kinds) {
         if (!src) return;
         let ch = chans.get(key);
         if (ch && ch.src !== src) { ch.dispose(); ch = null; }
         if (!ch) { ch = Channel(src); chans.set(key, ch); }
-        ch.update(rec, bpm);
+        ch.update(rec, bpm, kinds);
       },
       prune(keep) { for (const [k, ch] of chans) if (!keep.has(k)) { ch.dispose(); chans.delete(k); } },
       update(S, srcs) {   // srcs: { L0: node, ..., backing: node } (drums use drumBus)
         g.sends(S);
-        const keep = new Set(['drums']);
-        for (const k of Object.keys(srcs)) { keep.add(k); g.channel(k, srcs[k], recOf(S, k), S.bpm); }
-        g.channel('drums', drumBus, recOf(S, 'drums'), S.bpm);
+        const keep = new Set(['drums']), AL = NS.exportLib && NS.exportLib.auto, ak = AL ? AL.chanKinds(S) : {};   // automated channels
+        for (const k of Object.keys(srcs)) { keep.add(k); g.channel(k, srcs[k], recOf(S, k), S.bpm, ak[k]); }
+        g.channel('drums', drumBus, recOf(S, 'drums'), S.bpm, ak.drums);
         g.prune(keep);
         const d = drumsOf(S);
         setP(c, drumBus.gain, d.on ? d.vol * DRUM_LVL : 0);

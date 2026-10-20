@@ -56,7 +56,7 @@
     function makeBuses(c, out) {
       const master = c.createGain(), sum = c.createGain(), backing = c.createGain();
       master.connect(out); backing.connect(sum);
-      return { ctx: c, master, sum, backing, layers: [] };
+      return { ctx: c, master, sum, backing, layers: [], out };
     }
     function ensureBuses() {
       const actx = liveCtx();
@@ -94,6 +94,15 @@
     };
     E.layerBusFor = (c, i) => { const b = E.busesFor(c); return b ? b.layers[i] || null : null; };
     E.setInsert = (chain) => { insert = chain || null; if (buses) connectSum(); };
+    // Master automation (export.js X.auto): a gain after the master bus, only while a master-volume lane exists.
+    // on -> its AudioParam (live context), off -> removes it (null).
+    E.autoMaster = function (on) {
+      const b = on ? ensureBuses() : buses;
+      if (!b) return null;
+      if (on && !b.am) { const am = b.ctx.createGain(); try { b.master.disconnect(); } catch (_) { /* ignore */ } b.master.connect(am); am.connect(b.out); b.am = am; }
+      else if (!on && b.am) { try { b.master.disconnect(); } catch (_) { /* ignore */ } try { b.am.disconnect(); } catch (_) { /* ignore */ } b.master.connect(b.out); b.am = null; }
+      return b.am ? b.am.gain : null;
+    };
     E.gainOf = (L) => layerGain(S(), L);
     E.backingGain = () => (S().backing.on ? S().backing.vol : 0);
     function setParam(p, v, now) { if (now) { p.cancelScheduledValues(0); p.value = v; } else p.setTargetAtTime(v, buses.ctx.currentTime, 0.015); }

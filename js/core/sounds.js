@@ -6,6 +6,8 @@
   'use strict';
   const VH = root.VH = root.VH || {};
   if (!VH.store && typeof require === 'function') { try { VH.store = require('./store.js'); } catch (_) { /* browser */ } }
+  if (!VH.synth && typeof require === 'function') { try { VH.synth = require('./synth.js'); } catch (_) { /* browser */ } }
+  const isV2 = (s) => !!(s && s.kind === 'synth' && s.synth && s.synth.v === 2);
   // Public CC0 set + an optional local-only (gitignored) set. Either may be missing.
   // The private set is only probed on a local dev server, so the published site never logs a 404 for it.
   const isLocal = typeof location !== 'undefined' && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
@@ -65,6 +67,7 @@
     if (s.play === 'glide' || s.play === 'hit') return s.play;
     const fam = String(s.family || '').toLowerCase();
     if (HIT.has(fam)) return 'hit';
+    if (isV2(s) && VH.synth) return VH.synth.playOf(s.synth);   // v2 synths: from the amp envelope
     if (GLIDE.has(fam)) return 'glide';
     if (s.kind === 'synth') return s.synth && s.synth.sustain === 0 ? 'hit' : 'glide';
     return 'hit';
@@ -214,7 +217,7 @@
   const status = { samples: 'loading', note: '' };
 
   function valid(s) {
-    return s && typeof s.id === 'string' && (s.kind === 'synth' ? s.synth && Array.isArray(s.synth.partials)
+    return s && typeof s.id === 'string' && (s.kind === 'synth' ? s.synth && (Array.isArray(s.synth.partials) || (s.synth.v === 2 && Array.isArray(s.synth.oscs)))
       : s.kind === 'sampler' ? s.sampler && Array.isArray(s.sampler.zones) : false);
   }
   const emit = () => subs.forEach((cb) => { try { cb(); } catch (e) { setTimeout(() => { throw e; }); } });
@@ -229,6 +232,11 @@
     const s = Object.assign({}, sound);
     if (!s.id) s.id = 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     s.source = s.source || 'import';
+    if (isV2(s) && VH.synth) {   // v2: normalised model + compat fields; spectrum and play come from the settings
+      s.synth = VH.synth.toSynth(s.synth);
+      s.spectrum = s.synth.partials.map((p) => p.slice());
+      s.play = VH.synth.playOf(s.synth);
+    }
     s.spectrum = normSpectrum(s.spectrum) || (s.kind === 'synth' ? normSpectrum(s.synth.partials) : null);
     if (!valid(s)) throw new Error('invalid sound');
     if (!s.play) s.play = playOf(s);
@@ -249,8 +257,14 @@
   // optional `tone` argument), each partial is scaled by the tone filter's magnitude at ratio * 262 Hz
   // (a nominal C4 root) and the result is renormalised to max 1. Neutral tone -> the stored spectrum, unchanged.
   const NOMINAL_ROOT = 262;
+  // v2 synths: the analytic spectrum of their settings (VH.synth.spectrum), cached per synth object.
+  const v2Spec = new WeakMap();
+  function v2Spectrum(s) {
+    if (!v2Spec.has(s.synth)) v2Spec.set(s.synth, VH.synth.spectrum(VH.synth.normalize(s.synth)));
+    return v2Spec.get(s.synth);
+  }
   function spectrumOf(s, tone) {
-    const sp = s && s.spectrum && s.spectrum.length ? s.spectrum : DEFAULT_SPECTRUM, t = toneOf(s, tone);
+    const sp = isV2(s) && VH.synth ? v2Spectrum(s) : s && s.spectrum && s.spectrum.length ? s.spectrum : DEFAULT_SPECTRUM, t = toneOf(s, tone);
     if (!toneBands(t).length) return sp;
     return normSpectrum(sp.map(([r, a]) => [r, a * toneResponse(t, r * NOMINAL_ROOT)])) || sp;
   }
@@ -274,7 +288,10 @@
       const st = o.stretch ?? 1, roll = o.roll ?? 1, own = Array.isArray(o.partials) && o.partials.length > 0;
       const parts = own ? o.partials.map((p) => [+p[0], +p[1]])
         : base.synth.partials.map(([r, a]) => [r ** st, a * roll ** (r - 1)]);
-      out.synth = Object.assign({}, base.synth, { partials: parts });
+      const bs = isV2(base)   // a v2 base becomes a plain additive synth with its amp envelope
+        ? { attack: base.synth.ampEnv.a, decay: base.synth.ampEnv.d, sustain: base.synth.ampEnv.s, release: base.synth.ampEnv.r, glide: 0, noise: 0, wobble: 0 }
+        : base.synth;
+      out.synth = Object.assign({}, bs, { partials: parts });
       out.spectrum = normSpectrum(parts);
       out.derive = { stretch: st, roll, partials: own };
     } else {
@@ -364,7 +381,11 @@
     return best || PRESETS[0];
   }
 
-  VH.sounds = { spectrumVec, spectralSim, closest, list, get, save, remove, onChange, ready, prepare, spectrumOf, custom, normSpectrum, status, DEFAULT_SPECTRUM,
+  // Share links: the exact definition of a v2 synth (VH.synth.portable / fromPortable).
+  const portable = (s) => (VH.synth ? VH.synth.portable(s) : null);
+  const fromPortable = (d) => (VH.synth ? VH.synth.fromPortable(d) : null);
+
+  VH.sounds = { portable, fromPortable, isV2, spectrumVec, spectralSim, closest, list, get, save, remove, onChange, ready, prepare, spectrumOf, custom, normSpectrum, status, DEFAULT_SPECTRUM,
     derive, playOf, toneOf, toneBands, toneResponse, fromManifest, NOMINAL_ROOT,
     LOUD_REF_DB, kWeight, kRms, kMag, toDb, fromDb, loudFor, loudOf, partialPower, loudScaled, comfortMidi, measure, inferLoud, ensureLoud };
   if (typeof module !== 'undefined' && module.exports) module.exports = VH.sounds;

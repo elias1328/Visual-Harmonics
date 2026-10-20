@@ -53,6 +53,7 @@ VH.melody.parts.push((M) => {
   master: 0..1, bandsOthers: bool,
   fx: {}, drums: {}, ext: {},     // free-form JSON for parts: B2 owns fx + drums; others use ext.<partName>
   loopRegion?: [a, b] | null,     // loop only bars a..b-1 (whole bars). Serialized only when set; part of undo, autosave, share
+  auto: [{ id, target, points: [[t16, v 0..1, smooth?]] }],   // automation lanes of the shown SECTION (see Automation lanes)
   grid: 8|16, loop, snap }        // view prefs: autosaved and shared, but NOT part of undo
 ```
 
@@ -110,6 +111,27 @@ VH.melody.parts.push((M) => {
 - Export: MIDI with `tuned: true` puts every simultaneous note (notes layers, backing) on its own channel with pitch
   bends (`exportLib.packVoices`); Settings > Song "⤓ .scl" downloads `VH.harmony.sclText(tuning)`.
 - Schema `v: 5`: per-section `key` / `mode`, `tuning` (only when not 12-TET). Older songs load as their major / minor in 12-TET.
+
+## Automation lanes (export.js, bottom part)
+
+- Data per section: `S.auto` (live = the shown section; others in `sections[k].data.auto`; copied by duplicate, carried by
+  `md.flatten` as `F.flatAuto = { target: [{ a, n, pts }] }`, sliced by `exportLib.sliceSong`). Serialized (top level and
+  per section) only when non-empty, so songs without lanes serialize unchanged. `md.autoIn / autoOut / autoCopy`.
+- Targets: `'<layer id>.vol|pan|cut|rev|dly'`, `'backing.vol'`, `'drums.vol'`, `'master.vol'`. Lane values 0..1: vol =
+  gain multiplier on the fader (dB readout), pan -1..1, cut = lowpass 40 Hz..20 kHz (log), rev / dly = send level. A point's
+  3rd value 1 = smooth (cosine) segment after it. A section without a lane for a target is neutral (vol 1, centre, open,
+  sends at the mixer level). Pure helpers: `VH.melody.exportLib.auto` (`valueAt`, `ramp`, `pieces`, `targets`,
+  `chanKinds`, `fmt`, `ccPoints`, `slice`; tested in `test/melody-auto.test.js`).
+- Audio: sound.js `FxGraph` channels build `[gain][StereoPanner][lowpass]` before their insert chain and their own send
+  gains only while a lane targets them (`ch.params()`, `ch.neutral(kind)`); no lanes = the plain graph (sample-identical).
+  Master: `engine.autoMaster(on)` (a gain after the master bus). Live: a look-ahead scheduler (120 ms, `E.segments`, so
+  loop regions / seeks / Song-mode passes follow) with `setValueAtTime` + `linearRampToValueAtTime` (smooth and cutoff
+  segments in 1/4-sixteenth steps). Offline (WAV / MP3) schedules the same ramps up front; MIDI writes CC7 / 10 / 74 / 91 /
+  93 per channel (every 1/32, changes only) and master volume as a Universal SysEx.
+- UI: an `addLane` strip under the drum lane ("Automation (n)" toggle, "+ Lane", 36 px rows aligned to the canvas grid;
+  collapsed by default at <= 600 px), Settings > Mix > Automation "Show automation" (`melody.showAuto`). Gestures: click =
+  add (1/16 snap, Shift free), drag = move, double-click / right-click = delete, Alt+click or ∿ = smooth. One undo step
+  per gesture. Debug handle: `VH.melody.autoPart`.
 
 ## Sections + arrangement
 
@@ -351,7 +373,7 @@ Vibrato store (B1): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, to, cents, 
   |---|---|
   | Song | Song: key, bars + time signature (shown section), tempo, loop, count-in (10) · Generate (45) · How to read it (90, collapsed) |
   | Sound | Instrument tone (22) · Backing (25) · Backing style + its sub-settings (26) · Effects (35) · Play feel (45, collapsed) · samples note (85) |
-  | Mix | Mixer (10): layer rows, backing, part rows (`mixer.addRow`), master |
+  | Mix | Mixer (10): layer rows, backing, part rows (`mixer.addRow`), master · Automation (40) |
   | Edit | Grid & snap (10) · Editing (30) · Undo & clear (50) · Harmony map (60) |
   | Export | Share (10) · Export (70) |
 

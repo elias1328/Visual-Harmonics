@@ -42,6 +42,7 @@
       Object.keys(o.drums.bars).forEach((k) => { const i = +k - a; if (i >= 0 && i < n) nb[i] = o.drums.bars[k]; });
       o.drums.bars = nb;
     }
+    o.auto = AUTO.slice(S.auto, s0, s1); delete o.flatAuto;
     o.ext = copy(S.ext);
     const vib = o.ext.edit && o.ext.edit.vib;
     if (vib && typeof vib === 'object') {
@@ -320,13 +321,13 @@
         if (nv) nv.forEach((vs, k) => (k ? evX[k - 1] : evN).push(...noteEvents(vs.map((x) => x.n), k ? chX[k - 1] : chN, r * tot, secPer16, vel, vr)));
         else if (hasNotes) evN.push(...noteEvents(l.notes, chN, r * tot, secPer16, vel, vr));
       }
-      chX.forEach((c, k) => parts.push({ name: label + ' (notes ' + (k + 2) + ')', ch: c, program: prog, vol, track: i, events: evX[k] }));
+      chX.forEach((c, k) => parts.push({ name: label + ' (notes ' + (k + 2) + ')', ch: c, program: prog, vol, track: i, own: l.id, events: evX[k] }));
       const many = voices.length > 1;
       voices.forEach((_, k) => {
         const same = chs[k] === chN && k === 0;   // a layer with one line voice and notes on the same channel
-        parts.push({ name: label + (many ? ' (line ' + (k + 1) + ')' : ''), ch: chs[k], program: prog, vol, track: i, events: same ? evV[k].concat(evN) : evV[k] });
+        parts.push({ name: label + (many ? ' (line ' + (k + 1) + ')' : ''), ch: chs[k], program: prog, vol, track: i, own: l.id, events: same ? evV[k].concat(evN) : evV[k] });
       });
-      if (hasNotes && !(hasLine && chN === chs[0])) parts.push({ name: label + (hasLine ? ' (notes)' : ''), ch: chN, program: prog, vol, track: i, events: evN });
+      if (hasNotes && !(hasLine && chN === chs[0])) parts.push({ name: label + (hasLine ? ' (notes)' : ''), ch: chN, program: prog, vol, track: i, own: l.id, events: evN });
     }
     const regs = chordRegions(song);
     if (o.backing && regs.some((e) => e.chord)) {
@@ -362,9 +363,9 @@
       if (tuned) packVoices(notes).forEach((vs, k) => {
         const c = k ? takeCh(ch) : ch;
         const evk = [].concat(...vs.map((x) => tone(x, c)));
-        if (!k) ev = evk; else parts.push({ name: name + ' (voice ' + (k + 1) + ')', ch: c, program: prog, vol: bvol, track: 'backing', events: evk });
+        if (!k) ev = evk; else parts.push({ name: name + ' (voice ' + (k + 1) + ')', ch: c, program: prog, vol: bvol, track: 'backing', own: 'backing', events: evk });
       });
-      parts.push({ name, ch, program: prog, vol: bvol, track: tuned ? 'backing' : undefined, events: ev });
+      parts.push({ name, ch, program: prog, vol: bvol, track: tuned ? 'backing' : undefined, own: 'backing', events: ev });
     }
     if (o.drums) {
       const hits = o.drumHits || drumHits(song.drums, bars);
@@ -374,7 +375,7 @@
           const t0 = (r * tot + h.t16) * T16;
           ev.push({ t: t0, o: O.on, b: [0x99, h.note, h.vel] }); ev.push({ t: t0 + T16 / 2, o: O.off, b: [0x89, h.note, 0] });
         }
-        parts.push({ name: 'Drums', ch: 9, program: 0, vol: (song.drums && typeof song.drums.vol === 'number') ? song.drums.vol : 0.8, events: ev });
+        parts.push({ name: 'Drums', ch: 9, program: 0, vol: (song.drums && typeof song.drums.vol === 'number') ? song.drums.vol : 0.8, own: 'drums', events: ev });
       }
     }
     const usPerQ = Math.round(60e6 / song.bpm);
@@ -389,6 +390,7 @@
       const q = TSI[x.ts] || TSI['4/4'], t = (r * tot + x.at) * T16;
       conductor.push({ t, o: O.setup, b: meta(0x58, [q[1], q[2], q[3], 8]) });
     }
+    autoMidi(song, parts, conductor, tot, loops);
     const endT = loops * tot * T16;
     const tail = (ch) => [bendEv(endT, ch, 8192)];
     let tracks;
@@ -419,6 +421,45 @@
     return out;
   }
 
+  // Automation lanes -> controller events on each automated part's channel(s): CC7 volume (x the fader), CC10 pan,
+  // CC74 cutoff, CC91 reverb send, CC93 delay send; master volume as a Universal SysEx Master Volume in the conductor.
+  // Sampled every 1/32 note (only value changes are written), after the channel setup at equal ticks.
+  function autoMidi(song, parts, conductor, tot, loops) {
+    const A = AUTO, tg = A.targets(song);
+    if (!tg.length) return;
+    const f = song.fx && typeof song.fx === 'object' ? song.fx : {};
+    const send = (own, k) => {
+      const r = own === 'backing' ? f.backing : own === 'drums' ? f.drums : (f.layers || [])[song.layers.findIndex((l) => l.id === own)];
+      return r && typeof r === 'object' ? clamp(+r[k] || 0, 0, 1) : 0;
+    };
+    const done = new Set();
+    for (const p of parts) {
+      if (!p.own) continue;
+      for (const t of tg) {
+        const q = A.parseTarget(t);
+        if (!q || q.own !== p.own || done.has(p.ch + ':' + t)) continue;
+        done.add(p.ch + ':' + t);
+        const neutral = q.kind === 'vol' || q.kind === 'cut' ? 1 : q.kind === 'pan' ? 0.5 : send(p.own, q.kind), cc = A.ccOf(q.kind);
+        let last = -1;
+        for (const [t16, v] of A.ccPoints(A.pieces(song, t), tot, loops, neutral)) {
+          const val = A.ccValue(q.kind, v, p.vol);
+          if (val === last) continue;
+          last = val;
+          p.events.push({ t: Math.round(t16 * T16), o: 0.5, b: [0xb0 | p.ch, cc, val] });
+        }
+      }
+    }
+    if (tg.includes('master.vol')) {
+      let last = -1;
+      for (const [t16, v] of A.ccPoints(A.pieces(song, 'master.vol'), tot, loops, 1)) {
+        const x = clamp(Math.round(v * 16383), 0, 16383);
+        if (x === last) continue;
+        last = x;
+        conductor.push({ t: Math.round(t16 * T16), o: 0.5, b: [0xf0, 0x07, 0x7f, 0x7f, 0x04, 0x01, x & 0x7f, x >> 7, 0xf7] });
+      }
+    }
+  }
+
   // ---------- WAV (16-bit PCM) ----------
   function encodeWav(channels, sr) {
     const nc = channels.length, n = channels[0].length, data = n * nc * 2, buf = new ArrayBuffer(44 + data), v = new DataView(buf);
@@ -435,7 +476,147 @@
     return new Uint8Array(buf);
   }
 
-  const X = { packVoices, bendOf, songToMidi, sliceSong, chordRegions, encodeWav, drumHits, drumNote, gmProgram, vibReader, strokesOf, lineVoices, vlq, PPQ, T16, TBEND, TLINE, TSI };
+  // ---------- automation (pure): lane values, curves, playback ramps, MIDI CC ----------
+  // A lane (model.js, per section): { id, target, points: [[t16, v 0..1, smooth?]] }. Targets: '<layer id>.<kind>' with
+  // kind vol | pan | cut | rev | dly, or 'backing.vol' | 'drums.vol' | 'master.vol'. Values are 0..1 on the lane:
+  //   vol: a gain multiplier on the channel's fader (1 = the fader level), shown in dB
+  //   pan: -1..1 (StereoPanner), cut: lowpass cutoff CUT_LO..CUT_HI Hz on a log scale, rev / dly: the send level.
+  // Between two points the curve is linear, or smooth (cosine ease) when the left point has p[2] = 1. Before the first
+  // point it holds the first value, after the last the last. A section without a lane for a target is neutral there
+  // (vol 1, pan centre, cutoff open, sends at the mixer's level).
+  const AUTO = (function () {
+    const CUT_LO = 40, CUT_HI = 20000;
+    const KINDS = {
+      vol: { label: 'Volume', cc: 7, def: 1 }, pan: { label: 'Pan', cc: 10, def: 0.5 }, cut: { label: 'Filter cutoff', cc: 74, def: 1 },
+      rev: { label: 'Reverb send', cc: 91, def: 0.3 }, dly: { label: 'Delay send', cc: 93, def: 0.3 },
+    };
+    const RE = /^(?:(l\d{1,3})\.(vol|pan|cut|rev|dly)|(backing|drums|master)\.vol)$/;
+    function parseTarget(t) {
+      const m = RE.exec(String(t || ''));
+      if (!m) return null;
+      return m[1] ? { own: m[1], layer: m[1], kind: m[2], chan: null } : { own: m[3], layer: null, kind: 'vol', chan: m[3] };
+    }
+    // lane value -> the AudioParam value
+    function real(kind, v) {
+      v = clamp(+v || 0, 0, 1);
+      if (kind === 'pan') return v * 2 - 1;
+      if (kind === 'cut') return CUT_LO * Math.pow(CUT_HI / CUT_LO, v);
+      return v;
+    }
+    const norm = (kind, x) => (kind === 'pan' ? clamp((x + 1) / 2, 0, 1) : kind === 'cut' ? clamp(Math.log(x / CUT_LO) / Math.log(CUT_HI / CUT_LO), 0, 1) : clamp(x, 0, 1));
+    // value in real units for the hover readout
+    function fmt(kind, v) {
+      v = clamp(+v || 0, 0, 1);
+      if (kind === 'vol') return v < 0.0005 ? '−∞ dB' : (20 * Math.log10(v) >= -0.05 ? '0.0' : (20 * Math.log10(v)).toFixed(1).replace('-', '−')) + ' dB';
+      if (kind === 'pan') { const p = Math.round((v * 2 - 1) * 100); return p === 0 ? 'C' : (p < 0 ? 'L ' : 'R ') + Math.abs(p); }
+      if (kind === 'cut') { const f = real('cut', v); return f >= 1000 ? (f / 1000).toFixed(f >= 10000 ? 1 : 2) + ' kHz' : Math.round(f) + ' Hz'; }
+      return Math.round(v * 100) + '%';
+    }
+    const ease = (u) => (1 - Math.cos(Math.PI * u)) / 2;
+    // Curve value at t16 (pts sorted by time); NaN without points.
+    function valueAt(pts, t) {
+      const n = pts ? pts.length : 0;
+      if (!n) return NaN;
+      if (t < pts[0][0]) return pts[0][1];
+      if (t >= pts[n - 1][0]) return pts[n - 1][1];
+      let i = 0;
+      while (i < n - 2 && pts[i + 1][0] <= t) i++;
+      const p = pts[i], q = pts[i + 1], d = q[0] - p[0];
+      if (!(d > 0)) return q[1];
+      const u = (t - p[0]) / d;
+      return p[1] + (q[1] - p[1]) * (p[2] ? ease(u) : u);
+    }
+    // The pieces of a song for target: [{ a, n, pts }] (song time). A flattened song (md.flatten) carries them per
+    // section pass in S.flatAuto; otherwise the song's (section's) own lane covers the whole song.
+    function pieces(S, target) {
+      if (S && S.flatAuto) return (S.flatAuto[target] || []).filter((p) => p.pts && p.pts.length);
+      const ln = (S && S.auto || []).find((x) => x.target === target);
+      return ln && ln.points.length ? [{ a: 0, n: totOf(S), pts: ln.points }] : [];
+    }
+    // Every target with a lane anywhere in the song (any section), whose owner exists. Nodes are built for these.
+    function targets(S) {
+      const set = new Set(), ids = new Set((S.layers || []).map((l) => l.id));
+      const add = (a) => (a || []).forEach((x) => set.add(x.target));
+      if (S.flatAuto) Object.keys(S.flatAuto).forEach((t) => set.add(t));
+      else { add(S.auto); (S.sections || []).forEach((x, k) => { if (k !== S.cur && x && x.data) add(x.data.auto); }); }
+      return [...set].filter((t) => { const p = parseTarget(t); return p && (!p.layer || ids.has(p.layer)); }).sort();
+    }
+    // Channel keys of sound.js's FxGraph ('L<i>', 'backing', 'drums') -> Set of automated kinds; master separately.
+    function chanKinds(S) {
+      const out = {};
+      for (const t of targets(S)) {
+        const p = parseTarget(t);
+        if (p.own === 'master') continue;
+        const key = p.layer ? 'L' + S.layers.findIndex((l) => l.id === p.layer) : p.own;
+        (out[key] = out[key] || new Set()).add(p.kind);
+      }
+      return out;
+    }
+    const hasMaster = (S) => targets(S).includes('master.vol');
+    // Breakpoints of the curve over song time [s0, s1] in real (param) units: [[t16, value, jump]]. The first point is at
+    // s0 (jump = set there), the last at s1; between them every lane point, piece edges (jumps) and, where the param is
+    // not linear in time (smooth segments, the log cutoff), steps of `step` sixteenths. `neutral` (real units) fills
+    // time without a piece.
+    function ramp(pcs, s0, s1, kind, neutral, step) {
+      step = step || 0.25;
+      const out = [], at = (t) => { for (const p of pcs) if (t >= p.a - 1e-9 && t < p.a + p.n - 1e-9) return p; return null; };
+      const val = (p, t) => (p ? real(kind, valueAt(p.pts, t - p.a)) : neutral);
+      const dense = (p, t) => {   // does the curve bend right after t?
+        if (!p) return false;
+        if (kind === 'cut' || kind === 'raw') return true;
+        const rel = t - p.a, pts = p.pts;
+        let i = -1;
+        for (let k = 0; k < pts.length; k++) if (pts[k][0] <= rel + 1e-9) i = k;
+        return i >= 0 && i < pts.length - 1 && !!pts[i][2];
+      };
+      let p = at(s0);
+      out.push([s0, val(p, s0), true]);
+      // break times: lane points and piece edges inside (s0, s1)
+      const br = new Set();
+      for (const q of pcs) {
+        if (q.a > s0 && q.a < s1) br.add(q.a);
+        if (q.a + q.n > s0 && q.a + q.n < s1) br.add(q.a + q.n);
+        for (const x of q.pts) { const t = q.a + x[0]; if (t > s0 && t < s1 && x[0] < q.n) br.add(t); }
+      }
+      const bl = [...br].sort((a, b) => a - b).concat([s1]);
+      let t = s0;
+      for (const b of bl) {
+        if (dense(p, t)) for (let u = Math.floor(t / step + 1e-9) * step + step; u < b - 1e-9; u += step) out.push([u, val(p, u), false]);
+        const q = at(b);
+        if (b >= s1) { out.push([s1, p ? val(p, s1) : neutral, false]); break; }
+        if (q !== p) { out.push([b, p ? val(p, b) : neutral, false]); out.push([b, val(q, b), true]); p = q; } else out.push([b, val(p, b), false]);
+        t = b;
+      }
+      return out;
+    }
+    // MIDI CC points of a target over loops passes: [[t16, v 0..1]] where the CC value changes (caller scales + dedupes).
+    function ccPoints(pcs, tot, loops, neutralV) {
+      const out = [];
+      for (let r = 0; r < loops; r++) {
+        const off = r * tot;
+        for (const [t, v] of ramp(pcs, 0, tot, 'raw', neutralV, 0.5)) out.push([off + t, v]);
+      }
+      return out;
+    }
+    // CC number + value (0..127) for a lane value; vol scales the channel's fader (fv).
+    const ccOf = (kind) => (KINDS[kind] ? KINDS[kind].cc : null);
+    const ccValue = (kind, v, fv) => clamp(Math.round((kind === 'vol' ? v * (fv == null ? 1 : fv) : v) * 127), 0, 127);
+    // A slice [s0, s1) of a lane list (loop-region export): values at the edges become points.
+    function slice(lanes, s0, s1) {
+      return (lanes || []).map((ln) => {
+        const P = ln.points, out = { id: ln.id, target: ln.target, points: [] };
+        if (!P.length) return out;
+        const ts = new Set([s0, s1]);
+        P.forEach((p) => { if (p[0] > s0 && p[0] < s1) ts.add(p[0]); });
+        if (P.some((p) => p[2])) for (let t = s0; t < s1; t += 0.25) ts.add(t);   // smooth parts: sampled (linear between)
+        out.points = [...ts].sort((x, y) => x - y).map((t) => [Math.round((t - s0) * 1000) / 1000, Math.round(valueAt(P, t) * 1000) / 1000]);
+        return out;
+      });
+    }
+    return { KINDS, CUT_LO, CUT_HI, RE, parseTarget, real, norm, fmt, ease, valueAt, pieces, targets, chanKinds, hasMaster, ramp, ccPoints, ccOf, ccValue, slice };
+  })();
+
+  const X = { auto: AUTO, packVoices, bendOf, songToMidi, sliceSong, chordRegions, encodeWav, drumHits, drumNote, gmProgram, vibReader, strokesOf, lineVoices, vlq, PPQ, T16, TBEND, TLINE, TSI };
   if (typeof module !== 'undefined' && module.exports) module.exports = X;
   const VH = root && root.VH;
   if (!VH || !VH.melody || !root.document) return;
@@ -774,6 +955,28 @@
             for (const h of hits) drumVoice(ctx, drumBus, h.note, off + h.t16 * sec16 + 0.003, h.vel, noise);
           }
         }
+        // automation lanes (X.auto): the same curves as live playback, scheduled up front on B2's channel nodes
+        const tg = AUTO.targets(S);
+        if (tg.length) {
+          const tot16 = md.tot16(S);
+          for (const t of tg) {
+            const q = AUTO.parseTarget(t);
+            let p = null, neutral = 1;
+            if (q.own === 'master') { const am = ctx.createGain(); master.disconnect(); master.connect(am); am.connect(out); p = am.gain; }
+            else if (b2) {
+              const ch = b2.graph.chans.get(q.layer ? 'L' + S.layers.findIndex((l) => l.id === q.layer) : q.own);
+              if (ch) { p = ch.params()[q.kind]; neutral = ch.neutral(q.kind); }
+            }
+            if (!p) continue;
+            const pcs = AUTO.pieces(S, t);
+            for (let r = 0; r < loops; r++) {
+              const off = r * tot * sec16;
+              for (const [t16, v, jump] of AUTO.ramp(pcs, 0, tot16, q.kind, neutral)) {
+                if (jump) p.setValueAtTime(v, off + t16 * sec16); else p.linearRampToValueAtTime(v, off + t16 * sec16);
+              }
+            }
+          }
+        }
         // layers: the engine's playback rules (glide = one legato voice per run, hit = re-strike per semitone)
         for (let r = 0; r < loops; r++) {
           const off = r * tot * sec16;
@@ -847,6 +1050,410 @@
       destroy() {
         alive = false; close();
         if (VH.melody.exportPart === api) VH.melody.exportPart = null;
+      },
+    };
+  });
+})(this);
+
+// =====================================================================================================
+// Automation lanes (part): "Automation" lanes under the drum lane (M.view.addLane), one per target, breakpoints drawn
+// on the bar grid; the live look-ahead scheduler that plays them on sound.js's channel nodes (X.auto has the curves).
+// Data: M.song.auto (per section, see model.js); offline export + MIDI CC read the same data (renderAudio, autoMidi).
+// =====================================================================================================
+(function (root) {
+  'use strict';
+  const VH = root && root.VH;
+  if (!VH || !VH.melody || !root.document || !VH.melody.parts) return;
+  const NS = VH.melody;
+  NS.parts.push((M) => {
+    const ui = VH.ui, md = M.model, E = M.engine, A = NS.exportLib.auto, clamp = md.clamp;
+    const LA = 0.12, ROW_H = 36, PAD = 5, HIT = 9, NARROW = 600;
+    const esc = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]);
+    let alive = true;
+
+    // ---------- data ----------
+    const lanes = () => { const S = M.song; if (!Array.isArray(S.auto)) S.auto = []; return S.auto; };
+    function nameOf(target) {
+      const q = A.parseTarget(target);
+      if (!q) return target;
+      const k = A.KINDS[q.kind].label;
+      if (q.layer) { const L = M.song.layers.find((l) => l.id === q.layer); return (L ? L.name : q.layer) + ' · ' + k; }
+      return { backing: 'Backing', drums: 'Drums', master: 'Master' }[q.own] + ' · ' + k;
+    }
+    function colorOf(target) {
+      const q = A.parseTarget(target), L = q && q.layer ? M.song.layers.find((l) => l.id === q.layer) : null;
+      return L ? L.color : q && q.own === 'master' ? '#e8ecf4' : q && q.own === 'drums' ? '#ffb86b' : '#9fb4d8';
+    }
+    // the lane's flat line (no points): the neutral value, as a lane value
+    function neutralV(target) {
+      const q = A.parseTarget(target);
+      if (!q) return 1;
+      if (q.kind === 'pan') return 0.5;
+      if (q.kind === 'rev' || q.kind === 'dly') {
+        const i = q.layer ? M.song.layers.findIndex((l) => l.id === q.layer) : -1, r = NS.sound && NS.sound.recOf ? NS.sound.recOf(M.song, 'L' + i) : null;
+        return r ? clamp(+r[q.kind] || 0, 0, 1) : 0;
+      }
+      return 1;
+    }
+    function targetList() {
+      const S = M.song, out = [];
+      S.layers.forEach((l) => ['vol', 'pan', 'cut', 'rev', 'dly'].forEach((k) => out.push({ t: l.id + '.' + k, group: l.name })));
+      ['backing', 'drums', 'master'].forEach((o) => out.push({ t: o + '.vol', group: 'Mix' }));
+      return out;
+    }
+    let openState = null;   // null = default: open, collapsed on narrow stages (<= 600 px)
+    function addLane(target) {
+      const L = lanes();
+      if (!A.parseTarget(target) || L.some((x) => x.target === target) || L.length >= md.MAX_AUTO) return false;
+      let n = 0;
+      L.forEach((x) => { const m = /^a(\d+)$/.exec(x.id); if (m) n = Math.max(n, +m[1]); });
+      L.push({ id: 'a' + (n + 1), target, points: [] });
+      openState = true;
+      M.commit('Add lane: ' + nameOf(target));
+      return true;
+    }
+    function removeLane(id) {
+      const L = lanes(), i = L.findIndex((x) => x.id === id);
+      if (i < 0) return;
+      const nm = nameOf(L[i].target);
+      L.splice(i, 1);
+      M.commit('Remove lane: ' + nm);
+    }
+    // a removed layer takes its lanes along (every section; same undo step)
+    M.on('layerRemoved', (id) => {
+      const S = M.song, drop = (a) => (Array.isArray(a) ? a.filter((x) => (A.parseTarget(x.target) || {}).layer !== id) : a);
+      S.auto = drop(S.auto || []);
+      (S.sections || []).forEach((x, k) => { if (k !== S.cur && x.data) x.data.auto = drop(x.data.auto); });
+    });
+
+    // ---------- DOM ----------
+    const rootEl = ui.h('div', 'mel-auto');
+    rootEl.setAttribute('role', 'group'); rootEl.setAttribute('aria-label', 'Automation lanes');
+    const head = ui.h('div', 'mel-au-head'), body = ui.h('div', 'mel-au-body');
+    const tog = ui.h('button', 'mel-au-tog'); tog.type = 'button';
+    tog.title = 'Show or hide the automation lanes';
+    const addSel = document.createElement('select'); addSel.className = 'mel-au-add'; addSel.setAttribute('aria-label', 'Add an automation lane');
+    addSel.title = 'Add a lane: draw how a setting changes over time';
+    const hint = ui.h('span', 'mel-au-hint', 'Draw how volume, pan or filter change over time');
+    head.append(tog, addSel, hint);
+    rootEl.append(head, body);
+    const tip = ui.h('div', 'mel-au-tip'); tip.hidden = true; tip.setAttribute('aria-hidden', 'true');
+    rootEl.append(tip);
+    const isOpen = () => (openState != null ? openState : !((M.el.clientWidth || root.innerWidth || 1000) <= NARROW));
+    tog.addEventListener('click', () => { openState = !isOpen(); render(); });
+    addSel.addEventListener('change', () => { const v = addSel.value; addSel.value = ''; if (v) addLane(v); });
+
+    let show = VH.store.get('melody.showAuto', true) !== false, slot = null;
+    function mountLane() {
+      if (show && !slot) slot = M.view.addLane(rootEl);
+      else if (!show && slot) { slot.remove(); slot = null; }
+    }
+
+    // Settings > Mix: "Show automation"
+    const sec = M.ui.addPanelSection('Automation', 40, { group: 'mix' });
+    const showBtn = ui.button(sec, { label: 'Show automation', pressed: show, onClick: () => {
+      show = !show; VH.store.set('melody.showAuto', show); showBtn.set({ pressed: show }); mountLane(); render();
+    } });
+    showBtn.classList.add('mel-au-show');
+    sec.append(ui.h('div', 'vh-desc', 'Lanes under the drums: draw how volume, pan, filter or the effect sends change over time (per section).'));
+
+    // rows: one per lane of the shown section
+    const rows = new Map();   // lane id -> { el, cv, lbl, x, sm, id }
+    let sel = null, drag = null, hoverRow = null, lastTap = null;
+    const laneOf = (r) => lanes().find((x) => x.id === r.id) || null;
+    function makeRow(ln) {
+      const el = ui.h('div', 'mel-au-row'), cv = document.createElement('canvas'), lbl = ui.h('span', 'mel-au-lbl', '<i></i><span></span>');
+      const x = ui.h('button', 'mel-au-x', '✕'), sm = ui.h('button', 'mel-au-sm', '∿');
+      x.type = 'button'; sm.type = 'button'; sm.hidden = true;
+      sm.title = 'Smooth curve after the selected point (Alt+click a point)';
+      cv.className = 'mel-au-cv';
+      el.style.height = ROW_H + 'px';
+      el.dataset.target = ln.target;
+      el.append(cv, lbl, sm, x);
+      const r = { el, cv, lbl, x, sm, id: ln.id };
+      x.addEventListener('click', () => removeLane(r.id));
+      sm.addEventListener('click', () => { if (sel && sel.lane === r.id) toggleSmooth(sel.pt); });
+      cv.addEventListener('pointerdown', (e) => onDown(r, e));
+      cv.addEventListener('pointermove', (e) => onMove(r, e));
+      cv.addEventListener('pointerup', () => onUp(r));
+      cv.addEventListener('pointercancel', () => { if (drag) { drag = null; M.revert(); render(); } });
+      cv.addEventListener('pointerleave', () => { if (!drag) { tip.hidden = true; hoverRow = null; } });
+      cv.addEventListener('dblclick', (e) => { const ln2 = laneOf(r), h = hitPt(r, ln2, e); if (h) delPoint(ln2, h); });
+      cv.addEventListener('contextmenu', (e) => { e.preventDefault(); const ln2 = laneOf(r), h = hitPt(r, ln2, e); if (h) delPoint(ln2, h); });
+      return r;
+    }
+
+    function render() {
+      if (!alive) return;
+      const L = lanes(), open = isOpen();
+      tog.textContent = (open ? '▾ ' : '▸ ') + 'Automation (' + L.length + ')';
+      tog.setAttribute('aria-expanded', String(open));
+      hint.hidden = !open || L.length > 0;
+      addSel.hidden = !open;
+      body.hidden = !open;
+      // + Lane options (targets without a lane in this section)
+      const have = new Set(L.map((x) => x.target)), groups = new Map();
+      targetList().forEach((o) => { if (!groups.has(o.group)) groups.set(o.group, []); groups.get(o.group).push(o); });
+      let html = '<option value="">+ Lane</option>';
+      groups.forEach((list, g) => {
+        html += '<optgroup label="' + esc(g) + '">' + list.map((o) => '<option value="' + o.t + '"' + (have.has(o.t) ? ' disabled' : '') + '>' +
+          esc(o.group === 'Mix' ? nameOf(o.t) : A.KINDS[A.parseTarget(o.t).kind].label) + '</option>').join('') + '</optgroup>';
+      });
+      if (addSel.dataset.html !== html) { addSel.innerHTML = html; addSel.dataset.html = html; }
+      addSel.disabled = L.length >= md.MAX_AUTO;
+      // rows
+      const ids = new Set(L.map((x) => x.id));
+      for (const [id, r] of rows) if (!ids.has(id) || r.el.dataset.target !== (L.find((x) => x.id === id) || {}).target) { r.el.remove(); rows.delete(id); }
+      L.forEach((ln, i) => {
+        let r = rows.get(ln.id);
+        if (!r) { r = makeRow(ln); rows.set(ln.id, r); }
+        if (body.children[i] !== r.el) body.insertBefore(r.el, body.children[i] || null);
+        const nm = nameOf(ln.target);
+        r.lbl.lastChild.textContent = nm; r.lbl.firstChild.style.background = colorOf(ln.target);
+        r.x.setAttribute('aria-label', 'Remove lane ' + nm); r.x.title = 'Remove this lane';
+        r.cv.setAttribute('aria-label', nm + ' automation: click to add a point, drag to move, double-click or right-click to delete');
+        if (sel && sel.lane === ln.id && !ln.points.includes(sel.pt)) sel = null;
+        r.sm.hidden = !(sel && sel.lane === ln.id);
+        r.sm.setAttribute('aria-pressed', String(!!(sel && sel.lane === ln.id && sel.pt[2])));
+      });
+      drawAll();
+    }
+
+    // ---------- geometry: lane px <-> song time, aligned with the canvas (and the drum lane) ----------
+    function geo(r) {
+      const V = M.view, cr = V.cv.getBoundingClientRect(), rr = r.cv.getBoundingClientRect(), k = cr.width / V.VW || 1, off = cr.left - rr.left;
+      return { V, k, off, rr, x0: off + V.X0 * k, xOf: (t16) => off + V.sx(V.xOf(t16)) * k, tOf: (px) => V.t16Of((px - off) / k - V.X0 + V.scrollX),
+        // the canvas's own grid line (view.js draws them at Math.round(x) + 0.5 in content px) -> the nearest lane pixel centre
+        gridX: (t16) => Math.round(off + (Math.round(V.xOf(t16)) + 0.5 + V.X0 - V.scrollX) * k - 0.5) + 0.5 };
+    }
+    const yOf = (v) => PAD + (1 - v) * (ROW_H - 2 * PAD);
+    const vOf = (y) => clamp(1 - (y - PAD) / (ROW_H - 2 * PAD), 0, 1);
+
+    function drawAll() { for (const r of rows.values()) draw(r); }
+    function draw(r) {
+      const ln = laneOf(r);
+      if (!ln || body.hidden || !r.el.isConnected) return;
+      const g = geo(r), w = Math.max(1, Math.round(g.rr.width)), dpr = root.devicePixelRatio || 1, cv = r.cv;
+      if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(ROW_H * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(ROW_H * dpr); }
+      const c = cv.getContext('2d'), S = M.song, tot = md.tot16(S), col = colorOf(ln.target);
+      c.setTransform(dpr, 0, 0, dpr, 0, 0);
+      c.clearRect(0, 0, w, ROW_H);
+      c.save();
+      c.beginPath(); c.rect(g.x0, 0, w - g.x0, ROW_H); c.clip();
+      const xEnd = g.xOf(tot);
+      if (xEnd < w) { c.fillStyle = 'rgba(0,0,0,0.35)'; c.fillRect(xEnd, 0, w - xEnd, ROW_H); }
+      // grid: beats faint, bars brighter (where the canvas draws them)
+      const spb = md.spb(S);
+      c.lineWidth = 1;
+      for (let b = 0; b <= S.bars; b++) {
+        const x = g.gridX(b * spb);
+        if (x < g.x0 - 1 || x > w + 1) continue;
+        c.strokeStyle = 'rgba(255,255,255,0.2)';
+        c.beginPath(); c.moveTo(x, 0); c.lineTo(x, ROW_H); c.stroke();
+      }
+      const P = ln.points;
+      if (!P.length) {   // no points yet: the neutral level, dashed
+        const y = Math.round(yOf(neutralV(ln.target))) + 0.5;
+        c.setLineDash([4, 4]); c.strokeStyle = 'rgba(200,210,230,0.45)';
+        c.beginPath(); c.moveTo(g.x0, y); c.lineTo(Math.min(w, xEnd), y); c.stroke(); c.setLineDash([]);
+      } else {
+        const xa = Math.max(g.x0, 0), xb = Math.min(w, xEnd);
+        if (xb > xa) {
+          c.beginPath();
+          for (let x = xa; x <= xb; x += 1) { const y = yOf(A.valueAt(P, g.tOf(x))); if (x === xa) c.moveTo(x, y); else c.lineTo(x, y); }
+          c.strokeStyle = col; c.lineWidth = 1.6; c.stroke();
+          c.lineTo(xb, ROW_H); c.lineTo(xa, ROW_H); c.closePath();
+          c.globalAlpha = 0.16; c.fillStyle = col; c.fill(); c.globalAlpha = 1;
+        }
+        for (const p of P) {
+          const x = g.xOf(p[0]), y = yOf(p[1]), on = sel && sel.pt === p;
+          if (x < g.x0 - 6 || x > w + 6) continue;
+          c.beginPath();
+          if (p[2]) { c.moveTo(x, y - 5); c.lineTo(x + 5, y); c.lineTo(x, y + 5); c.lineTo(x - 5, y); c.closePath(); } else c.arc(x, y, 4, 0, Math.PI * 2);
+          c.fillStyle = on ? '#fff' : col; c.fill();
+          c.lineWidth = 1.5; c.strokeStyle = on ? col : 'rgba(10,12,18,0.9)'; c.stroke();
+        }
+      }
+      if (E.playing) {   // playhead
+        const x = Math.round(g.xOf(E.pos16)) + 0.5;
+        c.strokeStyle = 'rgba(255,255,255,0.7)'; c.lineWidth = 1;
+        c.beginPath(); c.moveTo(x, 0); c.lineTo(x, ROW_H); c.stroke();
+      }
+      c.restore();
+    }
+
+    // ---------- gestures: click = add, drag = move (1/16 snap, Shift = free), double / right click = delete, Alt+click = smooth ----------
+    function local(r, e) { const rr = r.cv.getBoundingClientRect(); return [e.clientX - rr.left, e.clientY - rr.top]; }
+    function hitPt(r, ln, e) {
+      if (!ln) return null;
+      const g = geo(r), [x, y] = local(r, e);
+      let best = null, bd = HIT;
+      for (const p of ln.points) { const d = Math.hypot(g.xOf(p[0]) - x, yOf(p[1]) - y); if (d <= bd) { bd = d; best = p; } }
+      return best;
+    }
+    const sortPts = (ln) => ln.points.sort((p, q) => p[0] - q[0]);
+    function readout(r, ln, x, y, p) {
+      const q = A.parseTarget(ln.target), g = geo(r), S = M.song;
+      const t = p ? p[0] : clamp(g.tOf(x), 0, md.tot16(S)), v = p ? p[1] : ln.points.length ? A.valueAt(ln.points, t) : neutralV(ln.target);
+      const spb = md.spb(S), bar = Math.floor(t / spb), st = t - bar * spb;
+      tip.textContent = A.fmt(q.kind, v) + ' · bar ' + (bar + 1) + '.' + (Math.round(st * 100) / 100 + 1);
+      tip.hidden = false;
+      const rr = rootEl.getBoundingClientRect(), cr = r.cv.getBoundingClientRect();
+      tip.style.left = Math.round(clamp(cr.left - rr.left + x + 12, 0, Math.max(0, rr.width - 130))) + 'px';
+      tip.style.top = Math.round(cr.top - rr.top + Math.max(0, y - 26)) + 'px';
+    }
+    const snapT = (t, e) => clamp(e.shiftKey ? Math.round(t * 1000) / 1000 : Math.round(t), 0, md.tot16(M.song));
+    function onDown(r, e) {
+      const ln = laneOf(r);
+      if (!ln || e.button !== 0) return;
+      const g = geo(r), [x, y] = local(r, e);
+      if (x < g.x0) return;
+      e.preventDefault();
+      const h = hitPt(r, ln, e);
+      if (h && e.altKey) { sel = { lane: ln.id, pt: h }; toggleSmooth(h); return; }
+      // a second press on the same point within 400 ms = double-click / double-tap: delete it
+      if (h && lastTap && lastTap.pt === h && e.timeStamp - lastTap.t < 400) { lastTap = null; delPoint(ln, h); return; }
+      lastTap = h ? { pt: h, t: e.timeStamp } : null;
+      let pt = h, added = false;
+      if (!pt) { pt = [snapT(g.tOf(x), e), Math.round(vOf(y) * 1000) / 1000]; ln.points.push(pt); sortPts(ln); added = true; }
+      sel = { lane: ln.id, pt };
+      drag = { r, ln, pt, added, moved: false, x0: x, y0: y };
+      try { r.cv.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+      readout(r, ln, x, y, pt);
+      render();
+    }
+    function onMove(r, e) {
+      const [x, y] = local(r, e);
+      if (drag && drag.r === r) {
+        if (!drag.moved && Math.hypot(x - drag.x0, y - drag.y0) < 3) return;
+        drag.moved = true; lastTap = null;
+        const g = geo(r);
+        drag.pt[0] = snapT(g.tOf(x), e); drag.pt[1] = Math.round(vOf(y) * 1000) / 1000;
+        sortPts(drag.ln);
+        readout(r, drag.ln, x, y, drag.pt);
+        draw(r);
+        return;
+      }
+      const ln = laneOf(r);
+      if (!ln) return;
+      hoverRow = r;
+      const h = hitPt(r, ln, e);
+      r.cv.style.cursor = h ? 'grab' : 'crosshair';
+      readout(r, ln, x, y, h);
+    }
+    function onUp(r) {
+      if (!drag || drag.r !== r) return;
+      const d = drag;
+      drag = null;
+      if (d.added) M.commit('Add automation point');
+      else if (d.moved) M.commit('Move automation point');
+      render();
+    }
+    function delPoint(ln, p) {
+      const i = ln.points.indexOf(p);
+      if (i < 0) return;
+      ln.points.splice(i, 1);
+      if (sel && sel.pt === p) sel = null;
+      tip.hidden = true;
+      M.commit('Delete automation point');
+    }
+    function toggleSmooth(p) {
+      if (p[2]) p.length = 2; else p[2] = 1;
+      M.commit(p[2] ? 'Smooth automation' : 'Linear automation');
+    }
+    // Delete / Backspace removes the selected point while the pointer is over a lane
+    const onKey = (e) => {
+      if (!sel || !hoverRow || (e.key !== 'Delete' && e.key !== 'Backspace')) return;
+      const ln = lanes().find((x) => x.id === sel.lane);
+      if (!ln) return;
+      e.preventDefault(); e.stopPropagation();
+      delPoint(ln, sel.pt);
+    };
+    document.addEventListener('keydown', onKey, true);
+    M.cleanups.push(() => document.removeEventListener('keydown', onKey, true));
+
+    // ---------- live playback: look-ahead scheduler on the channel nodes (same curves as the export) ----------
+    // Positions are the engine's continuous play time (t.cont16) mapped to song positions with E.segments, so loop
+    // regions, song loops, seeks and Song-mode section switches (a new seekId) play the right part of the curve.
+    const sch = { seekId: -1, upTo: 0, anchor: null, sec: 0, lastCont: 0, dirty: true, ps: [], master: false };
+    function resolve(S) {
+      const tg = A.targets(S), out = [], graph = NS.sound && NS.sound.debug && NS.sound.debug.graph;
+      const wantM = tg.includes('master.vol');
+      if (wantM !== sch.master && VH.audio.ctx) { sch.master = wantM; if (!wantM) E.autoMaster(false); }
+      for (const t of tg) {
+        const q = A.parseTarget(t);
+        let p = null, neutral = 1;
+        if (q.own === 'master') p = VH.audio.ctx ? E.autoMaster(true) : null;
+        else if (graph) {
+          const ch = graph.chans.get(q.layer ? 'L' + S.layers.findIndex((l) => l.id === q.layer) : q.own);
+          if (ch) { p = ch.params()[q.kind]; neutral = ch.neutral(q.kind); }
+        }
+        if (p) out.push({ t, kind: q.kind, p, neutral, pcs: A.pieces(S, t) });
+      }
+      return out;
+    }
+    const valAt = (x, pos) => { const pc = x.pcs[0]; return pc ? A.real(x.kind, A.valueAt(pc.pts, pos)) : x.neutral; };
+    function holdAll(list, pos) {
+      const c = VH.audio.ctx;
+      if (!c) return;
+      const now = c.currentTime;
+      for (const x of list) {
+        try { if (x.p.cancelAndHoldAtTime) x.p.cancelAndHoldAtTime(now); else x.p.cancelScheduledValues(now); } catch (_) { x.p.cancelScheduledValues(now); }
+        x.p.setValueAtTime(valAt(x, pos), now);
+      }
+    }
+    function idle() {   // stopped: the params sit at the curve value of the cue / playhead
+      if (!VH.audio.ctx || E.playing) return;
+      const list = resolve(M.song);
+      holdAll(list, E.cue != null ? E.cue : E.pos16);
+      sch.ps = list.map((x) => x.p);
+    }
+    const unTick = M.onPlayTick((t) => {
+      const c = VH.audio.ctx;
+      if (!c || !alive) return;
+      const S = M.song, list = resolve(S), sec = t.secPer16, cont = t.cont16;
+      if (!list.length) { sch.ps = []; sch.seekId = t.seekId; return; }
+      const same = list.length === sch.ps.length && list.every((x, i) => x.p === sch.ps[i]);
+      if (sch.dirty || !same || t.seekId !== sch.seekId) {   // play, seek, section switch, an edit: restart from here
+        holdAll(list, t.pos16);
+        sch.ps = list.map((x) => x.p); sch.dirty = false; sch.seekId = t.seekId; sch.upTo = cont; sch.anchor = null;
+      }
+      if (sch.anchor == null || sec !== sch.sec || Math.abs(sch.anchor + cont * sec - t.ctxTime) > 0.025 || cont < sch.lastCont - 0.01) {
+        sch.anchor = t.ctxTime - cont * sec; sch.sec = sec;
+      }
+      const horizon = cont + LA / sec, now = c.currentTime;
+      if (horizon > sch.upTo) {
+        for (const g of E.segments(sch.upTo, horizon)) {
+          for (const x of list) {
+            for (const [p16, v, jump] of A.ramp(x.pcs, g.s, g.s + g.n, x.kind, x.neutral)) {
+              const tm = Math.max(now, sch.anchor + (g.c + p16 - g.s) * sec);
+              if (jump) x.p.setValueAtTime(v, tm); else x.p.linearRampToValueAtTime(v, tm);
+            }
+          }
+        }
+        sch.upTo = horizon;
+      }
+      sch.lastCont = cont;
+      if (rows.size && !body.hidden) drawAll();
+    });
+    M.on('stop', () => { sch.dirty = true; idle(); drawAll(); });
+    M.on('seek', () => { if (!E.playing) idle(); });
+    M.on('song', () => { sch.dirty = true; idle(); render(); });
+    M.on('section', () => { sch.dirty = true; render(); });
+    M.on('layout', () => render()); M.on('scroll', drawAll);
+    M.on('layer', render);
+
+    // debug / tests
+    NS.autoPart = { M, render, addLane, removeLane, rows, sch, isOpen, el: rootEl,
+      get open() { return openState; }, set open(v) { openState = v; render(); }, geo: (id) => (rows.get(id) ? geo(rows.get(id)) : null) };
+    mountLane();
+    render();
+    return {
+      destroy() {
+        alive = false; unTick();
+        try { if (sch.master) E.autoMaster(false); } catch (_) { /* ignore */ }
+        if (slot) slot.remove();
+        if (NS.autoPart && NS.autoPart.M === M) NS.autoPart = null;
       },
     };
   });
