@@ -245,3 +245,8 @@
 .mel-sm-rep, .mel-sm-acts { gap: 6px; align-items: center; }
 .mel-sm-repn { min-width: 24px; text-align: center; }
 .mel-meter .vh-select { width: auto; }
+/* M1: scales + tunings */
+.mel-quick.many { grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); }
+.mel-keyrow .mel-scale { min-width: 0; max-width: 15em; }
+.mel-scalehint, .mel-tunhint { margin-top: -2px; }
+.mel-tunrow .mel-tuning { min-width: 0; flex: 1 1 auto; }

@@ -179,9 +179,9 @@
       const ch = md.regionChord(S(), b);
       if (!ch || !VH.audio.ensure()) return;
       const snd = M.backingSound(), bus = E.masterBus();
-      const nw = performance.now(); chordMidis(ch).forEach((m) => E.previews.push({ L: -1, m, until: nw + 600 }));
+      const nw = performance.now(); chordMidis(ch, S()).forEach((m) => E.previews.push({ L: -1, m, until: nw + 600 }));
       M.requestRender();
-      chordMidis(ch).forEach((m) => VH.audio.trigger(snd, H.midiToHz(m), 0.6, { gain: G_PREVIEW * (routed() ? 1 : S().master), dest: bus || undefined }));
+      chordMidis(ch, S()).forEach((m) => VH.audio.trigger(snd, H.midiToHz(m), 0.6, { gain: G_PREVIEW * (routed() ? 1 : S().master), dest: bus || undefined }));
     };
     E.previews = [];   // keys lit by gesture previews (view.js piano): { L (-1 = chord), m, until (performance.now ms) }
     E.previewNote = function (L, m, dur) {
@@ -319,7 +319,7 @@
       if (actx && rg !== backingBar) {   // the backing follows chord regions (several per bar when a bar is split)
         backingBar = rg;
         const ch = md.regionChord(s, rg), a16 = s.chords[rg] ? s.chords[rg].at : 0, z16 = md.regionEnd(s, rg);
-        try { backing().onBar(b, ch ? chordMidis(ch) : null, { now, ctxTime: actx.currentTime, secPerBar: md.secPerBar(s), region: rg, a16, z16, secs: (z16 - pos) * sec16 }); }
+        try { backing().onBar(b, ch ? chordMidis(ch, s) : null, { now, ctxTime: actx.currentTime, secPerBar: md.secPerBar(s), region: rg, a16, z16, secs: (z16 - pos) * sec16 }); }
         catch (err) { console.error('[melody] backing', err); }
       }
       if (b !== lastBar) { lastBar = b; M.emit('bar', b); }

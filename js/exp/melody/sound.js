@@ -535,7 +535,7 @@
     const e = S.chords[r];
     if (!e || !e.chord) return null;
     const st = styleOf(S), bl = barOf(S, e.at), a = e.at - bl.a;
-    return backingEvents(st, chordMidis(e.chord), md.secPer16(S), styleOptsOf(S, st), bl.b, { ts: bl.ts, a, len: md.regionEnd(S, r) - e.at })
+    return backingEvents(st, chordMidis(e.chord, S), md.secPer16(S), styleOptsOf(S, st), bl.b, { ts: bl.ts, a, len: md.regionEnd(S, r) - e.at })
       .map((x) => Object.assign(x, { p: x.p - a }));
   }
   // The backing events of song bar b (its first chord over the whole bar; older callers).
@@ -543,7 +543,7 @@
     const ch = md.chordAt(S, b * md.spb(S));
     if (!ch) return null;
     const st = styleOf(S);
-    return backingEvents(st, chordMidis(ch), md.secPer16(S), styleOptsOf(S, st), b, { ts: S.ts });
+    return backingEvents(st, chordMidis(ch, S), md.secPer16(S), styleOptsOf(S, st), b, { ts: S.ts });
   }
   // ±15 ms (true early/late: the engine and the scheduler both look ahead) and ±10 % velocity.
   function humanize(on) {
@@ -574,7 +574,7 @@
         if (o.backing !== false && S.backing.on) for (const R of md.regions(S)) {
           if (!R.chord) continue;
           const bl = barOf(S, R.a), base = off + bl.a * sec;
-          for (const e of backingEvents(styleOf(S), chordMidis(R.chord), sec, styleOptsOf(S, styleOf(S)), bl.b, { ts: bl.ts, a: R.a - bl.a, len: R.z - R.a })) {
+          for (const e of backingEvents(styleOf(S), chordMidis(R.chord, S), sec, styleOptsOf(S, styleOf(S)), bl.b, { ts: bl.ts, a: R.a - bl.a, len: R.z - R.a })) {
             const h = humanize(hum), t = base + e.p * sec + e.dt + h.dt;
             VH.audio.trigger(snd, VH.audio.midiToHz(e.m), e.dur, { gain: e.g * h.v, dest: srcs.backing, when: t });
             log.push(['n', e.m, t]);
@@ -721,7 +721,7 @@
         if (!c || styleOf(S) !== 'strum' || !S.backing.on || !ch || sched.anchor == null) return;
         const sec = md.secPer16(S), p = E.pos16, left = (md.regionEnd(S, r) - p) * sec;
         if (left < 0.15) return;
-        for (const e of backingEvents('strum', chordMidis(ch), sec, styleOptsOf(S, 'strum'), b, { ts: S.ts })) playNote(Object.assign({}, e, { dur: left - e.dt }), c.currentTime + 0.01 + e.dt);
+        for (const e of backingEvents('strum', chordMidis(ch, S), sec, styleOptsOf(S, 'strum'), b, { ts: S.ts })) playNote(Object.assign({}, e, { dur: left - e.dt }), c.currentTime + 0.01 + e.dt);
       },
       stop(rel) { backNotes.forEach((x) => x.v.stop(rel)); backNotes = []; restrike = true; },
     };
@@ -769,7 +769,7 @@
           }
           if (st !== 'drone' && S.backing.on) for (const R of md.regions(S)) {
             if (!R.chord || R.a < base || R.a >= base + SPB) continue;
-            for (const e of backingEvents(st, chordMidis(R.chord), sec, styleOptsOf(S, st), bar, { ts: S.ts, a: R.a - base, len: R.z - R.a })) {
+            for (const e of backingEvents(st, chordMidis(R.chord, S), sec, styleOptsOf(S, st), bar, { ts: S.ts, a: R.a - base, len: R.z - R.a })) {
               const p = base + e.p;
               if (p < s0 - 1e-6 || p >= s1 - 1e-6) continue;   // (float-safe at segment edges)
               const cp = g.c + (p - s0), h = humanize(hum), t = sched.anchor + cp * sec + e.dt + h.dt;

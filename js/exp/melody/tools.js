@@ -126,7 +126,7 @@
         if (hit >= 0) { l.notes.splice(hit, 1); M.commit('Delete note'); return false; }
         const g = S.grid === 16 ? 1 : 2, s = Math.floor(p.x / V.U() / g) * g;
         if (s >= md.tot16(S)) return false;
-        const b = md.regionAt(S, s), raw = V.midiOf(p.y), m = clamp(S.snap ? M.bands.snap(raw, b) : Math.round(raw), LO, HI);
+        const b = md.regionAt(S, s), raw = V.midiOf(p.y), m = clamp(S.snap ? M.bands.snap(raw, b) : md.gridSnap(S, raw), LO, HI);
         const n = { s, d: g, m };
         l.notes.push(n); drag = { kind: 'note', n, g }; M.requestRender();
         M.engine.previewNote(M.active, m, 0.3);

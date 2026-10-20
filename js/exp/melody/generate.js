@@ -15,6 +15,51 @@
     { deg: [1, 6, 3, 7], home: 'minor', w: 4 },   // i–VI–III–VII
     { deg: [1, 4, 5, 1], home: 'minor', w: 3 },   // i–iv–v–i
   ];
+  // Modal templates (scales other than major / minor): chord roots as semitones above the key root; each chord takes its
+  // quality from the scale (md.scaleChords). cad = the mode's characteristic chord, used to turn a phrase's last bar.
+  const MODAL = {
+    dorian: { t: [[[0, 5, 0, 5], 4], [[0, 5, 10, 0], 3], [[0, 2, 3, 5], 2], [[0, 10, 5, 0], 2]], cad: 5 },          // i–IV, i–IV–bVII–i, i–ii–bIII–IV
+    phrygian: { t: [[[0, 1, 0, 1], 4], [[0, 1, 3, 1], 3], [[0, 10, 8, 1], 3], [[0, 1, 10, 0], 2]], cad: 1 },       // i–bII, i–bvii–bVI–bII
+    lydian: { t: [[[0, 2, 0, 2], 4], [[0, 2, 4, 0], 3], [[0, 2, 7, 0], 2], [[0, 11, 2, 0], 1]], cad: 2 },          // I–II, I–II–iii–I
+    mixolydian: { t: [[[0, 10, 5, 0], 4], [[0, 10, 5, 5], 3], [[0, 7, 10, 5], 2], [[0, 5, 10, 0], 2]], cad: 10 },  // I–bVII–IV–I, I–v–bVII–IV
+    locrian: { t: [[[0, 1, 0, 1], 3], [[0, 1, 8, 1], 3], [[0, 6, 1, 0], 2]], cad: 1 },                              // i°–bII, i°–bV–bII
+    harmonicMinor: { t: [[[0, 5, 7, 0], 4], [[0, 8, 7, 0], 3], [[0, 2, 7, 0], 2], [[0, 5, 8, 7], 2]], cad: 7 },     // i–iv–V–i, i–bVI–V
+    melodicMinor: { t: [[[0, 5, 7, 0], 3], [[0, 2, 7, 0], 3], [[0, 5, 0, 7], 2]], cad: 7 },                         // i–IV–V–i
+    phrygianDominant: { t: [[[0, 1, 0, 1], 4], [[0, 1, 5, 0], 3], [[0, 10, 1, 0], 2]], cad: 1 },                    // I–bII, I–bII–iv–I
+  };
+  const QW = { maj: 3, min: 3, sus2: 2, sus4: 2, dim: 1, aug: 1 };
+  // Progression of a scale other than major / minor: a modal template when the scale has one (and its chords exist),
+  // else a generic one from the chords that fit the scale (tonic, two others, home or another at a phrase end).
+  function modalProgression(S, md, rnd) {
+    const cs = md.scaleChords(S), triads = cs.filter((c) => QW[c.q]), pool = triads.length ? triads : cs;
+    const onDeg = (d) => { const c = pool.find((x) => x.deg === d) || cs.find((x) => x.deg === d); return c ? [c.r, c.q] : null; };
+    const tonic = pool.find((c) => c.deg === 0 && (c.q === 'maj' || c.q === 'min')) || pool.find((c) => c.deg === 0) || pool[0];
+    const mt = MODAL[S.mode], usable = mt ? mt.t.filter(([deg]) => deg.every((d) => onDeg(d))) : [];
+    let phrase;
+    if (usable.length) phrase = (t, last) => t.map((d, k) => (last && k === t.length - 1 && d !== 0 && rnd() < 0.4 ? onDeg(0) : onDeg(d)));
+    else {
+      const others = pool.filter((c) => c !== tonic && c.deg !== 0), pick = (not) => {
+        const opt = others.filter((c) => !not || c.r !== not.r || c.q !== not.q);
+        return opt.length ? wpick(opt.map((c) => [c, QW[c.q] || 1]), rnd) : tonic;
+      };
+      phrase = (_, last) => { const a = pick(), b = pick(a), c = last || rnd() < 0.5 ? tonic : pick(b); return [tonic, a, b, c].map((x) => [x.r, x.q]); };
+    }
+    const tp = () => (usable.length ? wpick(usable, rnd) : null), A = tp(), B = tp(), n = Math.ceil(S.bars / 4), out = [];
+    for (let p = 0; p < n; p++) {
+      const t = n === 2 ? (p === 0 || rnd() < 0.5 ? A : B) : n === 4 ? (p === 2 ? B : A) : A;
+      out.push(...phrase(t, n > 1 && p === n - 1));
+    }
+    out.length = S.bars;
+    // now and then the mode's characteristic chord turns a phrase's last bar (on its second half)
+    const nb = md.spb(S), half = md.tsOf(S).beats[Math.floor(md.tsOf(S).beats.length / 2)] || nb / 2, ev = [];
+    const cad = mt ? onDeg(mt.cad) : null;
+    out.forEach((c, b) => {
+      ev.push({ at: b * nb, chord: c });
+      const last = b % 4 === 3 || b === S.bars - 1;
+      if (cad && last && half > 0 && S.bars > 1 && !(c[0] === cad[0] && c[1] === cad[1]) && rnd() < 0.45) ev.push({ at: b * nb + half, chord: cad.slice() });
+    });
+    return ev;
+  }
   const BORROW_P = 0.12;
   const DENS = {   // durations in sixteenths with weights, rest probability, phrase-end length
     sparse: { d: [[8, 3], [4, 3], [12, 1], [16, 1], [6, 1]], rest: 0.22, end: 12 },
@@ -32,6 +77,7 @@
 
   // ---------- progression ----------
   function progression(S, md, rnd) {
+    if (S.mode !== 'major' && S.mode !== 'minor') return modalProgression(S, md, rnd);
     const dia = md.diatonic(S), minor = S.mode === 'minor';
     const chordOf = (d) => { const c = dia[(d - 1) % 7]; return [c[0], c[1]]; };
     const usable = TEMPLATES.filter((t) => !(t.home === 'minor' && !minor && t.deg.includes(7))).map((t) => [t, t.home === S.mode ? t.w : t.w * 0.2]);
@@ -75,15 +121,15 @@
     const X = !M.bands.pure && M.bands.fitCtx ? M.bands.fitCtx(at.region, L) : null;
     if (X) {
       const all = [];
-      for (let m = Math.ceil(lo); m <= hi; m++) if (X.fits(m)) all.push(m);
+      for (const m of X.pts) if (m >= lo - 1e-9 && m <= hi + 1e-9 && X.fits(m)) all.push(m);   // tuning grid (semitones in 12-TET)
       return { all, chordTones: X.tension > 0.3 ? [] : all.filter((m) => X.isChord(m)) };   // phrase ends rest on chord tones only while the dial is calm
     }
     let pk = (at.matchPeaks ? at.matchPeaks() : at.peaks()).filter((m) => m >= lo - 0.01 && m <= hi + 0.01);
     if (!pk.length) {
-      const sc = md.scaleOf(S).steps.map((x) => (S.key + x) % 12);
-      pk = []; for (let m = Math.ceil(lo); m <= hi; m++) if (sc.includes(((m % 12) + 12) % 12)) pk.push(m);
+      const G = md.gridOf(S);
+      pk = G.pts.filter((m) => m >= lo - 1e-9 && m <= hi + 1e-9 && G.inScale(m));
     }
-    const rc = md.regionChord(S, bar), ct = rc ? md.chordMidis(rc).map((m) => m % 12) : [];
+    const rc = md.regionChord(S, bar), ct = rc ? md.chordMidis(rc, S).map((m) => m % 12) : [];
     const isCT = (m) => ct.some((pc) => { const d = (((m - pc) % 12) + 12) % 12; return Math.min(d, 12 - d) < 0.3; });
     return { all: pk.slice().sort((a, b) => a - b), chordTones: pk.filter(isCT).sort((a, b) => a - b) };
   }
@@ -172,7 +218,7 @@
       options: [{ value: 'low', label: 'Low C3–E4' }, { value: 'mid', label: 'Mid G3–D5' }, { value: 'high', label: 'High E4–C6' }, { value: 'full', label: 'Full C3–C6' }],
       onChange: (v) => { opts.range = v; VH.store.set('melody.gen.range', v); } });
     dSel.el.classList.add('gx-density'); rSel.el.classList.add('gx-range');
-    sec.append(ui.h('div', 'vh-desc', 'Progressions fit the key (now and then a borrowed chord). Melodies walk the bright bands of the active layer and end phrases on chord tones; Line or Notes follows the layer’s mode.'));
+    sec.append(ui.h('div', 'vh-desc', 'Progressions fit the key and its scale (modes get their own moves, e.g. Dorian i–IV, Phrygian i–bII; now and then a borrowed chord). Melodies walk the bright bands of the active layer and end phrases on chord tones; Line or Notes follows the layer’s mode.'));
 
     const snapOf = () => JSON.stringify(md.serialize(M.song, false));
     function syncAgain() { againBtn.disabled = !(lastGen && lastGen.snap === snapOf()); }

@@ -261,6 +261,17 @@
     }
     return voices;
   }
+  // Non-overlapping voices of timed items [{ a, z, ... }] (greedy, in start order): a tuned song (non-12 tuning) gives
+  // every simultaneous note its own MIDI channel, since pitch bend is per channel (same idea as lineVoices).
+  function packVoices(items) {
+    const voices = [], ends = [];
+    items.slice().sort((x, y) => x.a - y.a || x.z - y.z).forEach((it) => {
+      let k = ends.findIndex((e) => e <= it.a);
+      if (k < 0) { k = voices.length; voices.push([]); ends.push(-Infinity); }
+      voices[k].push(it); ends[k] = it.z;
+    });
+    return voices;
+  }
   function noteEvents(notes, ch, off16, secPer16, vel, vr) {
     const ev = [];
     for (const nt of notes.slice().sort((a, b) => a.s - b.s)) {
@@ -284,7 +295,7 @@
   // skipped), each with its own pitch bends; in Separate mode those channels share the layer's track.
   function songToMidi(song, opts) {
     const o = opts || {}, loops = Math.max(1, o.loops | 0 || 1), bars = song.bars, tot = totOf(song);
-    const secPer16 = 15 / song.bpm, cm = o.chordMidis || chordMidisLocal;
+    const secPer16 = 15 / song.bpm, cm = o.chordMidis || chordMidisLocal, tuned = !!o.tuned;   // tuned: per-voice channels with bends
     const soundOf = o.soundOf || ((i) => ({ id: song.layers[i].sound, name: song.layers[i].sound }));
     const chosen = (o.layers || song.layers.map((_, i) => i)).filter((i) => song.layers[i]);
     const parts = [];   // { name, ch, program, vol, events }
@@ -299,12 +310,17 @@
       const chs = voices.map((_, k) => takeCh(k ? -1 : 0)).map((c, k, a) => (c < 0 ? a[0] : c));
       const chL = hasLine ? chs[0] : takeCh(0), chN = hasLine && hasNotes ? takeCh(chL) : chL;
       const evV = voices.map(() => []), evN = [];
+      // tuned: overlapping notes (chords in a notes layer) each get a channel of their own (extra parts below)
+      const nv = tuned && hasNotes ? packVoices(l.notes.map((n) => ({ a: n.s, z: n.s + n.d, n }))) : null;
+      const chX = nv ? nv.slice(1).map(() => takeCh(chN)) : [], evX = chX.map(() => []);
       for (let r = 0; r < loops; r++) {
         voices.forEach((runs, k) => {
           for (const x of runs) evV[k].push(...lineEvents(x.st.v, chs[k], r * tot, secPer16, vr, vel, [[x.a, x.b]], x.st.id));
         });
-        if (hasNotes) evN.push(...noteEvents(l.notes, chN, r * tot, secPer16, vel, vr));
+        if (nv) nv.forEach((vs, k) => (k ? evX[k - 1] : evN).push(...noteEvents(vs.map((x) => x.n), k ? chX[k - 1] : chN, r * tot, secPer16, vel, vr)));
+        else if (hasNotes) evN.push(...noteEvents(l.notes, chN, r * tot, secPer16, vel, vr));
       }
+      chX.forEach((c, k) => parts.push({ name: label + ' (notes ' + (k + 2) + ')', ch: c, program: prog, vol, track: i, events: evX[k] }));
       const many = voices.length > 1;
       voices.forEach((_, k) => {
         const same = chs[k] === chN && k === 0;   // a layer with one line voice and notes on the same channel
@@ -314,7 +330,9 @@
     }
     const regs = chordRegions(song);
     if (o.backing && regs.some((e) => e.chord)) {
-      const ch = takeCh(8), ev = [], snd = o.backingSound || { id: song.backing && song.backing.sound };
+      const ch = takeCh(8), snd = o.backingSound || { id: song.backing && song.backing.sound };
+      let ev = [];
+      const notes = [];   // tuned: { a, z (ticks), m (midi float), v }, written below with one channel per voice
       for (let r = 0; r < loops; r++) {
         regs.forEach((R, b) => {
           const c = R.chord;
@@ -328,14 +346,25 @@
             for (const e of bev) {
               const a = Math.max(0, Math.round(t0 + e.p * T16 + (e.dt || 0) * tk)), z = Math.max(a + 1, Math.round(a + e.dur * tk));
               const k = clamp(Math.round(e.m), 0, 127), v = clamp(Math.round(72 * (e.g || 0.25) / 0.25), 1, 127);
+              if (tuned) { notes.push({ a, z, m: e.m, v }); continue; }
               ev.push({ t: a, o: O.on, b: [0x90 | ch, k, v] }); ev.push({ t: z, o: O.off, b: [0x80 | ch, k, 0] });
             }
             return;
           }
-          for (const m of cm(c)) { ev.push({ t: t0, o: O.on, b: [0x90 | ch, m, 72] }); ev.push({ t: t1, o: O.off, b: [0x80 | ch, m, 0] }); }
+          for (const m of cm(c)) {
+            if (tuned) { notes.push({ a: t0, z: t1, m, v: 72 }); continue; }
+            ev.push({ t: t0, o: O.on, b: [0x90 | ch, m, 72] }); ev.push({ t: t1, o: O.off, b: [0x80 | ch, m, 0] });
+          }
         });
       }
-      parts.push({ name: 'Backing chords – ' + (snd.name || snd.id || 'chords'), ch, program: gmProgram(snd), vol: song.backing ? song.backing.vol : 0.4, events: ev });
+      const name = 'Backing chords – ' + (snd.name || snd.id || 'chords'), prog = gmProgram(snd), bvol = song.backing ? song.backing.vol : 0.4;
+      const tone = (x, c) => { const k = clamp(Math.round(x.m), 0, 127); return [bendEv(x.a, c, bendOf(x.m - k)), { t: x.a, o: O.on, b: [0x90 | c, k, x.v] }, { t: x.z, o: O.off, b: [0x80 | c, k, 0] }]; };
+      if (tuned) packVoices(notes).forEach((vs, k) => {
+        const c = k ? takeCh(ch) : ch;
+        const evk = [].concat(...vs.map((x) => tone(x, c)));
+        if (!k) ev = evk; else parts.push({ name: name + ' (voice ' + (k + 1) + ')', ch: c, program: prog, vol: bvol, track: 'backing', events: evk });
+      });
+      parts.push({ name, ch, program: prog, vol: bvol, track: tuned ? 'backing' : undefined, events: ev });
     }
     if (o.drums) {
       const hits = o.drumHits || drumHits(song.drums, bars);
@@ -406,7 +435,7 @@
     return new Uint8Array(buf);
   }
 
-  const X = { songToMidi, sliceSong, chordRegions, encodeWav, drumHits, drumNote, gmProgram, vibReader, strokesOf, lineVoices, vlq, PPQ, T16, TBEND, TLINE, TSI };
+  const X = { packVoices, bendOf, songToMidi, sliceSong, chordRegions, encodeWav, drumHits, drumNote, gmProgram, vibReader, strokesOf, lineVoices, vlq, PPQ, T16, TBEND, TLINE, TSI };
   if (typeof module !== 'undefined' && module.exports) module.exports = X;
   const VH = root && root.VH;
   if (!VH || !VH.melody || !root.document) return;
@@ -634,7 +663,8 @@
         if (st.fmt === 'midi') {
           const src = songOf();
           const bytes = songToMidi(src, { mode: st.midiMode, layers: sel.layers, backing: sel.backing, drums: sel.drums, loops: st.loops,
-            soundOf: (i) => M.soundOf(i), backingSound: M.backingSound(), chordMidis: md.chordMidis, drumHits: sel.drums ? drumList() : null,
+            soundOf: (i) => M.soundOf(i), backingSound: M.backingSound(), chordMidis: (ch) => md.chordMidis(ch, src), drumHits: sel.drums ? drumList() : null,
+            tuned: md.tuningOf(src) !== '12tet',
             backingEvents: NS.sound && NS.sound.regionEvents ? (r) => NS.sound.regionEvents(src, r) : null });
           download(new Blob([bytes], { type: 'audio/midi' }), name + '.mid');
           progress(1, 'Saved ' + name + '.mid (' + (st.midiMode === 'mixed' ? 'one track' : 'one track per part') + ').');
@@ -739,7 +769,7 @@
             if (sel.backing) md.regions(S).forEach((R) => {
               if (!R.chord) return;
               const t0 = off + R.a * sec16;
-              md.chordMidis(R.chord).forEach((m) => VH.audio.voice(back, hz(m), { gain: G_BACK, dest: backBus, when: t0 }).stop(0.12, off + R.z * sec16));
+              md.chordMidis(R.chord, S).forEach((m) => VH.audio.voice(back, hz(m), { gain: G_BACK, dest: backBus, when: t0 }).stop(0.12, off + R.z * sec16));
             });
             for (const h of hits) drumVoice(ctx, drumBus, h.note, off + h.t16 * sec16 + 0.003, h.vel, noise);
           }

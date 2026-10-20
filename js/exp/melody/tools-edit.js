@@ -254,7 +254,7 @@
       if (S.snap) {
         const b = md.regionAt(S, clamp(d.anchorT + dt, 0, tot16() - 1e-6));
         dm = M.bands.snap(clamp(d.anchorM + raw, LO, HI), b) - d.anchorM;
-      } else dm = Math.round(raw);
+      } else dm = md.gridOf(S).et12 ? Math.round(raw) : md.gridSnap(S, d.anchorM + raw) - d.anchorM;   // whole semitones / tuning steps
       dm = clamp(dm, LO - d.mlo, HI - d.mhi);
       const dS = dt * SPS;
       // notes
@@ -371,7 +371,7 @@
     let lt = null, ltHover = null;
     function endM(p, i) {
       let m = p.midi;
-      if (p.e && p.e.shiftKey) m = Math.round(m);
+      if (p.e && p.e.shiftKey) m = md.gridSnap(M.song, m);
       else if (M.song.snap) m = M.bands.snap(m, md.regionAt(M.song, i / SPS));
       return clamp(m, LO, HI);
     }
@@ -828,7 +828,7 @@
         const ord = l.notes.slice().sort((x, y) => x.s - y.s || x.m - y.m);
         ord.forEach((n, k) => {
           if (md.regionAt(S, n.s) !== b) return;
-          const base = Math.round(n.m), off = n.m - base, micro = !snap && Math.abs(off) > 0.3;
+          const base = md.gridSnap(S, n.m), off = n.m - base, micro = !snap && Math.abs(off) > 0.3;
           const prev = ord[k - 1], dir = prev && Math.abs(n.m - prev.m) >= 0.25 ? Math.sign(n.m - prev.m) : 0;
           const t = X.best(base, dir, prev ? prev.m - (micro ? off : 0) : null), nm = Math.round(clamp(t + (micro ? off : 0), LO, HI) * 1000) / 1000;
           if (stats) stats.items.push({ L, kind: 'note', from: n.m, to: nm, micro, kept: t === base });
@@ -850,7 +850,7 @@
             const ref = P[k - 1] ? P[k - 1].med : contL ? o[i - 1] : null, prevTo = P[k - 1] ? P[k - 1].to : ref;
             const dir = ref == null || Math.abs(p.med - ref) < 0.25 ? 0 : Math.sign(p.med - ref);
             const tied = k === 0 && p.a === i && contL;   // a held note coming in over the bar line
-            const tie = tied ? Math.round(o[i - 1]) : NaN;
+            const tie = tied ? md.gridSnap(S, o[i - 1]) : NaN;
             // keep the tie as a common tone when it fits the new chord; else the smallest audible move from it, stepping the
             // way the line goes next (or came from), so the re-articulation at the bar line adds no turn to the contour
             if (!tied) p.to = X.best(p.med, dir, prevTo);
@@ -860,7 +860,7 @@
               if (!way) { let q = i - 1; while (q >= 0 && !isNaN(s[q]) && Math.abs(s[q] - tie) < 0.25) q--; if (q >= 0 && !isNaN(s[q])) way = Math.sign(tie - s[q]); }
               p.to = X.best(tie, way, way ? tie : null);
             }
-            if (stats) stats.items.push({ L, kind: 'plateau', stroke: st.id, from: p.med, to: p.to, micro: false, kept: p.to === Math.round(p.med) });
+            if (stats) stats.items.push({ L, kind: 'plateau', stroke: st.id, from: p.med, to: p.to, micro: false, kept: p.to === md.gridSnap(S, p.med) });
             const d = p.to - p.med;
             if (Math.abs(d) >= 0.0005) for (let q = p.a; q < p.z; q++) s[q] = clamp(o[q] + d, LO, HI);
           });

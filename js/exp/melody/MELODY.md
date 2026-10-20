@@ -39,7 +39,8 @@ VH.melody.parts.push((M) => {
 `M.song` is the **live object**. It is *replaced* on undo/redo/load, so always read `M.song` again; never keep a reference to it.
 
 ```
-{ key: 0..11, mode: 'major'|'minor', bpm: 40..200 (quarter notes per minute, song-wide),
+{ key: 0..11, mode: scale id (VH.harmony.SCALES: 'major'|'minor'|'dorian'|...; key + mode are PER SECTION), tuning: '12tet'|'ji'|'pyth'|'19tet'|'24tet'|'31tet'|'slendro'|'pelog' (song-wide),
+  bpm: 40..200 (quarter notes per minute, song-wide),
   // the CURRENT SECTION's content (see Sections):
   bars: 1..16, ts: '2/4'|'3/4'|'4/4'|'5/4'|'6/8'|'7/8'|'12/8',
   chords: [{ at: t16 within the section, chord: [root 0..11, 'maj'|'min'|'dim'|'aug'|'sus2'|'sus4'|'7'|'maj7'|'m7'] | null }, ...],
@@ -92,11 +93,29 @@ VH.melody.parts.push((M) => {
 - Notes may carry extra runtime fields such as `sel: true` (B1 selection; the view draws it with a white outline). Those fields are **not** serialized.
 - Model helpers (`M.model`): `nextLayerId(layers)`, `assignIds(layers)`, `chordMidis(ch)`, `chordName(ch, names)`, `namesOf(S)`, `scaleOf(S)`, `diatonic(S)`, `secPerBar(S)`, `secPer16(S)`, `layerGain(S, i)` (0 when muted or not soloed), `serialize(S, full)`, `parse(obj)`, `newLayer(i, opts, bars)`, `COLORS`, `MAX_LAYERS` = 8, `QUALS`.
 
+## Scales, modes + tunings (M1)
+
+- **Key = root + scale, per section** (live `S.key` / `S.mode` are the shown section's; `liveContent` / `sections[k].data`
+  carry `key`, `mode`). 19 scales in `VH.harmony.SCALES` (`{ id, name, group: Common|Modes|Exotic, steps, hint }`);
+  'major' / 'minor' keep their ids. `md.scaleOf(S)`, `md.scaleChords(S)` -> `[{ r, q, deg, k, rn }]` (7-note scales: the
+  stacked triad per degree; others: every triad / 7th that fits), `md.diatonic(S)` (`[[r, q]]`, first = tonic), `md.scaleLabel(S)`.
+- **Tuning** (song-wide `S.tuning`, `md.tuningOf(S)`): `md.gridOf(S)` -> `{ et12, N, pts (every tuning pitch in LO..HI,
+  anchored at the section's key root), cls, scaleCls, idx(m), snap(m), inScale(m) }`; `md.gridSnap(S, m)`. 12-TET = the
+  integer midis, so 12-TET behaviour is unchanged. `fitCtx`, snap, auto-fit, 🎲 Melody and select-move use grid pitches
+  (`fitCtx().pts`, `.grid`). `md.chordMidis(ch, S)` = tuned chord tones (harmony.tunedChord: JI = just ratios from the
+  chord root, others = nearest steps; `ch.kp` = the section key in flattened songs); without `S` the plain ET midis.
+  Bands, backing, previews and the WAV render use the tuned tones; Pure intonation stays independent.
+- View: faint scale tint on in-scale rows / piano keys (`view.showScale`, Settings > Edit > Harmony map "Show scale",
+  VH.store `melody.showScale`, default on); in non-12 tunings a step strip (step numbers, cents, 12-TET ticks).
+- Export: MIDI with `tuned: true` puts every simultaneous note (notes layers, backing) on its own channel with pitch
+  bends (`exportLib.packVoices`); Settings > Song "⤓ .scl" downloads `VH.harmony.sclText(tuning)`.
+- Schema `v: 5`: per-section `key` / `mode`, `tuning` (only when not 12-TET). Older songs load as their major / minor in 12-TET.
+
 ## Sections + arrangement
 
 - A song is a list of **sections** in play order (`S.sections`), each with its own bars, time signature, chords, loop
   region, layer content (strokes + notes, by layer id), drum pattern (`S.drums` minus `vol`) and vibrato (`ext.edit.vib`).
-  Tempo, key, instruments, mixer and fx are song-wide. The live fields above are the shown section (`S.cur`); the
+  Tempo, tuning, instruments, mixer and fx are song-wide (key + scale are per section). The live fields above are the shown section (`S.cur`); the
   others' content lives in `sections[k].data` (`md.selectSection` swaps; `md.sectionSong(S, k)` gives any section as a
   standalone song; `md.arrangement(S)` -> passes `[{ k, r, a, n }]`; `md.songTot(S)`; `md.flatten(S, { only? })` lays the
   arrangement end to end for export, with `S.flat = { tot, bars: [{ a, n, b, ts, drums }], ts: [{ at, ts }] }`).

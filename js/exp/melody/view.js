@@ -17,7 +17,7 @@
     // X0 = the piano strip's width: the time axis starts right of it (content x 0 = bar 1 = canvas x X0). GW = graph width.
     // Pitch zoom: `span` semitones are visible (SPAN .. Z_MIN), the top row is `pTop`. Persisted in VH.store 'melody.view'.
     const V = { cv, ctx, wrap, scroller, HDR, VW: 800, TH: 540, MH: 500, BW: 200, CW: 800, scrollX: 0, dpr: 1, highlightBar: -1, regionPreview: null,
-      X0: 22, GW: 778, span: SPAN, pTop: HI, Z_MIN };
+      X0: 22, GW: 778, span: SPAN, pTop: HI, Z_MIN, showScale: VH.store.get('melody.showScale', true) !== false };
     let boxW = 800, boxH = 600;
     const lanes = [];   // { el, h, fixed, ro } added with V.addLane, stacked under the canvas (and its scroll bar)
     V.U = () => V.BW / md.spb(M.song);                        // px per sixteenth (the bar length follows the time signature)
@@ -222,10 +222,11 @@
     const lit = new Map();   // midi -> { cols: [colors], t: last time lit (performance.now) }
     V.hoverMidi = null;
     V.KW = () => (V.VW <= 600 ? 14 : 22);
-    V.keyOf = (y) => (y >= HDR && y <= HDR + V.MH ? clamp(Math.round(V.midiOf(y)), LO, HI) : null);
+    // The strip's key / step under y: a semitone in 12-TET, else the nearest step of the tuning grid (md.gridOf).
+    V.keyOf = (y) => (y >= HDR && y <= HDR + V.MH ? md.gridSnap(M.song, V.midiOf(y)) : null);
     function soundingNow(now) {
       const S = M.song, E = M.engine, out = new Map(), glow = new Set();
-      const add = (m, col) => { m = Math.round(m); if (m < LO || m > HI) return; const a = out.get(m) || out.set(m, []).get(m); if (a.indexOf(col) < 0) a.push(col); };
+      const et = md.gridOf(S).et12, add = (m, col) => { m = et ? Math.round(m) : m; if (m < LO || m > HI) return; const a = out.get(m) || out.set(m, []).get(m); if (a.indexOf(col) < 0) a.push(col); };
       if (E.playing) {
         const tot = md.tot16(S), pos = E.phase * tot, i = Math.min(tot * 3 - 1, Math.floor(pos * 3));
         S.layers.forEach((l, L) => {
@@ -234,13 +235,51 @@
           for (const n of l.notes) if (pos >= n.s && pos < n.s + n.d) add(n.m, l.color);
         });
         const ch = S.backing.on && md.chordAt(S, pos);
-        if (ch) chordMidis(ch).forEach((m) => glow.add(m));
+        if (ch) chordMidis(ch, S).forEach((m) => glow.add(m));
       }
       for (const p of E.previews || []) if (p.until > now) { if (p.L < 0) glow.add(p.m); else if (S.layers[p.L]) add(p.m, S.layers[p.L].color); }
       return { out, glow };
     }
+    // Non-12 tunings: a step strip instead of the piano. One cell per tuning step (in-scale steps tinted, the key root
+    // marked), step numbers (and cents when there is room), and 12-TET reference ticks at the right edge.
+    function drawSteps(G, out, glow, now) {
+      const KW = V.X0, P = G.pts, PPS = V.PPS(), S = M.song;
+      ctx.fillStyle = '#20253a'; ctx.fillRect(0, HDR, KW, V.MH);
+      for (let k = 0; k < P.length; k++) {
+        const m = P[k], lo = k ? (P[k - 1] + m) / 2 : m - 0.25, hi = k + 1 < P.length ? (P[k + 1] + m) / 2 : m + 0.25;
+        const y0 = V.yOf(hi), y1 = V.yOf(lo);
+        if (y1 < HDR || y0 > HDR + V.MH) continue;
+        const inSc = G.scaleCls.has(G.cls[k]), root = G.cls[k] === 0;
+        ctx.fillStyle = root ? '#5a6894' : inSc && V.showScale ? '#3a4466' : k % 2 ? '#262c42' : '#2b3149';
+        ctx.fillRect(0, y0, KW, y1 - y0);
+        ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(0, Math.round(y0), KW, 1);
+        const key = Math.round(m * 1000);
+        if (out.has(key)) { const cs = out.get(key); cs.forEach((c, j) => { ctx.fillStyle = c; ctx.fillRect(KW * j / cs.length, y0, Math.ceil(KW / cs.length), y1 - y0); }); }
+        if (glow.has(key)) { ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.fillRect(0, y0, KW, y1 - y0); }
+        if (V.hoverMidi != null && Math.abs(V.hoverMidi - m) < 1e-6) { ctx.strokeStyle = '#6fa3ff'; ctx.lineWidth = 1.5; ctx.strokeRect(0.75, y0 + 0.75, KW - 1.5, y1 - y0 - 1.5); }
+        const h = y1 - y0;
+        if (h >= 8) {
+          ctx.font = (KW < 20 ? 7 : 8) + 'px system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.fillStyle = root ? '#fff' : '#b9c2da';
+          ctx.fillText(root ? md.namesOf(S)[S.key] + (Math.floor(Math.round(m) / 12) - 1) : String(G.cls[k]), 2, V.yOf(m) + 3);
+          if (h >= 20) { ctx.fillStyle = '#8b94ad'; ctx.font = '7px system-ui, sans-serif'; ctx.fillText(Math.round(G.cents[G.cls[k]]) + '¢', 2, V.yOf(m) + 11); }
+        }
+      }
+      ctx.fillStyle = 'rgba(255,255,255,0.55)';   // 12-TET reference ticks (octave C ticks longer)
+      for (let m = LO; m <= HI; m++) { const y = Math.round(V.yOf(m)); if (y >= HDR && y <= HDR + V.MH) ctx.fillRect(KW - (m % 12 === 0 ? 7 : 4), y, m % 12 === 0 ? 7 : 4, 1); }
+    }
     function drawKeys() {
       const now = performance.now(), { out, glow } = soundingNow(now), KW = V.X0, rh = V.PPS(), bw = KW * 0.62;
+      const G = md.gridOf(M.song);
+      if (!G.et12) {   // step strip (lit by grid pitch, keyed in milli-semitones)
+        const o2 = new Map(), g2 = new Set(), gk = (m) => Math.round(G.snap(m) * 1000);
+        out.forEach((c, m) => o2.set(gk(m), c)); glow.forEach((m) => g2.add(gk(m)));
+        ctx.save(); ctx.beginPath(); ctx.rect(0, HDR, KW, V.MH); ctx.clip();
+        drawSteps(G, o2, g2, now);
+        ctx.restore();
+        ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(KW, HDR, 1, V.MH);
+        return;
+      }
+      const scaleOn = V.showScale, sc = G.scaleCls;
       out.forEach((cols, m) => lit.set(m, { cols, t: now }));
       let fading = false;
       ctx.save();
@@ -263,6 +302,10 @@
             L.cols.forEach((c, k) => { ctx.fillStyle = c; ctx.fillRect(w * k / n, y0, Math.ceil(w / n), rh); });
             ctx.globalAlpha = 1;
           }
+        }
+        if (scaleOn && sc.has(((m - G.root) % 12 + 12) % 12)) {   // in-scale keys: a faint blue tint (the root a little stronger)
+          ctx.fillStyle = (m - G.root) % 12 === 0 ? (black ? 'rgba(120,160,255,0.55)' : 'rgba(80,120,255,0.3)') : black ? 'rgba(120,160,255,0.35)' : 'rgba(80,120,255,0.14)';
+          ctx.fillRect(0, y0, w, rh);
         }
         if (glow.has(m)) { ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.fillRect(0, y0, w, rh); }
         if (V.hoverMidi === m) { ctx.strokeStyle = '#6fa3ff'; ctx.lineWidth = 1.5; ctx.strokeRect(0.75, y0 + 0.75, KW - 1.5, rh - 1.5); }
@@ -420,10 +463,30 @@
       ctx.save();   // graph area: everything below is clipped to the visible map (zoom / scroll)
       ctx.beginPath(); ctx.rect(xa, HDR, GW, MH); ctx.clip();
       const mLo = Math.max(LO, Math.floor(V.pTop - V.span)), mHi = Math.min(HI, Math.ceil(V.pTop));
-      for (let m = mLo; m <= mHi; m++) {   // pitch grid
-        const pc = m % 12, y = Math.round(V.yOf(m)) + 0.5;
-        ctx.strokeStyle = pc === 0 ? 'rgba(255,255,255,0.32)' : NATURAL[pc] ? 'rgba(255,255,255,0.13)' : 'rgba(255,255,255,0.05)';
-        ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(xb, y); ctx.stroke();
+      const G = md.gridOf(S);
+      if (V.showScale) {   // scale tint: a faint band on the rows of the section's scale (tuning steps outside 12-TET)
+        const P = G.pts, rh = V.PPS();
+        ctx.fillStyle = 'rgba(150,180,255,0.055)';
+        for (let k = 0; k < P.length; k++) {
+          if (!G.scaleCls.has(G.cls[k]) || P[k] < mLo - 1 || P[k] > mHi + 1) continue;
+          const hgt = G.et12 ? rh * 0.8 : Math.min(rh * 0.8, Math.max(2, (k + 1 < P.length ? P[k + 1] - P[k] : 1) * rh * 0.8));
+          ctx.fillRect(xa, V.yOf(P[k]) - hgt / 2, xb - xa, hgt);
+        }
+      }
+      if (G.et12) {
+        for (let m = mLo; m <= mHi; m++) {   // pitch grid
+          const pc = m % 12, y = Math.round(V.yOf(m)) + 0.5;
+          ctx.strokeStyle = pc === 0 ? 'rgba(255,255,255,0.32)' : NATURAL[pc] ? 'rgba(255,255,255,0.13)' : 'rgba(255,255,255,0.05)';
+          ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(xb, y); ctx.stroke();
+        }
+      } else {
+        for (let k = 0; k < G.pts.length; k++) {   // tuning grid: one line per step, the key root brighter
+          const m = G.pts[k];
+          if (m < mLo - 0.01 || m > mHi + 0.01) continue;
+          const y = Math.round(V.yOf(m)) + 0.5;
+          ctx.strokeStyle = G.cls[k] === 0 ? 'rgba(255,255,255,0.32)' : G.scaleCls.has(G.cls[k]) ? 'rgba(255,255,255,0.11)' : 'rgba(255,255,255,0.045)';
+          ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(xb, y); ctx.stroke();
+        }
       }
       const notesMode = S.layers[A].mode === 'notes', step = notesMode ? (S.grid === 16 ? 1 : 2) : 4;
       const beats = new Set(md.tsOf(S).beats);

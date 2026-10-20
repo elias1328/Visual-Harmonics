@@ -96,11 +96,40 @@
     const keyRow = ui.h('div', 'vh-row mel-keyrow');
     const keySel = ui.h('select', 'vh-select'), modeSel = ui.h('select', 'vh-select');
     keySel.setAttribute('aria-label', 'Key'); modeSel.setAttribute('aria-label', 'Scale');
-    modeSel.innerHTML = '<option value="major">major</option><option value="minor">minor</option>';
+    // Key = root + scale, per section (a song can modulate). Scales grouped Common / Modes / Exotic, each with a mood hint.
+    modeSel.innerHTML = md.SCALE_GROUPS.map((g) => '<optgroup label="' + g + '">' + VH.harmony.SCALES.filter((x) => x.group === g)
+      .map((x) => '<option value="' + x.id + '" title="' + ui.esc(x.hint) + '">' + ui.esc(x.name) + '</option>').join('') + '</optgroup>').join('');
+    modeSel.classList.add('mel-scale');
+    keySel.title = 'Key root of the section shown'; modeSel.title = 'Scale of the section shown';
     keyRow.append(ui.h('span', 'mel-lbl', 'Key'), keySel, modeSel); sSong.append(keyRow);
-    const fillKeys = () => { const n = namesOf(M.song); keySel.innerHTML = n.map((x, i) => '<option value="' + i + '">' + x + '</option>').join(''); keySel.value = M.song.key; };
+    const scaleHint = ui.h('div', 'vh-desc mel-scalehint'); sSong.append(scaleHint);
+    const fillKeys = () => {
+      const S = M.song, n = namesOf(S), sc = scaleOf(S);
+      keySel.innerHTML = n.map((x, i) => '<option value="' + i + '">' + x + '</option>').join(''); keySel.value = S.key;
+      scaleHint.textContent = sc.name.replace(/ \(.*\)$/, '') + ': ' + sc.hint + (S.sections.length > 1 ? ' · this section' : '');
+    };
     keySel.addEventListener('change', () => { M.song.key = +keySel.value; M.commit('Key'); });
-    modeSel.addEventListener('change', () => { M.song.mode = modeSel.value; M.commit('Scale'); });
+    modeSel.addEventListener('change', () => { M.song.mode = modeSel.value; M.commit('Scale: ' + scaleOf(M.song).name.replace(/ \(.*\)$/, '')); });
+    // Tuning (song-wide): the pitch grid, snap targets, the strip and the backing's chord tones follow it.
+    const tunRow = ui.h('div', 'vh-row mel-keyrow mel-tunrow'); sSong.append(tunRow);
+    tunRow.append(ui.h('span', 'mel-lbl', 'Tuning'));
+    const tunSel = ui.select(tunRow, { label: 'Tuning of the song', value: md.tuningOf(M.song),
+      options: md.TUNINGS.map((t) => ({ value: t.id, label: t.name })), onChange: (v) => { M.song.tuning = v; M.commit('Tuning: ' + VH.harmony.tuningById(v).name); } });
+    tunSel.el.classList.add('mel-tuning');
+    const sclBtn = ui.button(tunRow, { label: '⤓ .scl', onClick: () => {
+      const id = md.tuningOf(M.song), url = URL.createObjectURL(new Blob([VH.harmony.sclText(id)], { type: 'text/plain' })), a = document.createElement('a');
+      a.href = url; a.download = 'visual-harmonics-' + id + '.scl'; a.rel = 'noopener'; a.style.display = 'none';
+      document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000);
+      U.lastScl = { id, name: a.download };
+    } });
+    sclBtn.classList.add('mel-scl'); sclBtn.title = 'Download tuning (.scl): a Scala file of this tuning for synths and DAWs';
+    const tunHint = ui.h('div', 'vh-desc mel-tunhint'); sSong.append(tunHint);
+    const syncTuning = () => {
+      const t = VH.harmony.tuningById(M.song.tuning);
+      tunSel.value = t.id;
+      tunHint.textContent = t.id === '12tet' ? 'Bands are physics, so they work in any tuning: try 19-TET or just intonation.'
+        : t.name + ': ' + t.hint + '. Rows, snap and the backing use its steps (from the key root); export plays it exactly (MIDI with pitch bends).';
+    };
     const seg = (parent, label, vals, fmt, on) => {
       const row = ui.h('div', 'vh-row mel-seg'); row.append(ui.h('span', 'mel-lbl', label));
       const bs = vals.map((v) => ui.button(row, { label: fmt(v), pressed: false, onClick: () => on(v) }));
@@ -199,6 +228,11 @@
     const othersBtn = ui.button(hRow, { label: 'Bands include other layers', pressed: M.song.bandsOthers, onClick: () => {
       M.song.bandsOthers = !M.song.bandsOthers; M.bands.invalidate(); M.commit('Bands include other layers'); } });
     sHarm.append(ui.h('div', 'vh-desc', 'Off: bands compare the active layer with the chord. On: the other layers’ notes count too.'));
+    const sRow = ui.h('div', 'vh-row'); sHarm.append(sRow);
+    const showScaleBtn = ui.button(sRow, { label: 'Show scale', pressed: M.view.showScale, onClick: () => {
+      M.view.showScale = !M.view.showScale; VH.store.set('melody.showScale', M.view.showScale); showScaleBtn.set({ pressed: M.view.showScale }); M.requestRender(); } });
+    showScaleBtn.classList.add('mel-showscale');
+    sHarm.append(ui.h('div', 'vh-desc', 'A faint tint on the rows and keys of the section’s scale.'));
 
     // Edit
     const sEdit = U.addPanelSection('Undo & clear', 50, { group: 'edit' });
@@ -306,16 +340,16 @@
       const S = M.song, b = popBar, names = namesOf(S), cur = md.regionChord(S, b), sc = scaleOf(S), e = S.chords[b] || { at: 0 };
       const n = md.spb(S), bar = Math.floor(e.at / n), split = e.at % n || md.regionEnd(S, b) % n || (S.chords[b + 1] && md.barAt(S, S.chords[b + 1].at) === bar);
       const beat = md.tsOf(S).beats.indexOf(e.at % n), where = 'Bar ' + (bar + 1) + (split ? ' · ' + (beat >= 0 ? 'beat ' + (beat + 1) : 'at ' + (e.at % n) + '/16') : '');
-      const pcs = new Set(sc.steps.map((st) => (S.key + st) % 12));
+      const pcs = new Set(sc.steps.map((st) => (S.key + st) % 12)), qs = md.scaleChords(S);
       const same = (r, q) => cur && cur[0] === r && cur[1] === q;
       let h = '<div class="mel-pop-head"><span><b>' + where + '</b> · ' + ui.esc(chordName(cur, names)) + '</span>' +
         '<button type="button" class="vh-icon-btn x" aria-label="Close">✕</button></div>' +
-        '<div class="mel-sub">In ' + names[S.key] + ' ' + S.mode + '</div><div class="mel-quick">';
-      diatonic(S).forEach(([r, q], k) => {
-        h += '<button type="button" class="q' + (same(r, q) ? ' cur' : '') + '" data-r="' + r + '" data-q="' + q + '"><b>' +
-          chordName([r, q], names) + '</b><i>' + sc.rn[k] + '</i></button>';
+        '<div class="mel-sub">In ' + ui.esc(md.scaleLabel(S)) + (sc.steps.length !== 7 ? ' <span>· chords that fit the scale</span>' : '') + '</div><div class="mel-quick' + (qs.length > 7 ? ' many' : '') + '">';
+      qs.forEach(({ r, q, rn }) => {
+        h += '<button type="button" class="q' + (same(r, q) ? ' cur' : '') + '" data-r="' + r + '" data-q="' + q + '" data-rn="' + ui.esc(rn) + '"><b>' +
+          chordName([r, q], names) + '</b><i>' + rn + '</i></button>';
       });
-      h += '</div><div class="mel-sub">Any chord <span>· tinted = all notes in the key</span></div><div class="mel-grid"><span></span>';
+      h += '</div><div class="mel-sub">Any chord <span>· tinted = all notes in the scale</span></div><div class="mel-grid"><span></span>';
       QUALS.forEach((q) => { h += '<span class="qh">' + q[0] + '</span>'; });
       for (let r = 0; r < 12; r++) {
         h += '<span class="rh">' + names[r] + '</span>';
@@ -612,7 +646,7 @@
       syncChips();
       snapPanelBtn.set({ pressed: S.snap });
       syncRegion(); syncTools();
-      fillKeys(); modeSel.value = S.mode;
+      fillKeys(); modeSel.value = S.mode; syncTuning();
       syncBars(S.bars); syncGrid(S.grid);
       tenSl.set(S.tension || 0); if (M.view && M.view.syncTension) M.view.syncTension();
       if (U.renderArr) U.renderArr();

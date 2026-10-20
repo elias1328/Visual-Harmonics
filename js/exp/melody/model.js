@@ -13,10 +13,17 @@
   const QUALS = [['maj', '', [0, 4, 7]], ['min', 'm', [0, 3, 7]], ['dim', 'dim', [0, 3, 6]], ['aug', 'aug', [0, 4, 8]],
     ['sus2', 'sus2', [0, 2, 7]], ['sus4', 'sus4', [0, 5, 7]], ['7', '7', [0, 4, 7, 10]], ['maj7', 'maj7', [0, 4, 7, 11]], ['m7', 'm7', [0, 3, 7, 10]]];
   const QI = {}; QUALS.forEach((q, i) => { QI[q[0]] = i; });
-  const SCALE = {
-    major: { steps: [0, 2, 4, 5, 7, 9, 11], q: ['maj', 'min', 'min', 'maj', 'maj', 'min', 'dim'], rn: ['I', 'ii', 'iii', 'IV', 'V', 'vi', 'vii°'], flat: [5, 10, 3, 8, 1, 6] },
-    minor: { steps: [0, 2, 3, 5, 7, 8, 10], q: ['min', 'dim', 'maj', 'min', 'min', 'maj', 'maj'], rn: ['i', 'ii°', 'III', 'iv', 'v', 'VI', 'VII'], flat: [2, 7, 0, 5, 10, 3] },
-  };
+  // Scales (VH.harmony.SCALES): the key is root + scale, per section (S.key + S.mode; 'major' / 'minor' = Ionian /
+  // Aeolian, so old songs load unchanged). q / rn: the chords on each degree (see harmony.scaleChords).
+  const HM = VH.harmony || (typeof require === 'function' ? require('../../core/harmony.js') : null), SCALE = {}, SCALE_GROUPS = ['Common', 'Modes', 'Exotic'];
+  HM.SCALES.forEach((x) => {
+    const cs = HM.scaleChords(0, x);
+    SCALE[x.id] = Object.assign({}, x, { q: cs.map((c) => c.q), rn: cs.map((c) => c.rn),
+      // flat spelling: keys whose parent major (minor-third scales: the relative major) is a flat key
+      flat: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].filter((k) => [5, 10, 3, 8, 1, 6].includes(x.steps.includes(3) && !x.steps.includes(4) ? (k + 3) % 12 : k)) });
+  });
+  // Tunings (VH.harmony.TUNINGS), song-wide S.tuning: '12tet' (default) | 'ji' | 'pyth' | '19tet' | '24tet' | '31tet' | 'slendro' | 'pelog'.
+  const TUNINGS = HM.TUNINGS, tuningOf = (S) => (S && HM.tuningById(S.tuning).id) || '12tet';
   const NATURAL = [1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1];
   const COLORS = ['#ff6b6b', '#ffc93c', '#7dff8a', '#5ad1ff', '#c58bff', '#ff8fd0', '#ffa45c', '#c9f06a'];
   // Base voice gains of the mix (before layer / backing / drum / master volumes). Every sound is loudness-matched
@@ -249,7 +256,7 @@
     const dr = Object.assign({}, S.drums); delete dr.vol;
     const ed = S.ext && S.ext.edit, layers = {};
     S.layers.forEach((l) => { layers[l.id] = { lines: l.lines, notes: l.notes }; });
-    return { bars: S.bars, ts: S.ts || '4/4', chords: S.chords, loopRegion: S.loopRegion || null, tension: S.tension || 0, drums: dr, vib: ed && ed.vib ? ed.vib : null, layers };
+    return { bars: S.bars, ts: S.ts || '4/4', key: S.key, mode: S.mode, chords: S.chords, loopRegion: S.loopRegion || null, tension: S.tension || 0, drums: dr, vib: ed && ed.vib ? ed.vib : null, layers };
   }
   function copyContent(d) {
     const layers = {};
@@ -257,12 +264,13 @@
       const c = d.layers[id];
       layers[id] = { lines: c.lines.map((st) => ({ id: st.id, v: new Float32Array(st.v) })), notes: c.notes.map((n) => ({ s: n.s, d: n.d, m: n.m })) };
     });
-    return { bars: d.bars, ts: d.ts, chords: d.chords.map((e) => ({ at: e.at, chord: e.chord ? e.chord.slice() : null })),
+    return { bars: d.bars, ts: d.ts, key: d.key, mode: d.mode, chords: d.chords.map((e) => ({ at: e.at, chord: e.chord ? e.chord.slice() : null })),
       loopRegion: d.loopRegion ? d.loopRegion.slice() : null, tension: d.tension || 0, drums: plain(d.drums), vib: d.vib ? plain(d.vib) : null, layers };
   }
   const contentOf = (S, k) => (k === S.cur ? liveContent(S) : S.sections[k].data);
   function applyContent(S, d) {
-    S.bars = d.bars; S.ts = d.ts; S.chords = d.chords; S.loopRegion = d.loopRegion || null; S.tension = d.tension || 0;
+    S.bars = d.bars; S.ts = d.ts; S.chords = d.chords;
+    if (d.key != null) { S.key = d.key; S.mode = d.mode; } S.loopRegion = d.loopRegion || null; S.tension = d.tension || 0;
     const vol = S.drums && typeof S.drums.vol === 'number' ? { vol: S.drums.vol } : {};
     S.drums = Object.assign({}, d.drums, vol);
     if (!S.ext || typeof S.ext !== 'object') S.ext = {};
@@ -279,7 +287,7 @@
     return true;
   }
   function emptyContent(S, bars, ts) {
-    const c = { bars, ts, chords: [], loopRegion: null, tension: 0, drums: {}, vib: null, layers: {} };
+    const c = { bars, ts, key: S.key, mode: S.mode, chords: [], loopRegion: null, tension: 0, drums: {}, vib: null, layers: {} };
     const tonic = diatonic(S)[0];
     c.chords = normChords({ bars, ts, chords: [{ at: 0, chord: tonic }] });
     return c;
@@ -290,7 +298,7 @@
     if (k === S.cur) return S;
     const d = S.sections[k].data, ed = Object.assign({}, S.ext && S.ext.edit);
     if (d.vib) ed.vib = d.vib; else delete ed.vib;
-    return Object.assign({}, S, { bars: d.bars, ts: d.ts, chords: d.chords, loopRegion: d.loopRegion, tension: d.tension || 0, cur: k,
+    return Object.assign({}, S, { bars: d.bars, ts: d.ts, key: d.key != null ? d.key : S.key, mode: d.mode || S.mode, chords: d.chords, loopRegion: d.loopRegion, tension: d.tension || 0, cur: k,
       drums: Object.assign({}, d.drums, S.drums && typeof S.drums.vol === 'number' ? { vol: S.drums.vol } : {}),
       ext: Object.assign({}, S.ext, { edit: ed }),
       layers: S.layers.map((l) => { const c = d.layers[l.id]; return Object.assign({}, l, { lines: c ? c.lines : [], notes: c ? c.notes : [] }); }) });
@@ -318,7 +326,8 @@
     items.forEach((it) => {
       const s = sectionSong(S, it.k), n = spb(s);
       for (let b = 0; b < s.bars; b++) bars.push({ a: it.a + b * n, n, b, ts: s.ts || '4/4', drums: s.drums, sec: it.k });
-      s.chords.forEach((e) => chords.push({ at: it.a + e.at, chord: e.chord ? e.chord.slice() : null }));
+      // kp: the section's key root, so tuned chords (chordMidis(ch, F)) follow modulations in the flat song
+      s.chords.forEach((e) => { const c = e.chord ? e.chord.slice() : null; if (c) c.kp = s.key; chords.push({ at: it.a + e.at, chord: c }); });
       if (!tsl.length || tsl[tsl.length - 1].ts !== (s.ts || '4/4')) tsl.push({ at: it.a, ts: s.ts || '4/4' });
       s.layers.forEach((l, L) => {
         const F1 = layers[L];
@@ -350,7 +359,7 @@
       notes: l.notes.slice().sort((a, b) => a.s - b.s || a.m - b.m).map((n) => [n.s, n.d, r2(n.m)]) };
   }
   function serContent(d, layers) {
-    const o = { bars: d.bars, ts: d.ts, chords: serChords(d.chords), drums: plain(d.drums),
+    const o = { bars: d.bars, ts: d.ts, key: d.key, mode: d.mode, chords: serChords(d.chords), drums: plain(d.drums),
       layers: layers.filter((l) => d.layers[l.id]).map((l) => Object.assign({ id: l.id }, serLayerContent(d.layers[l.id]))) };
     const lr = regionOf({ loopRegion: d.loopRegion, bars: d.bars });
     if (lr) o.loopRegion = lr;
@@ -362,8 +371,9 @@
   // full = also the view/session prefs (grid, loop, snap) that undo does not touch.
   // v4: chords are events [at, root, q], a time signature, and `sections` (+ `cur`): the top-level content is the
   // current section's; the other sections carry their own content.
+  // v5: key + scale (mode) per section (top level = the shown section's), any scale id; song-wide `tuning` (only when not 12-TET).
   function serialize(S, full) {
-    const o = { v: 4, key: S.key, mode: S.mode, bars: S.bars, ts: S.ts || '4/4', bpm: S.bpm, chords: serChords(S.chords),
+    const o = { v: 5, key: S.key, mode: S.mode, bars: S.bars, ts: S.ts || '4/4', bpm: S.bpm, chords: serChords(S.chords),
       layers: S.layers.map((l) => Object.assign({ id: l.id, name: l.name, color: l.color, sound: l.sound, mode: l.mode, vol: r3(l.vol), mute: l.mute, solo: l.solo },
         serLayerContent(l))),
       backing: backingOut(S.backing),
@@ -371,6 +381,7 @@
     const lr = regionOf(S);
     if (lr) o.loopRegion = lr;   // written only when set, so songs without one serialize unchanged
     if (S.tension > 0) o.tension = r3(S.tension);   // Tension dial (0..1) of the shown section; only when set
+    if (tuningOf(S) !== '12tet') o.tuning = tuningOf(S);
     o.sections = (S.sections || []).map((x, k) => (k === S.cur ? secMeta(x) : Object.assign(secMeta(x), serContent(x.data, S.layers))));
     o.cur = S.cur | 0;
     if (full) Object.assign(o, { grid: S.grid, loop: S.loop, snap: S.snap });
@@ -400,7 +411,7 @@
     if (!o || typeof o !== 'object' || !Array.isArray(o.chords) || !Array.isArray(o.layers)) return null;
     const v4 = o.v >= 4, bars = barsIn(o.bars, v4), ts = TS[o.ts] ? o.ts : '4/4', v1 = !(o.v >= 2);
     const bpm = typeof o.bpm === 'number' ? o.bpm : typeof o.tempo === 'number' && o.tempo > 0 ? 240 / o.tempo : 120;
-    const S = { key: num(o.key, 0, 11, 0) | 0, mode: o.mode === 'minor' ? 'minor' : 'major', bars, ts,
+    const S = { key: num(o.key, 0, 11, 0) | 0, mode: modeIn(o.mode, 'major'), tuning: HM.tuningById(o.tuning).id, bars, ts,
       bpm: Math.round(num(bpm, BPM_MIN, BPM_MAX, 120)), grid: o.grid === 16 ? 16 : 8, loop: o.loop !== false, snap: !!o.snap,
       master: num(o.master, 0, VOL_MAX, 1), bandsOthers: !!o.bandsOthers, fx: plain(o.fx), drums: plain(o.drums), ext: plain(o.ext) };
     S.chords = parseChords(o.chords, v4, bars, ts);
@@ -516,15 +527,49 @@
       layers[l.id] = c;
     });
     const dr = plain(x.drums); delete dr.vol;
-    return { bars, ts, chords: parseChords(x.chords || [], true, bars, ts), loopRegion: regionOf({ loopRegion: x.loopRegion, bars }), tension: tensionOf(x.tension),
+    return { bars, ts, key: typeof x.key === 'number' ? num(x.key, 0, 11, 0) | 0 : S.key, mode: modeIn(x.mode, S.mode), chords: parseChords(x.chords || [], true, bars, ts), loopRegion: regionOf({ loopRegion: x.loopRegion, bars }), tension: tensionOf(x.tension),
       drums: dr, vib: x.vib && typeof x.vib === 'object' ? plain(x.vib) : null, layers };
   }
 
-  const chordMidis = (ch) => QUALS[QI[ch[1]]][2].map((i) => LO + ch[0] + i);
-  const scaleOf = (S) => SCALE[S.mode];
+  const modeIn = (m, d) => (typeof m === 'string' && SCALE[m] ? m : d);
+  // Chord tones as midis from LO. With a song S in a non-12 tuning: tuned (harmony.tunedChord, grid anchored at the
+  // key root: ch.kp in flattened songs, else S.key). Without S (names, the header): the plain equal-tempered midis.
+  const chordMidis = (ch, S) => {
+    const iv = QUALS[QI[ch[1]]][2];
+    if (!S || tuningOf(S) === '12tet') return iv.map((i) => LO + ch[0] + i);
+    return HM.tunedChord(tuningOf(S), ch.kp != null ? ch.kp : S.key, ch[0], iv, LO);
+  };
+  const scaleOf = (S) => SCALE[S.mode] || SCALE.major;
   const namesOf = (S) => (scaleOf(S).flat.includes(S.key) ? FLAT : SHARP);
   const chordName = (ch, names) => (ch ? names[ch[0]] + QUALS[QI[ch[1]]][1] : 'No chord');
-  const diatonic = (S) => scaleOf(S).steps.map((st, k) => [(S.key + st) % 12, scaleOf(S).q[k]]);
+  // Chords of the key's scale (harmony.scaleChords): one triad per degree for seven-note scales, else every fitting
+  // triad / 7th. diatonic(S) -> [[root, q]] (first = the tonic chord); scaleChords(S) -> [{ r, q, deg, k, rn }].
+  const scaleChords = (S) => HM.scaleChords(S.key, scaleOf(S));
+  const diatonic = (S) => scaleChords(S).map((c) => [c.r, c.q]);
+  // "D Dorian", "A minor", "C major"
+  const scaleLabel = (S) => namesOf(S)[S.key] + ' ' + (S.mode === 'major' ? 'major' : S.mode === 'minor' ? 'minor' : scaleOf(S).name);
+  // The tuning grid of the shown section: every pitch of the song's tuning in LO..HI (anchored at the key root), its step
+  // class, and the scale's classes. 12-TET: the integer midis. Cached per tuning + key + scale.
+  const gridMemo = new Map();
+  function gridOf(S) {
+    const tn = tuningOf(S), k = tn + '|' + S.key + '|' + S.mode;
+    let G = gridMemo.get(k);
+    if (G) return G;
+    const g = HM.tuningGrid(tn, S.key, LO, HI), pts = g.pts, cls = g.cls, sc = new Set(HM.scaleClasses(tn, scaleOf(S).steps));
+    const idx = (m) => {   // nearest grid index (ties go up, like Math.round)
+      let lo = 0, hi = pts.length - 1;
+      if (m <= pts[0]) return 0;
+      if (m >= pts[hi]) return hi;
+      while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (pts[mid] <= m) lo = mid; else hi = mid; }
+      return m - pts[lo] < pts[hi] - m - 1e-9 ? lo : hi;
+    };
+    G = { tuning: tn, et12: tn === '12tet', N: g.N, cents: g.cents, root: S.key, pts, cls, scaleCls: sc, idx,
+      snap: (m) => pts[idx(m)], inScale: (m) => sc.has(cls[idx(m)]) };
+    if (gridMemo.size > 64) gridMemo.clear();
+    gridMemo.set(k, G);
+    return G;
+  }
+  const gridSnap = (S, m) => clamp(gridOf(S).snap(clamp(m, LO, HI)), LO, HI);
   const secPerBar = (S) => spb(S) * 15 / S.bpm;   // the bar's sixteenths (bpm counts quarter notes)
   const secPer16 = (S) => 15 / S.bpm;
   // Effective layer gain from vol / mute / solo (solo affects layers only, not the backing).
@@ -537,6 +582,7 @@
 
   NS.model = { tensionH, tensionName, tensionTint, TENSION_W, LO, HI, SPAN, LPB, SPB, MAX_LAYERS, BPM_MIN, BPM_MAX, SHARP, FLAT, QUALS, QI, SCALE, NATURAL, COLORS,
     GAIN, VOL_MAX, MAX_STROKES, strokes, nextStrokeId, addStroke, strokeEmpty, pruneStrokes, lineAt, hasLine, lineRuns, withLegacyLine, volDb, volLabel, clamp, r2, regionOf, newLayer, nextLayerId, assignIds, defaultSong, segs, serialize, parse, chordMidis, scaleOf, namesOf, chordName, diatonic,
+    scaleChords, scaleLabel, SCALE_GROUPS, TUNINGS, tuningOf, gridOf, gridSnap, modeIn,
     secPerBar, secPer16, layerGain,
     TS, TS_LIST, tsOf, spb, lpb, tot16, barsOf, barAt, beatGrid,
     normChords, regionAt, regionEnd, chordAt, regionChord, regions, barChords, isBarStart, splitAt, mergeAt, serChords, parseChords,

@@ -58,7 +58,7 @@
       const ch = md.regionChord(M.song, b);
       if (!ch) return 0;
       if (!specs[L]) api.refresh();
-      return cross(f, chordMidis(ch).map(H.midiToHz), specs[L], bSpec, extras(b, L));
+      return cross(f, chordMidis(ch, M.song).map(H.midiToHz), specs[L], bSpec, extras(b, L));
     };
 
     // Pixels (R x RGBA) for a highlight curve t (0..1 per row): palette + soft glow around its peaks.
@@ -100,7 +100,7 @@
       if (!specs[L]) api.refresh();
       if (!specs[L]) L = 0;
       const ex = ch ? extras(b, L) : null;
-      const key = keys[L] + '|' + bKey + '|' + (ch ? ch.join('') : '-') + (ex ? '|' + JSON.stringify(ex) : '');
+      const tn = md.tuningOf(S), key = keys[L] + '|' + bKey + '|' + (ch ? ch.join('') + (tn !== '12tet' ? '|' + tn + (ch.kp != null ? ch.kp : S.key) : '') : '-') + (ex ? '|' + JSON.stringify(ex) : '');
       let c = cache.get(key);
       if (c) return c;
       if (cache.size > 160) cache.clear();
@@ -110,7 +110,7 @@
         const k = pal(0.07);
         for (let r = 0; r < R; r++) px.set([k[0] * 255, k[1] * 255, k[2] * 255, 255], r * 4);
       } else {
-        const hz = chordMidis(ch).map(H.midiToHz), w = Math.round(7 * RPS), PS = specs[L];
+        const hz = chordMidis(ch, S).map(H.midiToHz), w = Math.round(7 * RPS), PS = specs[L];
         for (let r = 0; r < R; r++) D[r] = cross(H.midiToHz(rowMidi(r)), hz, PS, bSpec, ex);
         // Compare each row with its ±7-semitone neighbourhood so bands read evenly, then normalise.
         for (let r = 0; r < R; r++) {
@@ -172,30 +172,32 @@
       L = L == null ? M.active : L;
       const S = M.song, ch = md.regionChord(S, b);
       if (!ch) return null;
-      const col = api.column(b, L), T = S.tension || 0, mk = S.key + S.mode + ch.join('') + '|' + T;
+      const col = api.column(b, L), T = S.tension || 0, mk = S.key + S.mode + md.tuningOf(S) + ch.join('') + '|' + T;
       let mm = ctxMemo.get(col);
       if (!mm) { mm = new Map(); ctxMemo.set(col, mm); }
       if (mm.has(mk)) return mm.get(mk);
-      const cons = new Float32Array(SPAN + 1);
-      for (let m = LO; m <= HI; m++) {
-        const rf = (m - LO) * RPS, r = Math.min(R - 2, Math.floor(rf)), u = rf - r;
-        cons[m - LO] = tm(1 - (col.V[r] * (1 - u) + col.V[r + 1] * u) ** 0.75, T);
+      // The tuning grid (md.gridOf): 12-TET = the integer midis LO..HI (as before); other tunings = their steps, anchored
+      // at the key root. Everything below works on grid pitches: cons per grid pitch, chord / key tests by step class.
+      const G = md.gridOf(S), P = G.pts, NP = P.length, gi = (m) => G.idx(clamp(m, LO, HI));
+      const cons = new Float32Array(NP);
+      for (let k = 0; k < NP; k++) {
+        const rf = (P[k] - LO) * RPS, r = Math.min(R - 2, Math.floor(rf)), u = rf - r;
+        cons[k] = tm(1 - (col.V[r] * (1 - u) + col.V[r + 1] * u) ** 0.75, T);
       }
-      const chordPc = new Set(chordMidis(ch).map((m) => m % 12));
-      const keyPc = new Set(md.scaleOf(S).steps.map((x) => (S.key + x) % 12));
-      const c = (m) => cons[clamp(Math.round(m), LO, HI) - LO];
-      const isChord = (m) => chordPc.has(pcOf(m)), isKey = (m) => keyPc.has(pcOf(m));
+      const chordCl = new Set(chordMidis(ch, S).map((m) => H.tuningClass(G.tuning, G.root, m)));
+      const c = (m) => cons[gi(m)];
+      const isChord = (m) => chordCl.has(G.cls[gi(m)]), isKey = (m) => G.scaleCls.has(G.cls[gi(m)]);
       // Tension: chord / key bonuses fade out as T rises (chord tones by 0.625, key tones at 1), and chord extensions
       // (7th / 9th / #11 / 11th / 13th over the root) get a bonus that peaks at Color (T ~ 0.5).
       const wC = Math.max(0, 1 - 1.6 * T), wK = 1 - T, wE = 0.45 * Math.max(0, 1 - Math.abs(T - 0.5) / 0.45), root = ch[0];
-      const isExt = (m) => [2, 5, 6, 9, 10, 11].includes(((pcOf(m) - root) % 12 + 12) % 12);
+      const isExt = (m) => [2, 5, 6, 9, 10, 11].includes(((pcOf(P[gi(m)]) - root) % 12 + 12) % 12);
       const bon = (n) => (isChord(n) ? FIT.chord * wC + 1e-4 : 0) + (isKey(n) ? FIT.key * wK : 0) + (T > 0 && isExt(n) ? wE : 0);
       let thr;
       if (T > 0) {   // the target test: highlight (+ the faded bonuses) at least the bar's 70th percentile
-        const sc = []; for (let m = LO; m <= HI; m++) sc.push(cons[m - LO] + bon(m));
-        sc.sort((a, z) => a - z); thr = sc[Math.min(SPAN, Math.floor(0.7 * SPAN))];
-      } else { const sorted = Array.from(cons).sort((a, z) => a - z); thr = sorted[Math.min(SPAN, Math.floor(FIT.pct * SPAN))]; }
-      const fits = T > 0 ? (m) => c(m) + bon(clamp(Math.round(m), LO, HI)) >= thr - 1e-6 : (m) => isChord(m) || (isKey(m) && c(m) >= thr - 1e-6);
+        const sc = []; for (let k = 0; k < NP; k++) sc.push(cons[k] + bon(P[k]));
+        sc.sort((a, z) => a - z); thr = sc[Math.min(NP - 1, Math.floor(0.7 * (NP - 1)))];
+      } else { const sorted = Array.from(cons).sort((a, z) => a - z); thr = sorted[Math.min(NP - 1, Math.floor(FIT.pct * (NP - 1)))]; }
+      const fits = T > 0 ? (m) => c(m) + bon(P[gi(m)]) >= thr - 1e-6 : (m) => isChord(m) || (isKey(m) && c(m) >= thr - 1e-6);
       // dir: the melody's direction into this pitch (-1 | 0 | 1); prev: the (already fitted) previous pitch, so the
       // contour is kept: landing on the other side of prev (a reversed step) costs a lot, a step flattened to a repeat a little.
       const score = (n, from, dir, prev) => {
@@ -205,31 +207,36 @@
         if (dir && prev != null) { const st = n - prev; if (Math.abs(st) < 0.25) sc -= FIT.flat; else if (Math.sign(st) !== dir) sc -= FIT.reverse; }
         return sc;
       };
-      // Best ET semitone for pitch p (within ±2): p's own semitone when it already fits, else the best-scoring fitting
-      // candidate (smallest move, keeping the melodic direction, ties to chord tones).
+      // Best grid pitch (ET semitone in 12-TET) for p (within ±2 semitones): p's own grid pitch when it already fits, else
+      // the best-scoring fitting candidate (smallest move, keeping the melodic direction, ties to chord tones).
       const best = (p, dir, prev) => {
-        const base = clamp(Math.round(p), LO, HI);
+        const bi = gi(p), base = P[bi];
         if (fits(base)) return base;
         // tiers: 3 = fits and keeps the contour, 2 = a chord / key tone that keeps the contour, 1 = fits, 0 = anything
         const keeps = (n) => !dir || prev == null || (Math.abs(n - prev) >= 0.25 && Math.sign(n - prev) === dir);
         const win = T > 0 ? 3 : 2;   // a sparse target (Tense) may sit a little farther away
         let bn = base, bs = -Infinity, bt = -1;
-        for (let n = Math.max(LO, base - win); n <= Math.min(HI, base + win); n++) {
-          const f = fits(n), k = keeps(n), t = T > 0 ? (f && k ? 3 : f ? 2 : k ? 1 : 0) : f && k ? 3 : k && (isChord(n) || isKey(n)) ? 2 : f ? 1 : 0, s = score(n, p, dir, prev);
+        let j0 = bi; while (j0 > 0 && P[j0 - 1] >= base - win - 1e-6) j0--;
+        for (let j = j0; j < NP && P[j] <= base + win + 1e-6; j++) {
+          const n = P[j], f = fits(n), k = keeps(n), t = T > 0 ? (f && k ? 3 : f ? 2 : k ? 1 : 0) : f && k ? 3 : k && (isChord(n) || isKey(n)) ? 2 : f ? 1 : 0, s = score(n, p, dir, prev);
           if (t > bt || (t === bt && s > bs)) { bn = n; bs = s; bt = t; }
         }
         return bn;
       };
-      const x = { bar: b, layer: L, chord: ch, tension: T, cons, thr, c, isChord, isKey, isExt, bon, fits, score, best };
+      const x = { bar: b, layer: L, chord: ch, tension: T, grid: G, pts: P, cons, thr, c, isChord, isKey, isExt, bon, fits, score, best };
       mm.set(mk, x);
       return x;
     };
-    // Snap while drawing (ET): the whole semitone within ±1.5 of m that is bright and close (chord / key tones preferred).
+    // Snap while drawing (tuning grid; ET semitones in 12-TET): the grid pitch within ±1.5 semitones of m that is bright and
+    // close (chord / key tones preferred).
     function snapET(m, b, L) {
-      const x = api.fitCtx(b, L);
-      if (!x) return clamp(Math.round(m), LO, HI);
-      let bn = clamp(Math.round(m), LO, HI), bs = -Infinity;
-      for (let n = Math.max(LO, Math.ceil(m - 1.5)); n <= Math.min(HI, Math.floor(m + 1.5)); n++) {
+      const x = api.fitCtx(b, L), S = M.song;
+      if (!x) return md.gridSnap(S, m);
+      let bn = md.gridSnap(S, m), bs = -Infinity;
+      const P = x.pts;
+      for (let k = 0; k < P.length; k++) {
+        const n = P[k];
+        if (n < m - 1.5 - 1e-9 || n > m + 1.5 + 1e-9) continue;
         const s = x.c(n) + (x.tension > 0 ? x.bon(n) : (x.isChord(n) ? 0.35 : 0) + (x.isKey(n) ? 0.15 : 0)) - 0.6 * Math.abs(n - m);
         if (s > bs) { bs = s; bn = n; }
       }
