@@ -509,6 +509,69 @@
     for (const k of ['c1', 'c2', 'c3', 'G']) o[k] = lo[k].map((v, i) => v + (hi[k][i] - v) * u);
     return o;
   }
+
+  // ---------- Map look (a view preference, VH.store 'melody.look'; never part of the song) ----------
+  const LOOK_DEFAULTS = { clarity: 0, theme: 'aurora', thick: 50, glow: 50, dark: 50, grid: 100, regions: true, piano: true, labels: true };
+  const LOOK_THEMES = {   // palette stops of the band gradient: c0 (background) -> c1 -> c2 -> c3 (peak), G = the glow colour
+    aurora: { name: 'Aurora', c0: [0.03, 0.04, 0.16], c1: [0.38, 0.10, 0.55], c2: [0.0, 0.75, 0.86], c3: [1, 1, 1], G: [0.55, 0.95, 1] },
+    ember: { name: 'Ember', c0: [0.06, 0.02, 0.02], c1: [0.5, 0.1, 0.05], c2: [0.95, 0.45, 0.1], c3: [1, 0.95, 0.7], G: [1, 0.6, 0.2],
+      hot: { c1: [0.45, 0.02, 0.25], c2: [1, 0.12, 0.45], c3: [1, 0.8, 0.9], G: [1, 0.4, 0.6] } },   // Tension: toward crimson
+    ocean: { name: 'Ocean', c0: [0.01, 0.04, 0.12], c1: [0.02, 0.2, 0.45], c2: [0.15, 0.6, 0.95], c3: [0.85, 0.97, 1], G: [0.4, 0.8, 1] },
+    forest: { name: 'Forest', c0: [0.02, 0.06, 0.04], c1: [0.08, 0.3, 0.15], c2: [0.45, 0.8, 0.3], c3: [0.95, 1, 0.8], G: [0.7, 1, 0.5] },
+    mono: { name: 'Mono', c0: [0.04, 0.04, 0.04], c1: [0.25, 0.25, 0.25], c2: [0.65, 0.65, 0.65], c3: [1, 1, 1], G: [0.9, 0.9, 0.9],
+      hot: { c1: [0.4, 0.22, 0.1], c2: [1, 0.6, 0.1], c3: [1, 0.95, 0.8], G: [1, 0.7, 0.3] } },   // Tension: an orange accent
+    contrast: { name: 'High contrast', c0: [0, 0, 0], c1: [0.0, 0.25, 1], c2: [1, 1, 0], c3: [1, 1, 1], G: [1, 1, 0.5] },
+    cvd: { name: 'Colour-blind safe', c0: [0.267, 0.005, 0.329], c1: [0.165, 0.44, 0.56], c2: [0.37, 0.79, 0.38], c3: [0.99, 0.91, 0.14], G: [0.9, 0.95, 0.5] }
+  };
+  function lookIn(o) {   // validate a stored look
+    const d = LOOK_DEFAULTS, r = Object.assign({}, d);
+    if (o && typeof o === 'object') {
+      for (const k of ['clarity', 'thick', 'glow', 'dark', 'grid']) if (typeof o[k] === 'number' && isFinite(o[k])) r[k] = clamp(Math.round(o[k]), 0, 100);
+      for (const k of ['regions', 'piano', 'labels']) if (typeof o[k] === 'boolean') r[k] = o[k];
+      if (LOOK_THEMES[o.theme]) r.theme = o.theme;
+    }
+    return r;
+  }
+  // The clarity + thickness curve on one column's highlight values t (0..1 per row, 1 = brightest). Clarity 0 and the
+  // default thickness return t itself (identity). Rising clarity turns the map into clean lines: every meaningful local
+  // maximum (prominence over its +-6 row neighbourhood >= 0.04, so no absolute floor) is kept as a thin line that is
+  // lifted toward at least 35% brightness while still following its own strength; everything between the lines fades
+  // to the background (a stays * (1 - c)^2). The thickness slider above its middle widens the lines. Non-line rows
+  // never get brighter with more clarity and lines never get dimmer.
+  const LOOK_PROM = 0.04, LOOK_WIN = 6, LOOK_MIN = 0.35;
+  function lookCurve(t, o) {
+    const c = clamp((o.clarity || 0) / 100, 0, 1), th = o.thick == null ? 50 : o.thick, n = t.length;
+    if (c <= 0 && th === 50) return t;
+    const p = th === 50 ? 1 : Math.pow(2, (50 - th) / 40), a = p === 1 ? t : Float32Array.from(t, (v) => Math.pow(v, p));
+    if (c <= 0) return a;
+    const rad = Math.round(Math.max(0, th - 50) / 50 * 3), k = (1 - c) * (1 - c), out = new Float32Array(n), line = new Uint8Array(n);
+    for (let r = 0; r < n; r++) out[r] = a[r] * k;
+    for (let r = 0; r < n; r++) {
+      if (!((r === 0 || a[r] >= a[r - 1]) && (r === n - 1 || a[r] > a[r + 1]))) continue;
+      let lo = a[r];
+      for (let q = Math.max(0, r - LOOK_WIN); q <= Math.min(n - 1, r + LOOK_WIN); q++) lo = Math.min(lo, a[q]);
+      if (a[r] - lo < LOOK_PROM) continue;
+      const pv = (1 - c) * a[r] + c * (LOOK_MIN + (1 - LOOK_MIN) * a[r]);
+      for (let q = Math.max(0, r - rad); q <= Math.min(n - 1, r + rad); q++) {
+        const v = pv * (1 - Math.abs(q - r) / (rad + 1));
+        if (v > out[q]) { out[q] = v; if (q === r) line[r] = 1; }
+      }
+    }
+    return out;
+  }
+  // Palette stops for a theme, with the Tension tint blended in theme-aware: the tint's change from Aurora is added to
+  // the theme's own stops (Aurora itself = the tint exactly; others turn toward warm; Mono gains an orange accent).
+  function lookStops(theme, tint, dark) {
+    const th = LOOK_THEMES[theme] || LOOK_THEMES.aurora, A = LOOK_THEMES.aurora, o = { c0: th.c0.slice(), c1: th.c1, c2: th.c2, c3: th.c3, G: th.G };
+    if (tint && th.hot) {   // already warm / colourless themes: blend toward their own hot stops by how far the tint has moved
+      const w = clamp(Math.hypot(...tint.c2.map((v, i) => v - A.c2[i])) / 1.2, 0, 1);
+      for (const k of ['c1', 'c2', 'c3', 'G']) o[k] = th[k].map((v, i) => v + (th.hot[k][i] - v) * w);
+    } else if (tint && th !== A) for (const k of ['c1', 'c2', 'c3', 'G']) o[k] = th[k].map((v, i) => clamp(v + tint[k][i] - A[k][i], 0, 1));
+    else if (tint) for (const k of ['c1', 'c2', 'c3', 'G']) o[k] = tint[k];
+    const d = dark == null ? 50 : dark;
+    if (d !== 50) o.c0 = o.c0.map((v) => clamp(d > 50 ? v * (1 - (d - 50) / 50) : v + (50 - d) / 50 * 0.16, 0, 1));
+    return o;
+  }
   function barsIn(b, v4) {
     const n = Math.round(+b);
     if (!v4) return [4, 8, 16].includes(n) ? n : isFinite(n) && n >= 1 && n <= MAX_BARS ? n : 4;
@@ -607,7 +670,7 @@
     return l.vol;
   };
 
-  NS.model = { tensionH, tensionName, tensionTint, TENSION_W, LO, HI, SPAN, LPB, SPB, MAX_LAYERS, BPM_MIN, BPM_MAX, SHARP, FLAT, QUALS, QI, SCALE, NATURAL, COLORS,
+  NS.model = { LOOK_DEFAULTS, LOOK_THEMES, lookIn, lookCurve, lookStops, tensionH, tensionName, tensionTint, TENSION_W, LO, HI, SPAN, LPB, SPB, MAX_LAYERS, BPM_MIN, BPM_MAX, SHARP, FLAT, QUALS, QI, SCALE, NATURAL, COLORS,
     GAIN, VOL_MAX, MAX_STROKES, strokes, nextStrokeId, addStroke, strokeEmpty, pruneStrokes, lineAt, hasLine, lineRuns, withLegacyLine, volDb, volLabel, clamp, r2, regionOf, newLayer, nextLayerId, assignIds, defaultSong, segs, serialize, parse, chordMidis, scaleOf, namesOf, chordName, diatonic,
     scaleChords, scaleLabel, SCALE_GROUPS, TUNINGS, tuningOf, gridOf, gridSnap, modeIn,
     secPerBar, secPer16, layerGain,

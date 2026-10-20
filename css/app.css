@@ -51,6 +51,13 @@ a { color: var(--accent); }
   .vh-top { padding: 0 10px; gap: 8px; }
   .vh-tab { padding: 5px 10px; }
 }
+/* Six tabs: keep the top bar inside 400 px phones (tabs scroll sideways only as a last resort, never the page). */
+@media (max-width: 480px) {
+  .vh-top { gap: 6px; padding: 0 8px; min-width: 0; }
+  .vh-tabs { gap: 1px; min-width: 0; flex: 0 1 auto; overflow-x: auto; scrollbar-width: none; }
+  .vh-tabs::-webkit-scrollbar { display: none; }
+  .vh-tab { padding: 5px 7px; font-size: 12.5px; white-space: nowrap; }
+}
 
 /* ---------- stage + experiment layout ---------- */
 .vh-stage { position: relative; overflow: hidden; min-height: 0; }

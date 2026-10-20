@@ -191,6 +191,12 @@ Sounds:
 - `M.active` is the active layer index.
 - `M.el` is the experiment's root element.
 
+- **Sharing + loading** (main.js): `M.shareCode()` returns a Promise of the share-link code (`VH.store.encodeShare(serialize(S, true))`; own sounds
+  add `ext.snd`). View preferences (Map look, scale tint) are never part of it. `M.share()` copies `<url>#melody/s=<code>` (local hosts use the public URL).
+  `M.loadSong(code, { undoable = true, label, toast, failToast, keepHash })` returns Promise<boolean>: it decodes + parses a code, replaces the song (one undo
+  step unless `undoable: false`), resolves missing sounds as links do, and toasts; false (with `failToast`) when unreadable.
+  `M.publish()` opens the Gallery's publish dialog for this song (`VH.gallery.openPublish(M)`), or returns null when the gallery is not loaded.
+
 ## Events: `M.on(evt, cb)` returns `off()`
 
 | event | args | when |
@@ -335,6 +341,17 @@ Vibrato store (B1): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, to, cents, 
 
 - **Tension dial** (`S.tension` 0..1, per section, serialized only when > 0; `M.setTension(v, final)`; Settings > Song slider + the chip left of the zoom buttons): the map highlights `h = md.tensionH(c, T)` instead of the consonance c (T = 0: h = c, pixel-identical to before; else a Gaussian around c = 1 - T blended in; warmer palette via `md.tensionTint`). Applied at draw / fit time to the cached columns (`bands.pixels`, `at.H`, `at.match(m)`, `at.matchPeaks()`). With T > 0 `fitCtx().fits` = h + faded chord / key bonuses + a chord-extension bonus (peaks at Color) >= the bar's 70th percentile, and `best` looks within 3 semitones. The hover readout shows "% match"; snap, select-move, auto-fit and the generator follow. Export and playback are unchanged.
 
+## Map look (view preference)
+
+- `M.bands.look()` -> `{ clarity 0..100, theme, thick, glow, dark, grid 0..100, regions, piano, labels }` (`md.LOOK_DEFAULTS`, validated by `md.lookIn`), stored in
+  VH.store `melody.look`; **not in the song, not shared, not an undo step**. `M.bands.setLook(patch)` (saves, marks the bands dirty, emits `'look'`) and
+  `M.bands.resetLook()`. The scale tint stays `view.showScale` / `melody.showScale` (`M.view.setShowScale(v)`).
+- Draw-time only: band columns keep their `t` curve; `md.lookCurve(t, look)` (pure: thickness power, clarity floor + contrast, local maxima only from 60%,
+  identity at 0) runs after the Tension mapping, then `md.lookStops(theme, tint, dark)` gives the palette (7 themes in `md.LOOK_THEMES`; the Tension tint is added
+  to a theme's stops, Ember / Mono blend toward their own `hot` stops). At the defaults the old pixel path runs unchanged.
+- UI: `M.view.buildLook(host)` builds the controls, used by Settings > Edit > "Map look" and the 🎨 chip pop-over left of the ◐ chip.
+- Grid visibility scales the bar / beat / semitone lines; `regions` off flattens the chord-header tints; `piano` off makes `X0` 0; `labels` hides C / note names.
+
 ## View: `M.view`
 
 - `cv`, `ctx`, `HDR` (chord header height, 40), `VW`, `TH`, `MH` (map height), `BW` (bar width), `CW` (content width), `scrollX`.
@@ -436,6 +453,7 @@ mounted and the hash changes (`onRoute`).
 |---|---|
 | `{ type: 'chord', chord: [root 0..11, quality], from? }` | "place chord" mode: a toast "C maj from Spiral: click a bar to place it (Esc cancels)"; the next bar-header click sets that bar's chord through `M.setChord` (preview + auto-fit, one undo step). Esc or the toast's Cancel aborts. |
 | `{ type: 'sound', soundId, from? }` | the sound goes on the active layer as one undo step ('Instrument from Babel'); toast "Now playing <sound> on <layer name>" with an Undo button. Applied once `VH.sounds.ready` resolved (so saved / sampled sounds are found). |
+| `{ type: 'song', code, title?, author? }` | the Gallery's "Open in Melody": `M.loadSong(code, ...)` as one undo step labelled "Open <title>"; toast "Opened <title> by <author> (Ctrl+Z to go back)"; an unreadable code toasts "That song couldn't be read". `title` is cut at 60 chars, `author` at 30 (default "Anonymous"). |
 
 - `chord` uses exactly the `song.chords` entry format: `[root, quality]`, root 0..11 (C = 0), quality one of
   `'maj' 'min' 'dim' 'aug' 'sus2' 'sus4' '7' 'maj7' 'm7'` (`model.QUALS`). Example: `[9, 'min']` = A minor.

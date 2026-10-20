@@ -81,6 +81,7 @@
       tenChip.classList.toggle('on', T > 0);
       tenChip.style.setProperty('--tens', tint ? 'rgb(' + tint.c2.map((v) => Math.round(v * 255)).join(',') + ')' : '');
       if (document.activeElement !== tenRange) tenRange.value = T;
+      if (V.placeLookChip) V.placeLookChip();
     };
     tenChip.addEventListener('click', () => { tenPop.hidden = !tenPop.hidden; tenChip.setAttribute('aria-expanded', String(!tenPop.hidden)); });
     tenRange.addEventListener('input', () => M.setTension(+tenRange.value));
@@ -91,6 +92,65 @@
     };
     document.addEventListener('pointerdown', tenClose); document.addEventListener('keydown', tenClose);
     if (M.cleanups) M.cleanups.push(() => { document.removeEventListener('pointerdown', tenClose); document.removeEventListener('keydown', tenClose); });
+    // Map look: a 🎨 chip left of the ◐ chip opens the same controls as Settings > Edit > Map look (V.buildLook).
+    const lookChip = ui.h('button', 'mel-tens-chip mel-look-chip', '🎨'); lookChip.type = 'button';
+    lookChip.title = 'Map look: colours, clarity, glow, grid'; lookChip.setAttribute('aria-label', 'Map look'); lookChip.setAttribute('aria-haspopup', 'true'); lookChip.setAttribute('aria-expanded', 'false');
+    const lookPop = ui.h('div', 'mel-tens-pop mel-look-pop'); lookPop.hidden = true; lookPop.setAttribute('role', 'group'); lookPop.setAttribute('aria-label', 'Map look');
+    wrap.append(lookChip, lookPop);
+    const syncs = [];
+    // Builds the Map look controls into host (view preferences: VH.store 'melody.look' + 'melody.showScale'; not in the song).
+    V.buildLook = function (host) {
+      const B = M.bands, L = () => B.look(), set = (p) => B.setLook(p);
+      const THEMES = md.LOOK_THEMES, row = ui.h('div', 'vh-row'), sel = ui.h('select', 'vh-select mel-look-theme');
+      sel.setAttribute('aria-label', 'Colour theme');
+      Object.keys(THEMES).forEach((k) => { const o = ui.h('option', '', THEMES[k].name); o.value = k; sel.append(o); });
+      sel.addEventListener('change', () => set({ theme: sel.value }));
+      row.append(ui.h('span', 'vh-desc', 'Colours'), sel); host.append(row);
+      const pct = (v) => Math.round(v) + '%';
+      const sl = {
+        clarity: ui.slider(host, { label: 'Clarity', min: 0, max: 100, step: 1, value: L().clarity, fmt: pct, onInput: (v) => set({ clarity: v }) }),
+        thick: ui.slider(host, { label: 'Line thickness', min: 0, max: 100, step: 1, value: L().thick, fmt: (v) => (v < 35 ? 'Thin' : v > 65 ? 'Bold' : 'Normal'), onInput: (v) => set({ thick: v }) }),
+        glow: ui.slider(host, { label: 'Glow', min: 0, max: 100, step: 1, value: L().glow, fmt: pct, onInput: (v) => set({ glow: v }) }),
+        dark: ui.slider(host, { label: 'Background darkness', min: 0, max: 100, step: 1, value: L().dark, fmt: pct, onInput: (v) => set({ dark: v }) }),
+        grid: ui.slider(host, { label: 'Grid lines', min: 0, max: 100, step: 1, value: L().grid, fmt: pct, onInput: (v) => set({ grid: v }) })
+      };
+      Object.keys(sl).forEach((k) => { sl[k].input.classList.add('mel-look-' + k); });
+      const tr = ui.h('div', 'vh-row'), tg = {};
+      const tog = (k, label, get, put) => { tg[k] = ui.button(tr, { label, pressed: get(), onClick: () => { put(!get()); } }); tg[k].classList.add('mel-look-t-' + k); tg[k].get = get; };
+      tog('scale', 'Scale tint', () => V.showScale, (v) => V.setShowScale(v));
+      tog('regions', 'Chord tints', () => L().regions, (v) => set({ regions: v }));
+      tog('piano', 'Piano strip', () => L().piano, (v) => set({ piano: v }));
+      tog('labels', 'Note labels', () => L().labels, (v) => set({ labels: v }));
+      host.append(tr);
+      const rr = ui.h('div', 'vh-row'), rb = ui.button(rr, { label: 'Reset look', onClick: () => { B.resetLook(); V.relayout(); } }); rb.classList.add('mel-look-reset'); host.append(rr);
+      host.append(ui.h('div', 'vh-desc', 'A view preference for this device: not saved in the song, not shared, not part of undo.'));
+      const sync = () => {
+        const l = L(); sel.value = l.theme;
+        Object.keys(sl).forEach((k) => { if (document.activeElement !== sl[k].input) sl[k].set(l[k]); });
+        Object.keys(tg).forEach((k) => tg[k].set({ pressed: tg[k].get() }));
+      };
+      syncs.push(sync); sync();
+      return { sync };
+    };
+    V.setShowScale = (v) => { V.showScale = !!v; VH.store.set('melody.showScale', V.showScale); syncs.forEach((f) => f()); if (V.onScale) V.onScale(); M.requestRender(); };
+    M.on('look', () => { syncs.forEach((f) => f()); if (V.X0 !== V.KW()) V.relayout(); });
+    let lookBuilt = false;
+    lookChip.addEventListener('click', () => {
+      if (!lookBuilt) { lookBuilt = true; V.buildLook(lookPop); }
+      lookPop.hidden = !lookPop.hidden; lookChip.setAttribute('aria-expanded', String(!lookPop.hidden));
+    });
+    const lookClose = (e) => {
+      if (lookPop.hidden || (e.type === 'keydown' ? e.key !== 'Escape' : lookPop.contains(e.target) || lookChip.contains(e.target))) return;
+      lookPop.hidden = true; lookChip.setAttribute('aria-expanded', 'false');
+    };
+    document.addEventListener('pointerdown', lookClose); document.addEventListener('keydown', lookClose);
+    if (M.cleanups) M.cleanups.push(() => { document.removeEventListener('pointerdown', lookClose); document.removeEventListener('keydown', lookClose); });
+    function placeLookChip() {
+      const zr = V.VW / 2 - (V.VW <= 600 ? 12 : 16), zw = V.VW <= 600 ? 30 : 26, tw = tenChip.offsetWidth || 70;
+      lookChip.style.top = zoomEl.style.top; lookChip.style.right = 'calc(50% - ' + (zr - zw - 12 - tw) + 'px)';
+      lookPop.style.top = (V.topH + HDR + 6 + 30) + 'px'; lookPop.style.right = 'calc(50% - ' + zr + 'px)';
+    }
+    V.placeLookChip = placeLookChip;
     function syncZoomUi() {
       zIn.disabled = V.span <= Z_MIN + 1e-6; zOut.disabled = !V.zoomed();
       zoomEl.classList.toggle('zoomed', V.zoomed());
@@ -117,6 +177,7 @@
       const zr = V.VW / 2 - (V.VW <= 600 ? 12 : 16), zw = V.VW <= 600 ? 30 : 26;
       tenChip.style.top = zoomEl.style.top; tenChip.style.right = 'calc(50% - ' + (zr - zw - 6) + 'px)';
       tenPop.style.top = (V.topH + HDR + 6 + 30) + 'px'; tenPop.style.right = 'calc(50% - ' + zr + 'px)';
+      placeLookChip();
       V.setScroll(V.scrollX);
       M.emit('layout', V);
     };
@@ -221,7 +282,8 @@
     [1, 3, 6, 8, 10].forEach((k) => { BLACK[k] = 1; });
     const lit = new Map();   // midi -> { cols: [colors], t: last time lit (performance.now) }
     V.hoverMidi = null;
-    V.KW = () => (V.VW <= 600 ? 14 : 22);
+    const lk = () => (M.bands && M.bands.look ? M.bands.look() : md.LOOK_DEFAULTS);   // the Map look (view preference)
+    V.KW = () => (!lk().piano ? 0 : V.VW <= 600 ? 14 : 22);
     // The strip's key / step under y: a semitone in 12-TET, else the nearest step of the tuning grid (md.gridOf).
     V.keyOf = (y) => (y >= HDR && y <= HDR + V.MH ? md.gridSnap(M.song, V.midiOf(y)) : null);
     function soundingNow(now) {
@@ -258,7 +320,7 @@
         if (glow.has(key)) { ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.fillRect(0, y0, KW, y1 - y0); }
         if (V.hoverMidi != null && Math.abs(V.hoverMidi - m) < 1e-6) { ctx.strokeStyle = '#6fa3ff'; ctx.lineWidth = 1.5; ctx.strokeRect(0.75, y0 + 0.75, KW - 1.5, y1 - y0 - 1.5); }
         const h = y1 - y0;
-        if (h >= 8) {
+        if (h >= 8 && lk().labels) {
           ctx.font = (KW < 20 ? 7 : 8) + 'px system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.fillStyle = root ? '#fff' : '#b9c2da';
           ctx.fillText(root ? md.namesOf(S)[S.key] + (Math.floor(Math.round(m) / 12) - 1) : String(G.cls[k]), 2, V.yOf(m) + 3);
           if (h >= 20) { ctx.fillStyle = '#8b94ad'; ctx.font = '7px system-ui, sans-serif'; ctx.fillText(Math.round(G.cents[G.cls[k]]) + '¢', 2, V.yOf(m) + 11); }
@@ -309,7 +371,7 @@
         }
         if (glow.has(m)) { ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.fillRect(0, y0, w, rh); }
         if (V.hoverMidi === m) { ctx.strokeStyle = '#6fa3ff'; ctx.lineWidth = 1.5; ctx.strokeRect(0.75, y0 + 0.75, KW - 1.5, rh - 1.5); }
-        if (m % 12 === 0) {
+        if (!lk().labels) { /* labels off */ } else if (m % 12 === 0) {
           ctx.font = (KW < 20 ? 8 : 9) + 'px system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.fillStyle = '#2a3042';
           ctx.fillText(H.noteName(m), 2, Math.min(y0 + rh, V.yOf(m) + 3.5));
         } else if (rh >= 22 && !black) {   // zoomed in: name every white key
@@ -427,8 +489,9 @@
       for (const R of md.regions(S)) {   // chord header strip: one block per chord region (its width = its duration)
         const x = R.a * u, w = (R.z - R.a) * u, ch = R.chord, b = R.i, inner = R.a % SPB !== 0;
         if (x > xb || x + w < xa) continue;
-        ctx.fillStyle = b === hb ? '#24345a' : b === curReg ? '#22345e' : hv && hv.kind === 'name' && hv.region === b ? '#1a2133' : '#141824'; ctx.fillRect(x, 0, w, HDR);
-        ctx.strokeStyle = b === hb ? '#6fa3ff' : '#262b3a'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, 0.5, w - 1, HDR - 1);
+        const tints = lk().regions;
+        ctx.fillStyle = tints && b === hb ? '#24345a' : tints && b === curReg ? '#22345e' : tints && hv && hv.kind === 'name' && hv.region === b ? '#1a2133' : '#141824'; ctx.fillRect(x, 0, w, HDR);
+        ctx.strokeStyle = tints && b === hb ? '#6fa3ff' : '#262b3a'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, 0.5, w - 1, HDR - 1);
         ctx.save(); ctx.beginPath(); ctx.rect(x + 2, 0, w - 4, HDR); ctx.clip();
         ctx.textAlign = 'center';
         ctx.fillStyle = ch ? '#fff' : '#7a8194'; ctx.font = '600 ' + hdrFont(w) + 'px system-ui, sans-serif';
@@ -473,6 +536,7 @@
           ctx.fillRect(xa, V.yOf(P[k]) - hgt / 2, xb - xa, hgt);
         }
       }
+      ctx.globalAlpha = lk().grid / 100;   // Map look: grid visibility (semitone, bar and beat lines)
       if (G.et12) {
         for (let m = mLo; m <= mHi; m++) {   // pitch grid
           const pc = m % 12, y = Math.round(V.yOf(m)) + 0.5;
@@ -497,6 +561,7 @@
         ctx.strokeStyle = k % SPB === 0 ? 'rgba(255,255,255,0.4)' : isBeat ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.045)';
         ctx.beginPath(); ctx.moveTo(x, HDR); ctx.lineTo(x, HDR + MH); ctx.stroke();
       }
+      ctx.globalAlpha = 1;
       ctx.lineJoin = ctx.lineCap = 'round';
       const nh = V.noteH(), order = S.layers.map((_, i) => i).filter((i) => i !== A).concat(A);
       for (const L of order) {   // layers, active on top; silent (muted / not soloed) layers are faint
@@ -559,7 +624,7 @@
       }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.fillStyle = '#0d1019'; ctx.fillRect(0, 0, X0, HDR);   // corner over the piano strip (header scrolls under it)
-      drawKeys();
+      if (X0 > 0) drawKeys();
       if (V.zoomed()) {   // slim pitch scroll bar (right edge)
         const th = HDR + (HI - V.pTop) / SPAN * MH, tl = Math.max(16, V.span / SPAN * MH), x = VW - 7;
         ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(x, HDR, 6, MH);

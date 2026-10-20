@@ -89,8 +89,3 @@
   .gl-search { max-width: none; }
 }
 
-/* The Gallery is the 6th tab: keep the top bar inside 400 px phones (tabs scroll as a last resort). */
-@media (max-width: 480px) {
-  .vh-tabs { gap: 1px; min-width: 0; flex: 0 1 auto; overflow-x: auto; scrollbar-width: none; }
-  .vh-tab { padding: 5px 7px; font-size: 12.5px; white-space: nowrap; }
-}

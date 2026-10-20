@@ -231,9 +231,14 @@
     sHarm.append(ui.h('div', 'vh-desc', 'Off: bands compare the active layer with the chord. On: the other layers’ notes count too.'));
     const sRow = ui.h('div', 'vh-row'); sHarm.append(sRow);
     const showScaleBtn = ui.button(sRow, { label: 'Show scale', pressed: M.view.showScale, onClick: () => {
-      M.view.showScale = !M.view.showScale; VH.store.set('melody.showScale', M.view.showScale); showScaleBtn.set({ pressed: M.view.showScale }); M.requestRender(); } });
+      M.view.setShowScale(!M.view.showScale); } });
+    M.view.onScale = () => showScaleBtn.set({ pressed: M.view.showScale });
     showScaleBtn.classList.add('mel-showscale');
     sHarm.append(ui.h('div', 'vh-desc', 'A faint tint on the rows and keys of the section’s scale.'));
+
+    // Map look (view preferences; the same controls sit in the 🎨 chip pop-over on the map)
+    const sLook = U.addPanelSection('Map look', 58, { group: 'edit' });
+    M.view.buildLook(sLook);
 
     // Edit
     const sEdit = U.addPanelSection('Undo & clear', 50, { group: 'edit' });

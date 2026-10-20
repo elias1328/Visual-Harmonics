@@ -8,8 +8,8 @@
   const R = 301, RPS = (R - 1) / SPAN;   // rows, rows per semitone
   const rowMidi = (r) => LO + r / (R - 1) * SPAN;
 
-  function pal(t, tint) {   // harmony palette: navy -> violet -> cyan -> white (tint: the Tension dial's warmer stops)
-    const c0 = [0.03, 0.04, 0.16], c1 = tint ? tint.c1 : [0.38, 0.10, 0.55], c2 = tint ? tint.c2 : [0.0, 0.75, 0.86], c3 = tint ? tint.c3 : [1, 1, 1];
+  function pal(t, st) {   // harmony palette: navy -> violet -> cyan -> white (st: stops from md.lookStops; the default = Aurora)
+    const c0 = st && st.c0 ? st.c0 : [0.03, 0.04, 0.16], c1 = st ? st.c1 : [0.38, 0.10, 0.55], c2 = st ? st.c2 : [0.0, 0.75, 0.86], c3 = st ? st.c3 : [1, 1, 1];
     const mix = (a, b, u) => a.map((v, i) => v + (b[i] - v) * u);
     return t < 0.33 ? mix(c0, c1, t / 0.33) : t < 0.66 ? mix(c1, c2, (t - 0.33) / 0.33) : mix(c2, c3, (t - 0.66) / 0.34);
   }
@@ -28,7 +28,12 @@
   NS.Bands = function (M) {
     const cache = new Map(), off = document.createElement('canvas'), cols = [];
     let specs = [], keys = [], bSpec = null, bKey = '', bgFor = '';
-    const api = { R, RPS, rowMidi, off, cols, dirty: true, spectrumOf };
+    // Map look (view preference, VH.store 'melody.look'): applied at draw time to the cached columns, no recompute.
+    let look = md.lookIn(VH.store.get('melody.look', null)), lookK = '';
+    const isDef = () => JSON.stringify(look) === JSON.stringify(md.lookIn(null)) || (look.clarity === 0 && look.thick === 50 && look.glow === 50 && look.dark === 50 && look.theme === 'aurora');
+    const keyOfLook = () => (isDef() ? '' : [look.clarity, look.thick, look.glow, look.dark, look.theme].join(','));
+    lookK = keyOfLook();
+    const api = { look: () => look, lookKey: () => lookK, R, RPS, rowMidi, off, cols, dirty: true, spectrumOf };
 
     // Recompute layer + backing spectra; marks the background dirty when the active layer's map changed.
     api.refresh = function () {
@@ -36,9 +41,16 @@
       specs = S.layers.map((_, L) => spectrumOf(M.soundOf(L)));
       keys = specs.map((s) => JSON.stringify(s));
       bSpec = spectrumOf(M.backingSound()); bKey = JSON.stringify(bSpec);
-      const k = keys[M.active] + '|' + bKey + '|' + (S.tension || 0);
+      const k = keys[M.active] + '|' + bKey + '|' + (S.tension || 0) + '|' + lookK;
       if (k !== bgFor) api.dirty = true;
     };
+    api.setLook = function (patch, save) {
+      look = md.lookIn(Object.assign({}, look, patch)); lookK = keyOfLook();
+      if (save !== false) VH.store.set('melody.look', look);
+      api.dirty = true; M.requestRender(); M.emit('look', look);
+      return look;
+    };
+    api.resetLook = () => { VH.store.set('melody.look', null); return api.setLook(md.lookIn(null), false); };
     api.invalidate = function () { cache.clear(); api.dirty = true; M.requestRender(); };
     function extras(b, L) {
       const S = M.song;
@@ -62,7 +74,7 @@
     };
 
     // Pixels (R x RGBA) for a highlight curve t (0..1 per row): palette + soft glow around its peaks.
-    function paint(t, tint) {
+    function paint(t, tint, gm) {
       const out = new Uint8ClampedArray(R * 4), halo = new Float32Array(R), G = tint ? tint.G : [0.55, 0.95, 1];
       for (let r = 1; r < R - 1; r++) {   // soft glow around the highlighted peaks
         if (t[r] < 0.62 || t[r] < t[r - 1] || t[r] < t[r + 1]) continue;
@@ -70,7 +82,7 @@
         for (let q = Math.max(0, r - 14); q <= Math.min(R - 1, r + 14); q++) halo[q] = Math.max(halo[q], str * Math.exp(-(((q - r) / 5.5) ** 2)));
       }
       for (let r = 0; r < R; r++) {
-        const k = pal(t[r], tint), g = 0.5 * halo[r] * (1 - t[r]);
+        const k = pal(t[r], tint), g = 0.5 * halo[r] * (1 - t[r]) * (gm == null ? 1 : gm);
         out.set([0, 1, 2].map((i) => (k[i] + (G[i] - k[i]) * g) * 255).concat(255), r * 4);
       }
       return out;
@@ -87,7 +99,19 @@
       return H;
     }
     // Pixels of a column for tension T (the calm ones at 0 or without a chord), cached on the column.
+    const glowMul = () => look.glow / 50 * (1 - 0.85 * look.clarity / 100);
+    function lookPx(col, T) {   // the column's pixels under the current look (cached per look key + tension)
+      const k = lookK + '|' + T;
+      if (col.pxL && col.pxL.k === k) return col.pxL.px;
+      const tint = T > 0 && col.chord ? md.tensionTint(T) : null, st = md.lookStops(look.theme, tint, look.dark);
+      let px;
+      if (!col.chord) { px = new Uint8ClampedArray(R * 4); const c = pal(0.07, st); for (let r = 0; r < R; r++) px.set([c[0] * 255, c[1] * 255, c[2] * 255, 255], r * 4); }
+      else px = paint(md.lookCurve(hRows(col, T) || col.t, look), st, glowMul());
+      col.pxL = { k, px };
+      return px;
+    }
     api.pixels = function (col, T) {
+      if (lookK) return lookPx(col, T);
       if (!(T > 0) || !col.chord) return col.px;
       if (col.pxT && col.pxT.T === T) return col.pxT.px;
       const px = paint(hRows(col, T), md.tensionTint(T));
@@ -104,7 +128,7 @@
       let c = cache.get(key);
       if (c) return c;
       if (cache.size > 160) cache.clear();
-      const D = new Float32Array(R), V = new Float32Array(R), px = new Uint8ClampedArray(R * 4);
+      const D = new Float32Array(R), V = new Float32Array(R), px = new Uint8ClampedArray(R * 4); let tt = null;
       if (!ch) {
         V.fill(1);
         const k = pal(0.07);
@@ -120,11 +144,11 @@
         }
         let mn = Infinity, mx = -Infinity;
         for (let r = 0; r < R; r++) { mn = Math.min(mn, V[r]); mx = Math.max(mx, V[r]); }
-        const t = new Float32Array(R);
+        const t = new Float32Array(R); tt = t;
         for (let r = 0; r < R; r++) { V[r] = (V[r] - mn) / ((mx - mn) || 1); t[r] = 1 - V[r] ** 0.75; }
         px.set(paint(t, null));
       }
-      c = { D, V, px, chord: ch };
+      c = { D, V, px, chord: ch, t: ch ? tt : null };
       cache.set(key, c);
       return c;
     };
@@ -141,7 +165,7 @@
       });
       cols.length = S.chords.length;
       octx.putImageData(img, 0, 0);
-      bgFor = keys[A] + '|' + bKey + '|' + T;
+      bgFor = keys[A] + '|' + bKey + '|' + T + '|' + lookK;
       api.dirty = false;
     };
 

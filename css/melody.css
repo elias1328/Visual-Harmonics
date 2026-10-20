@@ -213,6 +213,11 @@
 .mel-tens-ticks { display: flex; justify-content: space-between; font-size: 11px; opacity: 0.75; margin-bottom: 6px; }
 .mel-tens-d { font-size: 11px; opacity: 0.65; }
 @media (max-width: 600px) { .mel-tens-chip { height: 30px; } }
+.mel-look-chip { padding: 0 7px; }
+.mel-look-pop { width: min(280px, calc(100% - 24px)); max-height: calc(100% - 90px); overflow-y: auto; box-sizing: border-box; }
+.mel-look-pop .vh-row { flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0; }
+.mel-look-pop .vh-btn { font-size: 12px; }
+.mel-look-pop .vh-select { max-width: 100%; }
 
 /* arrangement strip (a top lane above the chord header): play mode, section blocks, + */
 .mel-arr { display: flex; align-items: center; gap: 6px; height: 28px; box-sizing: border-box; max-width: 100%; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
