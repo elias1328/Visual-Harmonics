@@ -26,7 +26,9 @@
       }
       if (msg.length) U.toast(msg.join(' · '));
     }
-    M.cleanups.push(ui.dropTarget(M.view.cv, (fs) => ui.importSounds(fs).then((ss) => imported(ss))));
+    // A dropped file may also be a backing track (track.js asks "Backing track or instrument?" via M.askDrop).
+    const asSounds = (fs) => ui.importSounds(fs).then((ss) => imported(ss));
+    M.cleanups.push(ui.dropTarget(M.view.cv, (fs) => (typeof M.askDrop === 'function' ? M.askDrop(fs, asSounds) : asSounds(fs))));
     const layEl = ui.h('div', 'vh-dock-btn mel-layers'), chipBox = ui.h('span', 'ic'), layLb = ui.h('span', 'lb');
     layEl.title = 'Layers: tap to switch, tap the active one for its menu';
     layEl.append(chipBox, layLb); dock.append(layEl);

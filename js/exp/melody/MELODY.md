@@ -11,6 +11,7 @@ Melody is split into classic scripts. They share `window.VH.melody` (no ES modul
 | `tools.js` | pointer tool registry and the built-in `draw` tool → `M.tools` |
 | `ui.js` | dock, Settings sections, chord picker, layer menu, mixer, tone → `M.ui` |
 | `tools-edit.js`, `sound.js`, `export.js`, `generate.js` | **Wave B parts** (B1, B2, B3, B3) |
+| `track.js` | part: backing track (import a beat, tempo / beats / chords / key, synced playback, bands from the audio; see Backing track) |
 | `onboard.js` | part: first-visit demo song, ghost path, 5-step tutorial, Settings > Song > "Start here" (see Onboarding) |
 | `main.js` | builds `M`, history, autosave, share, keys, frame loop; starts the parts; registers the experiment |
 
@@ -308,7 +309,7 @@ Vibrato store (B1): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, to, cents, 
 - `cx = { label, chords, source, song, info }`.
 - Edit the song here (same undo step), change `cx.label`, and put results in `cx.info`.
 
-`M.hooks.voiceOpts(...)` and `M.hooks.pitchMod(...)` are the dispatchers the engine calls. `M.hooks.bandExtras` is a single slot (below).
+`M.hooks.voiceOpts(...)` and `M.hooks.pitchMod(...)` are the dispatchers the engine calls. `M.hooks.bandExtras` and `M.hooks.bandTrack` are single slots (below).
 
 ## Harmony bands
 
@@ -340,6 +341,41 @@ Vibrato store (B1): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, to, cents, 
   pitch prev), smallest move, ties to chord tones.
 
 - **Tension dial** (`S.tension` 0..1, per section, serialized only when > 0; `M.setTension(v, final)`; Settings > Song slider + the chip left of the zoom buttons): the map highlights `h = md.tensionH(c, T)` instead of the consonance c (T = 0: h = c, pixel-identical to before; else a Gaussian around c = 1 - T blended in; warmer palette via `md.tensionTint`). Applied at draw / fit time to the cached columns (`bands.pixels`, `at.H`, `at.match(m)`, `at.matchPeaks()`). With T > 0 `fitCtx().fits` = h + faded chord / key bonuses + a chord-extension bonus (peaks at Color) >= the bar's 70th percentile, and `best` looks within 3 semitones. The hover readout shows "% match"; snap, select-move, auto-fit and the generator follow. Export and playback are unchanged.
+
+## Backing track (track.js)
+
+- **Import**: Settings > Song > Backing track "⤒ Import backing track…" (`.mel-track-file`), or drop one audio file on the graph:
+  ui.js asks `M.askDrop(files, asSounds)` ("Backing track or instrument?"). mp3 / wav / ogg / m4a / flac, <= 30 MB, <= 6 min.
+  The file goes to IndexedDB (`VH.store.putBlob(blobKey, file)`), the heavy analysis to `blobKey + ':an'`; decoded audio
+  + analysis are cached per page session (`mem`), so undo / redo / remount are instant and a reload restores the track.
+- **Song**: `S.track = { blobKey, name, offsetSec (track time of bar 1), bpm (detected, may be fractional; the song's
+  bpm then is too), gainDb, mute, bands: 'track'|'chords', secs: { sectionId: start16 in the track }, analysis: { nBars,
+  key, bars: [[[at beat, root, q]...] per bar], chords (summary), dur, bpm0, offset0 } }` (model.js `trackIn`; serialized
+  for undo + autosave). **Local-only**: `M.shareCode` drops it and turns the backing chords on; `M.share` / `M.publish`
+  show `M.TRACK_NOTE`.
+- **Analysis** (`VH.analyze.track`, pure, `test/track.test.js`): 11 kHz mono; onset envelope (log spectral flux, hop
+  5.8 ms) -> ACF over 60–180 BPM with a weak log-tempo prior, then a comb search refines period + phase; STFT (4096 / 512)
+  -> median-filter HPSS (harmonic part kept) -> per frame <= 32 parabolic peaks + a peak chroma; `grid(frames, bpm,
+  phase)` -> beat chroma, Viterbi chord sequence (templates of `model.QUALS`, change penalty), downbeat (chord novelty),
+  chords per bar (split at the half when the halves differ), Krumhansl key (+ the first chord as tonic hint);
+  `slots(frames, bpm, first, dur)` -> the strongest <= 24 partials per half beat (peaks pooled on a 1/8-semitone grid).
+  `analyze()` is async and yields every ~40 ms with progress (the section shows a bar).
+- **Structure**: import replaces the sections with "Track A", "Track B", … (8 bars each, 16 when the track is longer
+  than 128 bars; at most 16 sections), detected chords + key, song bpm = track bpm, backing chords off, one undo step.
+  Corrections (Tap — 4+ taps, also the phase while playing —, ×2, ÷2, beat offset ±10 ms / ms field) rebuild the track
+  sections while they hold no notes; "Use detected chords" rewrites every track section's chords (`source: 'chord'`, so
+  auto-fit runs). "Remove track" restores the normal behaviour (backing on, bands from chords).
+- **Playback**: a look-ahead scheduler on `engine.segments` starts `AudioBufferSourceNode`s at exact audio times into a
+  gain (mixer row "Track", `gainDb` / `mute`) on `masterBus()`; a source that is off by > 20 ms for 3 frames (or > 60 ms)
+  is replaced (seek, loop wrap, Song-mode pass, tempo change). Song time maps with the song's tempo
+  (`offsetSec + (start16 + t16) * secPer16`), so a tempo moved away from the track's warns ("the sync assumes the detected
+  tempo"). `NS.trackPart.log` = per-frame drift for tests.
+- **Bands**: while `bands === 'track'`, `M.hooks.bandTrack(t16)` returns the half-beat slot `{ key, hz, a }`; bands.js
+  then paints each sixteenth from the layer spectrum against those partials (cached by slot + spectrum), `bandsAt(t16)`
+  uses that column (`.track` true), and a region's column (snap, auto-fit, generators) is the mean over its slots.
+- **Export**: export.js emits `'renderAudio' { ctx, dest, bars: [{ t16, n, k, b }], loops, sec16, tot16 }` for WAV / MP3
+  (checkbox "Backing track"); MIDI leaves the audio out with a note. A waveform strip with beat ticks is drawn under the
+  chord header (`'draw'`).
 
 ## Map look (view preference)
 

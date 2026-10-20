@@ -273,7 +273,363 @@
     return mono;
   }
 
-  const api = { fromSamples, fromBuffer, fft, findLoop, bakeLoopFade, acfPitch, envelope, envStats, sustainRange, centroid, analyzeImport, kitPick, monoOf, MIN_CONF };
+  // ---------- backing tracks (Melody "Import backing track"): tempo, beat phase, harmonic partials, chords, key ----------
+  // Pure + Node-testable. The browser drives track.analyze(...) (async, yields between chunks, reports progress); the
+  // grid-dependent part (track.grid) is cheap, so tempo / phase corrections re-run only that.
+  const TRACK_SR = 11025;
+  // Two cascaded biquad low-passes (Butterworth, 4th order) at fc, then decimation to ~TRACK_SR.
+  function downsample(x, sr, target) {
+    target = target || TRACK_SR;
+    const f = Math.max(1, Math.round(sr / target));
+    if (f === 1) return { y: Float32Array.from(x), sr };
+    const fc = 0.42 * sr / f, w = 2 * Math.PI * fc / sr, cw = Math.cos(w), sw = Math.sin(w);
+    let y = x;
+    for (const Q of [0.5412, 1.3066]) {
+      const al = sw / (2 * Q), a0 = 1 + al, b0 = (1 - cw) / 2 / a0, b1 = (1 - cw) / a0, b2 = b0, a1 = -2 * cw / a0, a2 = (1 - al) / a0;
+      const o = new Float32Array(y.length);
+      let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+      for (let i = 0; i < y.length; i++) { const v = y[i], r = b0 * v + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2; x2 = x1; x1 = v; y2 = y1; y1 = r; o[i] = r; }
+      y = o;
+    }
+    const n = Math.floor(y.length / f), out = new Float32Array(n);
+    for (let i = 0; i < n; i++) out[i] = y[i * f];
+    return { y: out, sr: sr / f };
+  }
+  const hannOf = (N) => Float64Array.from({ length: N }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N));
+  // Onset strength: positive spectral flux of log magnitudes (N 512, hop 64 at ~11 kHz), minus a local mean, rectified.
+  // Frame i is at time (i * hop + N / 2) / sr + ONSET_BIAS (the flux peaks a little before the attack reaches the centre).
+  const ONSET_BIAS = 0.015;
+  function onsetEnv(y, sr, o) {
+    o = o || {};
+    const N = o.N || 512, hop = o.hop || 64, nf = Math.max(0, Math.floor((y.length - N) / hop) + 1), w = hannOf(N);
+    const env = new Float32Array(nf), re = new Float64Array(N), im = new Float64Array(N), K = N / 2;
+    let prev = new Float64Array(K), cur = new Float64Array(K);
+    const from = o.from || 0, to = Math.min(nf, o.to == null ? nf : o.to);
+    if (o.state) prev = o.state;
+    for (let i = from; i < to; i++) {
+      const a = i * hop;
+      for (let k = 0; k < N; k++) { re[k] = y[a + k] * w[k]; im[k] = 0; }
+      fft(re, im);
+      let s = 0;
+      for (let k = 1; k < K; k++) { const m = Math.log(1 + 20 * Math.hypot(re[k], im[k])); cur[k] = m; const d = m - prev[k]; if (d > 0) s += d; }
+      env[i] = i ? s : 0;
+      const t = prev; prev = cur; cur = t;
+    }
+    return { env, fps: sr / hop, t0: N / 2 / sr + ONSET_BIAS, hop, N, state: prev };
+  }
+  function onsetNorm(env, fps) {   // subtract a ~0.25 s moving mean, half-wave rectify, scale to max 1
+    const n = env.length, h = Math.max(1, Math.round(0.125 * fps)), out = new Float32Array(n);
+    let s = 0, c = 0, mx = 0;
+    const pre = new Float64Array(n + 1);
+    for (let i = 0; i < n; i++) pre[i + 1] = pre[i] + env[i];
+    for (let i = 0; i < n; i++) { const a = Math.max(0, i - h), b = Math.min(n, i + h + 1); const v = env[i] - (pre[b] - pre[a]) / (b - a); out[i] = v > 0 ? v : 0; if (out[i] > mx) mx = out[i]; }
+    void s; void c;
+    if (mx > 0) for (let i = 0; i < n; i++) out[i] /= mx;
+    return out;
+  }
+  const lerpAt = (a, x) => { const i = Math.floor(x); if (i < 0 || i >= a.length - 1) return 0; const u = x - i; return a[i] * (1 - u) + a[i + 1] * u; };
+  // Tempo (60..180 BPM) + beat phase from an onset envelope. Autocorrelation with a weak log-tempo prior picks the
+  // period, then a comb search (period +-4 %, every phase) refines period and phase together.
+  // -> { bpm, period (s), phase (s, first beat time >= 0), conf, cands: [{ bpm, s }] }
+  function tempoOf(envRaw, fps, t0, o) {
+    o = o || {};
+    const env = onsetNorm(envRaw, fps), n = env.length, lo = o.lo || 60, hi = o.hi || 180;
+    const lMin = Math.floor(60 * fps / hi) - 1, lMax = Math.ceil(60 * fps / lo) + 1;
+    if (n < lMax * 2) return { bpm: 0, period: 0, phase: 0, conf: 0, cands: [] };
+    const acf = new Float64Array(lMax + 2);
+    let mean = 0; for (let i = 0; i < n; i++) mean += env[i]; mean /= n;
+    for (let l = Math.max(1, lMin - 1); l <= lMax + 1; l++) { let s = 0; for (let i = 0; i + l < n; i++) s += (env[i] - mean) * (env[i + l] - mean); acf[l] = s / (n - l); }
+    const prior = (bpm) => Math.exp(-0.5 * (Math.log2(bpm / 115) / 0.9) ** 2);
+    const cands = [];
+    for (let l = Math.max(2, lMin); l <= lMax; l++) {
+      if (acf[l] <= 0 || acf[l] < acf[l - 1] || acf[l] < acf[l + 1]) continue;
+      const a = acf[l - 1], b = acf[l], c = acf[l + 1], den = a - 2 * b + c, off = den ? Math.max(-0.5, Math.min(0.5, 0.5 * (a - c) / den)) : 0;
+      const bpm = 60 * fps / (l + off);
+      if (bpm < lo - 1 || bpm > hi + 1) continue;
+      cands.push({ bpm, s: b * prior(bpm) });
+    }
+    cands.sort((p, q) => q.s - p.s);
+    if (!cands.length) return { bpm: 0, period: 0, phase: 0, conf: 0, cands };
+    const comb = (P) => {   // P in frames -> best phase (frames) and its mean onset value
+      let best = -1, bp = 0;
+      const steps = Math.ceil(P);
+      for (let p = 0; p < steps; p++) {
+        let s = 0, k = 0;
+        for (let x = p; x < n - 1; x += P) { s += lerpAt(env, x); k++; }
+        s /= k || 1;
+        if (s > best) { best = s; bp = p; }
+      }
+      // sub-frame phase: parabola through the neighbours
+      const sc = (p) => { let s = 0, k = 0; for (let x = p; x < n - 1; x += P) { if (x >= 0) { s += lerpAt(env, x); k++; } } return s / (k || 1); };
+      const a = sc(bp - 0.5), b = sc(bp), c = sc(bp + 0.5), den = a - 2 * b + c, off = den ? Math.max(-0.5, Math.min(0.5, 0.5 * (a - c) / den)) * 0.5 : 0;
+      return { s: best, p: bp + off };
+    };
+    // a few strong candidates (and their x2 / /2 when in range), each refined by the comb
+    const tries = [];
+    cands.slice(0, 3).forEach((c) => [c.bpm, c.bpm * 2, c.bpm / 2].forEach((b) => { if (b >= lo - 1 && b <= hi + 1 && !tries.some((t) => Math.abs(t / b - 1) < 0.03)) tries.push(b); }));
+    let best = null;
+    for (const b0 of tries) {
+      let bb = null;
+      for (let r = -0.04; r <= 0.04 + 1e-9; r += 0.002) {
+        const bpm = b0 * (1 + r), P = 60 * fps / bpm, cb = comb(P);
+        if (!bb || cb.s > bb.s) bb = { bpm, P, s: cb.s, p: cb.p };
+      }
+      for (let r = -0.002; r <= 0.002 + 1e-9; r += 0.0002) {   // fine
+        const bpm = bb.bpm * (1 + r), P = 60 * fps / bpm, cb = comb(P);
+        if (cb.s > bb.s) bb = { bpm, P, s: cb.s, p: cb.p, fine: true };
+      }
+      const sc = bb.s * prior(bb.bpm);
+      if (!best || sc > best.sc) best = Object.assign(bb, { sc });
+    }
+    const period = 60 / best.bpm;
+    let phase = best.p / fps + t0;
+    phase = ((phase % period) + period) % period;
+    return { bpm: best.bpm, period, phase, conf: Math.min(1, best.s / (mean * 3 + 1e-9) / 3), cands: cands.slice(0, 5) };
+  }
+  // Sliding median of 9 (or len) values.
+  const MB = new Float64Array(64);
+  function median(a, len) {   // insertion sort into a scratch buffer (len is small)
+    for (let i = 0; i < len; i++) { const v = a[i]; let j = i - 1; while (j >= 0 && MB[j] > v) { MB[j + 1] = MB[j]; j--; } MB[j + 1] = v; }
+    return MB[len >> 1];
+  }
+  // Harmonic frames: STFT (N 4096, hop 512 at ~11 kHz) up to maxHz, harmonic / percussive separation by median
+  // filtering (time median = harmonic, frequency median = percussive, soft mask H^2 / (H^2 + P^2)), then per frame the
+  // strongest harmonic peaks (parabolic, <= 32) and a peak chroma. Incremental: call with { from, to } chunks.
+  const FR_N = 4096, FR_HOP = 512, FR_PK = 32, MED = 9;
+  function harmonicFrames(y, sr, o) {
+    o = o || {};
+    const N = FR_N, hop = FR_HOP, nf = Math.max(0, Math.floor((y.length - N) / hop) + 1), binHz = sr / N, maxHz = o.maxHz || 4000;
+    const K = Math.min(N / 2 - 1, Math.floor(maxHz / binHz)), w = hannOf(N), half = MED >> 1;
+    const st = o.st || { mags: new Map(), out: 0, pk: new Float32Array(nf * FR_PK * 2), chroma: new Float32Array(nf * 12), nf };
+    const re = new Float64Array(N), im = new Float64Array(N), tmp = new Float64Array(Math.max(MED, 2 * half + 1));
+    const magAt = (i) => {
+      i = Math.max(0, Math.min(nf - 1, i));
+      let m = st.mags.get(i);
+      if (m) return m;
+      const a = i * hop; m = new Float32Array(K);
+      for (let k = 0; k < N; k++) { re[k] = (y[a + k] || 0) * w[k]; im[k] = 0; }
+      fft(re, im);
+      for (let k = 0; k < K; k++) m[k] = Math.hypot(re[k], im[k]) / (N / 4);
+      st.mags.set(i, m);
+      return m;
+    };
+    const emit = (t) => {
+      const R = []; for (let j = -half; j <= half; j++) R.push(magAt(t + j));
+      const X = R[half], H = new Float32Array(K), L = R.length;
+      for (let k = 0; k < K; k++) {   // harmonic: median over time; percussive: median over frequency
+        for (let j = 0; j < L; j++) tmp[j] = R[j][k];
+        const h = median(tmp, L);
+        const a = Math.max(0, k - half), b = Math.min(K, k + half + 1), m = b - a;
+        for (let j = 0; j < m; j++) tmp[j] = X[a + j];
+        const pp = median(tmp, m), h2 = h * h, p2 = pp * pp;
+        H[k] = X[k] * (h2 + p2 > 0 ? h2 / (h2 + p2) : 0);
+      }
+      let mx = 0;
+      for (let k = 0; k < K; k++) if (H[k] > mx) mx = H[k];
+      const pks = [];
+      if (mx > 1e-6) {
+        const floor = mx * 0.004, k0 = Math.max(2, Math.floor(35 / binHz));
+        for (let k = k0; k < K - 1; k++) {
+          const b = H[k];
+          if (b < floor || b < H[k - 1] || b < H[k + 1]) continue;
+          const la = Math.log(H[k - 1] + 1e-12), lb = Math.log(b + 1e-12), lc = Math.log(H[k + 1] + 1e-12), den = la - 2 * lb + lc, off = den ? 0.5 * (la - lc) / den : 0;
+          pks.push([(k + off) * binHz, Math.exp(lb - 0.25 * (la - lc) * off)]);
+        }
+        pks.sort((p, q) => q[1] - p[1]);
+      }
+      const base = t * FR_PK * 2, cb = t * 12;
+      for (let j = 0; j < Math.min(FR_PK, pks.length); j++) { st.pk[base + 2 * j] = pks[j][0]; st.pk[base + 2 * j + 1] = pks[j][1]; }
+      for (const [f, a] of pks) if (f >= 40 && f <= 2100) { const pc = ((Math.round(12 * Math.log2(f / 440)) + 69) % 12 + 12) % 12; st.chroma[cb + pc] += Math.sqrt(a); }
+    };
+    const to = Math.min(nf, o.to == null ? nf : o.to);
+    while (st.out < to) { emit(st.out); st.mags.delete(st.out - half); st.out++; }
+    st.fps = sr / hop; st.t0 = N / 2 / sr; st.done = st.out >= nf;
+    return st;
+  }
+  // Partials of the frames in [t0, t1) seconds: their peaks accumulated (power) on an 1/8-semitone grid, then the
+  // strongest maxima (parabolic, <= max) -> [[hz, amp 0..1], ...] sorted by hz.
+  const HB = 8, HLO = 30, HN = Math.ceil(Math.log2(4400 / HLO) * 12 * HB);
+  function partialsIn(fr, t0, t1, max) {
+    const a = Math.max(0, Math.ceil((t0 - fr.t0) * fr.fps)), b = Math.min(fr.nf - 1, Math.floor((t1 - fr.t0) * fr.fps - 1e-9));
+    const hist = new Float64Array(HN + 2);
+    let cnt = 0;
+    for (let i = a; i <= b; i++) {
+      cnt++;
+      for (let j = 0; j < FR_PK; j++) {
+        const f = fr.pk[(i * FR_PK + j) * 2], am = fr.pk[(i * FR_PK + j) * 2 + 1];
+        if (!(f > HLO)) continue;
+        const x = Math.log2(f / HLO) * 12 * HB, k = Math.floor(x), u = x - k, p = am * am;
+        if (k >= 0 && k < HN) { hist[k] += p * (1 - u); hist[k + 1] += p * u; }
+      }
+    }
+    if (!cnt) return [];
+    const pk = [];
+    for (let k = 1; k <= HN; k++) {
+      const v = hist[k];
+      if (v <= 0 || v < hist[k - 1] || v < hist[k + 1]) continue;
+      const la = Math.sqrt(hist[k - 1]), lb = Math.sqrt(v), lc = Math.sqrt(hist[k + 1]), den = la - 2 * lb + lc, off = den ? Math.max(-0.5, Math.min(0.5, 0.5 * (la - lc) / den)) : 0;
+      pk.push([HLO * 2 ** ((k + off) / 12 / HB), Math.sqrt(v / cnt)]);
+    }
+    pk.sort((p, q) => q[1] - p[1]);
+    const top = pk.slice(0, max || 24), mx = top.length ? top[0][1] : 1;
+    return top.filter((p) => p[1] >= mx * 0.02).map((p) => [p[0], p[1] / mx]).sort((p, q) => p[0] - q[0]);
+  }
+  // ---------- chords + key ----------
+  const CHORD_IV = { maj: [0, 4, 7], min: [0, 3, 7], dim: [0, 3, 6], aug: [0, 4, 8], sus2: [0, 2, 7], sus4: [0, 5, 7], '7': [0, 4, 7, 10], maj7: [0, 4, 7, 11], m7: [0, 3, 7, 10] };
+  const CHORD_PRIOR = { maj: 1, min: 1, '7': 0.93, m7: 0.93, maj7: 0.9, sus2: 0.86, sus4: 0.86, dim: 0.86, aug: 0.8 };
+  const CHORD_Q = Object.keys(CHORD_IV);
+  function chordTemplate(root, q) { const t = new Float64Array(12); CHORD_IV[q].forEach((iv, j) => { t[(root + iv) % 12] = j ? 1 : 1.15; }); return t; }
+  const TEMPL = [];
+  for (const q of CHORD_Q) for (let r = 0; r < 12; r++) { const t = chordTemplate(r, q); let n = 0; for (const v of t) n += v * v; TEMPL.push({ r, q, t, n: Math.sqrt(n), pr: CHORD_PRIOR[q] }); }
+  // Scores of every chord for a chroma vector (cosine x prior) -> [{ r, q, s }] (TEMPL order).
+  function chordScores(c) {
+    let cn = 0; for (let i = 0; i < 12; i++) cn += c[i] * c[i]; cn = Math.sqrt(cn) || 1;
+    return TEMPL.map((T) => { let d = 0; for (let i = 0; i < 12; i++) d += c[i] * T.t[i]; return { r: T.r, q: T.q, s: d / cn / T.n * T.pr }; });
+  }
+  function matchChord(c) { return chordScores(c).reduce((a, b) => (b.s > a.s ? b : a)); }
+  // Smoothed chord sequence over beat chromas (Viterbi: score - change penalty) -> [[root, q] | null per beat].
+  function chordSeq(chromas, penalty) {
+    const n = chromas.length, S = TEMPL.length, pen = penalty == null ? 0.12 : penalty;
+    if (!n) return [];
+    const sc = chromas.map((c) => chordScores(c).map((x) => x.s)), back = [];
+    let v = sc[0].slice();
+    for (let t = 1; t < n; t++) {
+      let bi = 0; for (let j = 1; j < S; j++) if (v[j] > v[bi]) bi = j;
+      const nv = new Array(S), bk = new Int16Array(S);
+      for (let j = 0; j < S; j++) { const stay = v[j], sw = v[bi] - pen; if (stay >= sw) { nv[j] = stay + sc[t][j]; bk[j] = j; } else { nv[j] = sw + sc[t][j]; bk[j] = bi; } }
+      v = nv; back.push(bk);
+    }
+    let j = 0; for (let k = 1; k < S; k++) if (v[k] > v[j]) j = k;
+    const out = new Array(n);
+    for (let t = n - 1; t >= 0; t--) {
+      const e = chromas[t].reduce((s, x) => s + x, 0);
+      out[t] = e > 1e-9 ? [TEMPL[j].r, TEMPL[j].q] : null;
+      if (t) j = back[t - 1][j];
+    }
+    return out;
+  }
+  // Krumhansl-Kessler key profiles; key = the best Pearson correlation with the chroma -> { root, mode, r, all }.
+  const KK_MAJ = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
+  const KK_MIN = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+  function pearson(a, b) {
+    let ma = 0, mb = 0; for (let i = 0; i < 12; i++) { ma += a[i]; mb += b[i]; } ma /= 12; mb /= 12;
+    let s = 0, sa = 0, sb = 0; for (let i = 0; i < 12; i++) { const x = a[i] - ma, y = b[i] - mb; s += x * y; sa += x * x; sb += y * y; }
+    return sa && sb ? s / Math.sqrt(sa * sb) : 0;
+  }
+  // o.tonic: optional [root, q] of the first chord (a song usually starts on its tonic): +0.15 for the matching key (settles relative major / minor).
+  function keyOf(chroma, o) {
+    const all = [];
+    for (let r = 0; r < 12; r++) for (const [mode, P] of [['major', KK_MAJ], ['minor', KK_MIN]]) {
+      const rot = Array.from({ length: 12 }, (_, i) => P[(i - r + 12) % 12]);
+      let s = pearson(chroma, rot);
+      const t = o && o.tonic;
+      if (t && t[0] === r && ((mode === 'major') === (t[1] === 'maj' || t[1] === '7' || t[1] === 'maj7'))) s += 0.15;
+      all.push({ root: r, mode, r: s });
+    }
+    all.sort((p, q) => q.r - p.r);
+    return Object.assign({}, all[0], { all: all.slice(0, 4) });
+  }
+  // ---------- the grid: beats, half-beat partial slots, beat chroma, downbeat, chords per bar, key ----------
+  // fr = harmonicFrames state; bpm + phase (first beat >= 0, s); o = { dur, beatsPerBar (4), downbeat (index 0..3 | null = detect) }
+  function trackGrid(fr, bpm, phase, o) {
+    o = o || {};
+    const T = 60 / bpm, dur = o.dur || (fr.nf / fr.fps + fr.t0), bpb = o.beatsPerBar || 4;
+    const nb = Math.max(1, Math.ceil((dur - phase) / T)), chromas = [];
+    for (let b = 0; b < nb; b++) {
+      const t0 = phase + b * T, t1 = t0 + T, c = new Float64Array(12);
+      const a = Math.max(0, Math.ceil((t0 - fr.t0) * fr.fps)), z = Math.min(fr.nf - 1, Math.floor((t1 - fr.t0) * fr.fps - 1e-9));
+      for (let i = a; i <= z; i++) for (let k = 0; k < 12; k++) c[k] += fr.chroma[i * 12 + k];
+      chromas.push(c);
+    }
+    const seq = chordSeq(chromas);
+    // downbeat: the beat position (mod bpb) where the harmony changes most (chroma novelty + chord changes)
+    let db = o.downbeat;
+    if (db == null) {
+      const sc = new Float64Array(bpb), cos = (p, q) => { let d = 0, a = 0, b = 0; for (let k = 0; k < 12; k++) { d += p[k] * q[k]; a += p[k] * p[k]; b += q[k] * q[k]; } return a && b ? d / Math.sqrt(a * b) : 1; };
+      for (let b = 1; b < nb; b++) {
+        const ch = seq[b] && seq[b - 1] && (seq[b][0] !== seq[b - 1][0] || seq[b][1] !== seq[b - 1][1]) ? 1 : 0;
+        sc[b % bpb] += (1 - cos(chromas[b], chromas[b - 1])) + 0.5 * ch;
+      }
+      db = 0; for (let k = 1; k < bpb; k++) if (sc[k] > sc[db] + 1e-9) db = k;
+    }
+    const first = phase + db * T, barSec = bpb * T;
+    let nBars = Math.max(1, Math.ceil((dur - first - 0.5 * T) / barSec));
+    {   // drop trailing bars that only hold a fade-out (harmonic energy < 12 % of the median bar)
+      const en = []; for (let k = 0; k < nBars; k++) { let s = 0; for (let j = 0; j < bpb; j++) { const c = chromas[db + k * bpb + j]; if (c) for (let q = 0; q < 12; q++) s += c[q]; } en.push(s); }
+      const med = en.slice().sort((p, q) => p - q)[en.length >> 1] || 0;
+      while (nBars > 1 && en[nBars - 1] < 0.12 * med) nBars--;
+    }
+    // chords per bar: the beats' majority; a bar whose halves differ (each half one chord, >= 2 beats) is split
+    const key = (c) => (c ? c[0] + c[1] : '-');
+    const bars = [];
+    for (let k = 0; k < nBars; k++) {
+      const bs = []; for (let j = 0; j < bpb; j++) { const b = db + k * bpb + j; bs.push(b < nb ? seq[b] : null); }
+      const count = (arr) => { const m = new Map(); arr.forEach((c) => { if (c) m.set(key(c), (m.get(key(c)) || { c, n: 0 })); if (c) m.get(key(c)).n++; }); return [...m.values()].sort((p, q) => q.n - p.n); };
+      const all = count(bs), h = bpb >> 1, A = count(bs.slice(0, h)), B = count(bs.slice(h));
+      if (A.length && B.length && A[0].n === h && B[0].n === bpb - h && key(A[0].c) !== key(B[0].c) && h >= 2) bars.push([{ at: 0, c: A[0].c }, { at: h, c: B[0].c }]);
+      else bars.push([{ at: 0, c: all.length ? all[0].c : null }]);
+    }
+    const tot = new Float64Array(12);
+    chromas.forEach((c) => { let s = 0; for (let k = 0; k < 12; k++) s += c[k]; if (s > 0) for (let k = 0; k < 12; k++) tot[k] += c[k] / s; });
+    const tonic = bars.length && bars[0][0].c ? bars[0][0].c : null, K = keyOf(tot, { tonic });
+    return { bpm, period: T, phase, downbeat: db, first, barSec, nBars, beats: nb, seq, bars, key: { root: K.root, mode: K.mode, r: K.r } };
+  }
+  // Partial slots (half a beat each) from the track's first downbeat: slotsOf(fr, bpm, first, dur) -> { t0, dt, n, hz, a }
+  // (Float32Array n * 24 each, hz 0 = unused).
+  function trackSlots(fr, bpm, first, dur, max) {
+    max = max || 24;
+    const dt = 30 / bpm, t0 = first - Math.ceil(first / dt) * dt, n = Math.max(1, Math.ceil((dur - t0) / dt));
+    const hz = new Float32Array(n * max), a = new Float32Array(n * max);
+    for (let s = 0; s < n; s++) {
+      const p = partialsIn(fr, t0 + s * dt, t0 + (s + 1) * dt, max);
+      p.forEach(([f, v], j) => { hz[s * max + j] = f; a[s * max + j] = v; });
+    }
+    return { t0, dt, n, max, hz, a };
+  }
+  // Waveform overview: peak |x| per `res` seconds.
+  function waveOf(x, sr, res) {
+    const h = Math.max(1, Math.round((res || 0.01) * sr)), n = Math.ceil(x.length / h), w = new Float32Array(n);
+    for (let i = 0; i < n; i++) { let m = 0; for (let k = i * h, z = Math.min(x.length, k + h); k < z; k++) { const v = Math.abs(x[k]); if (v > m) m = v; } w[i] = m; }
+    return w;
+  }
+  // Full analysis of a mono track (async; yields every ~40 ms). onProgress(f 0..1, label). -> { dur, sr, tempo, frames, wave, onset }
+  async function analyzeTrack(x, sr, o) {
+    o = o || {};
+    const prog = o.onProgress || (() => {}), pause = o.yield || (() => new Promise((r) => setTimeout(r, 0)));
+    const isAlive = o.isAlive || (() => true);
+    let tl = Date.now();
+    const maybe = async () => { if (Date.now() - tl > 40) { await pause(); tl = Date.now(); if (!isAlive()) throw new Error('cancelled'); } };
+    prog(0, 'Preparing'); await maybe();
+    const { y, sr: r2 } = downsample(x, sr);
+    const dur = x.length / sr;
+    prog(0.05, 'Finding the beat');
+    const N = 512, hop = 64, nf = Math.max(0, Math.floor((y.length - N) / hop) + 1);
+    let on = null, state = null;
+    const env = new Float32Array(nf);
+    for (let i = 0; i < nf; i += 2000) {
+      on = onsetEnv(y, r2, { from: i, to: i + 2000, state });
+      env.set(on.env.subarray(i, Math.min(nf, i + 2000)), i); state = on.state;
+      prog(0.05 + 0.2 * i / Math.max(1, nf), 'Finding the beat'); await maybe();
+    }
+    const tempo = tempoOf(env, r2 / hop, N / 2 / r2 + ONSET_BIAS);
+    prog(0.3, 'Separating harmony from drums'); await maybe();
+    const nh = Math.max(0, Math.floor((y.length - FR_N) / FR_HOP) + 1);
+    let st = null;
+    for (let i = 0; i <= nh; i += 24) {
+      st = harmonicFrames(y, r2, { st, to: Math.min(nh, i + 24) });
+      prog(0.3 + 0.65 * Math.min(1, i / Math.max(1, nh)), 'Reading the harmony'); await maybe();
+    }
+    if (!st.done) st = harmonicFrames(y, r2, { st });
+    const frames = { fps: st.fps, t0: st.t0, nf: st.nf, pk: st.pk, chroma: st.chroma };
+    prog(0.97, 'Chords'); await maybe();
+    const wave = waveOf(x, sr, 0.01);
+    prog(1, 'Done');
+    return { dur, tempo, frames, wave, waveRes: 0.01, onset: { env, fps: r2 / hop, t0: N / 2 / r2 + ONSET_BIAS } };
+  }
+  const track = { SR: TRACK_SR, downsample, onsetEnv, onsetNorm, tempoOf, harmonicFrames, partialsIn, chordScores, matchChord, chordSeq, chordTemplate,
+    keyOf, grid: trackGrid, slots: trackSlots, waveOf, analyze: analyzeTrack, CHORD_IV, CHORD_Q, ONSET_BIAS, FR_PK };
+
+  const api = { fromSamples, fromBuffer, fft, findLoop, bakeLoopFade, acfPitch, envelope, envStats, sustainRange, centroid, analyzeImport, kitPick, monoOf, MIN_CONF, track };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else (root.VH = root.VH || {}).analyze = api;
 })(this);

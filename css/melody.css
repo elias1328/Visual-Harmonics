@@ -284,3 +284,17 @@
 .mel-au-tip { position: absolute; z-index: 3; pointer-events: none; padding: 2px 6px; border-radius: 6px; background: rgba(12,14,20,0.92);
   border: 1px solid var(--line); color: #fff; font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 @media (max-width: 600px) { .mel-au-lbl { left: 16px; } .mel-au-hint { display: none; } }
+
+/* backing track (track.js): Settings > Song > Backing track, the drop question */
+.mel-track { display: flex; flex-direction: column; gap: 6px; }
+.mel-track-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mel-track-prog { height: 6px; border-radius: 3px; background: var(--line, #262b3a); overflow: hidden; }
+.mel-track-prog i { display: block; height: 100%; width: 0; background: #e8a25c; transition: width 120ms linear; }
+.mel-track .vh-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.mel-track-lbl { color: var(--muted, #7a8194); font-size: 12px; }
+.mel-track-ms { width: 5.5em; min-width: 0; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface-2, #1b2030); color: inherit; font: inherit; font-variant-numeric: tabular-nums; }
+.mel-track-bands .vh-btn[aria-pressed="true"] { background: #e8a25c; color: #120c05; border-color: #e8a25c; }
+.mel-track-warn { font-size: 12px; line-height: 1.4; color: #ffcf8a; background: rgba(232, 162, 92, 0.12); border: 1px solid rgba(232, 162, 92, 0.35); border-radius: 8px; padding: 6px 8px; }
+.mel-track-warn .vh-btn { margin-top: 4px; }
+.mel-track-local { font-style: italic; }
+.mel-track-ask .vh-modal-foot { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }

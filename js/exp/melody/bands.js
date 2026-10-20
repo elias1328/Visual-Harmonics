@@ -51,7 +51,7 @@
       return look;
     };
     api.resetLook = () => { VH.store.set('melody.look', null); return api.setLook(md.lookIn(null), false); };
-    api.invalidate = function () { cache.clear(); api.dirty = true; M.requestRender(); };
+    api.invalidate = function () { cache.clear(); tcache.clear(); api.dirty = true; M.requestRender(); };
     function extras(b, L) {
       const S = M.song;
       if (!S.bandsOthers || typeof M.hooks.bandExtras !== 'function') return null;
@@ -118,11 +118,90 @@
       col.pxT = { T, px };
       return px;
     };
-    // Column for bar b scored with layer L's spectrum: { D, V, px, chord } (cached).
+    // Raw dissonance per row -> the column's normalised V (0 = most consonant), highlight curve t and calm pixels.
+    function shape(D) {
+      const V = new Float32Array(R), w = Math.round(7 * RPS), t = new Float32Array(R);
+      // Compare each row with its ±7-semitone neighbourhood so bands read evenly, then normalise.
+      for (let r = 0; r < R; r++) {
+        let lo = Infinity, hi = -Infinity;
+        for (let q = Math.max(0, r - w); q <= Math.min(R - 1, r + w); q++) { lo = Math.min(lo, D[q]); hi = Math.max(hi, D[q]); }
+        V[r] = 0.75 * (D[r] - lo) / ((hi - lo) || 1) + 0.25 * D[r];
+      }
+      let mn = Infinity, mx = -Infinity;
+      for (let r = 0; r < R; r++) { mn = Math.min(mn, V[r]); mx = Math.max(mx, V[r]); }
+      for (let r = 0; r < R; r++) { V[r] = (V[r] - mn) / ((mx - mn) || 1); t[r] = 1 - V[r] ** 0.75; }
+      return { V, t, px: paint(t, null) };
+    }
+
+    // ---------- bands from a backing track (track.js) ----------
+    // M.hooks.bandTrack (one slot, null = off): (t16) -> { key, hz: [...], a: [...] } | null, the track's partials (amp
+    // 0..1) at sixteenth t16 of the shown section. While set, each time column is the layer's spectrum against those
+    // partials (cached per partial set + layer spectrum), and a region's column (snap, fit) is the mean over its slots.
+    const tcache = new Map();
+    const trackHook = () => (typeof M.hooks.bandTrack === 'function' ? M.hooks.bandTrack : null);
+    api.trackOn = () => !!trackHook();
+    function slotAt(t16) {
+      const f = trackHook();
+      if (!f) return null;
+      try { const x = f(t16); return x && x.hz && x.hz.length ? x : null; } catch (err) { console.error('[melody] bandTrack hook failed', err); return null; }
+    }
+    api.slotAt = slotAt;
+    function trackD(PS, hz, a) {   // Plomp-Levelt (Sethares) like H.pairDissonance, pruned where it is ~0
+      const D = new Float32Array(R), n = hz.length;
+      for (let r = 0; r < R; r++) {
+        const f = H.midiToHz(rowMidi(r));
+        let d = 0;
+        for (let p = 0; p < PS.length; p++) {
+          const f1 = f * PS[p][0], a1 = PS[p][1];
+          for (let j = 0; j < n; j++) {
+            const f2 = hz[j], fm = f1 < f2 ? f1 : f2, x = 0.24 / (0.0207 * fm + 18.96) * Math.abs(f2 - f1);
+            if (x > 6) continue;
+            d += (a1 < a[j] ? a1 : a[j]) * (Math.exp(-3.5 * x) - Math.exp(-5.75 * x));
+          }
+        }
+        D[r] = d;
+      }
+      return D;
+    }
+    api.trackColumn = function (slot, L) {
+      if (!specs[L]) api.refresh();
+      if (!specs[L]) L = 0;
+      const key = keys[L] + '|' + slot.key;
+      let c = tcache.get(key);
+      if (c) return c;
+      if (tcache.size > 3000) tcache.clear();
+      const D = trackD(specs[L], slot.hz, slot.a), sh = shape(D);
+      c = { D, V: sh.V, px: sh.px, chord: true, t: sh.t, track: true };
+      tcache.set(key, c);
+      return c;
+    };
+    function trackRegion(b, L) {   // mean dissonance over the region's slots
+      const S = M.song, e = S.chords[b];
+      if (!e) return null;
+      const z = md.regionEnd(S, b), seen = new Map();
+      for (let x = e.at; x < z; x++) { const sl = slotAt(x + 0.5); if (sl) { const q = seen.get(sl.key); if (q) q.n++; else seen.set(sl.key, { sl, n: 1 }); } }
+      if (!seen.size) return null;
+      if (!specs[L]) api.refresh();
+      if (!specs[L]) L = 0;
+      const key = keys[L] + '|R|' + [...seen.keys()].join(',');
+      let c = tcache.get(key);
+      if (c) return c;
+      const D = new Float32Array(R); let N = 0;
+      seen.forEach(({ sl, n }) => { const d = api.trackColumn(sl, L).D; for (let r = 0; r < R; r++) D[r] += d[r] * n; N += n; });
+      for (let r = 0; r < R; r++) D[r] /= N;
+      const sh = shape(D);
+      c = { D, V: sh.V, px: sh.px, chord: md.regionChord(S, b) || true, t: sh.t, track: true };
+      tcache.set(key, c);
+      return c;
+    }
+
+    // Column for bar b scored with layer L's spectrum: { D, V, px, chord } (cached). With a backing track's bands on,
+    // the mean of the track columns over the region.
     api.column = function (b, L) {
       const S = M.song, ch = md.regionChord(S, b);
       if (!specs[L]) api.refresh();
       if (!specs[L]) L = 0;
+      if (trackHook()) { const tc = trackRegion(b, L); if (tc) return tc; }
       const ex = ch ? extras(b, L) : null;
       const tn = md.tuningOf(S), key = keys[L] + '|' + bKey + '|' + (ch ? ch.join('') + (tn !== '12tet' ? '|' + tn + (ch.kp != null ? ch.kp : S.key) : '') : '-') + (ex ? '|' + JSON.stringify(ex) : '');
       let c = cache.get(key);
@@ -159,9 +238,13 @@
       api.refresh();
       off.width = W; off.height = R;
       const octx = off.getContext('2d'), img = octx.createImageData(W, R);
+      const tr = !!trackHook();
       S.chords.forEach((e, i) => {
         const c = cols[i] = api.column(i, A), z = md.regionEnd(S, i), cpx = api.pixels(c, T);
-        for (let x = e.at; x < z; x++) for (let r = 0; r < R; r++) img.data.set(cpx.subarray(r * 4, r * 4 + 4), ((R - 1 - r) * W + x) * 4);
+        for (let x = e.at; x < z; x++) {
+          const sl = tr ? slotAt(x + 0.5) : null, px = sl ? api.pixels(api.trackColumn(sl, A), T) : cpx;
+          for (let r = 0; r < R; r++) img.data.set(px.subarray(r * 4, r * 4 + 4), ((R - 1 - r) * W + x) * 4);
+        }
       });
       cols.length = S.chords.length;
       octx.putImageData(img, 0, 0);
@@ -172,7 +255,7 @@
     // 0..1 consonance of midi m in bar b for layer L (NaN without a chord).
     api.consonance = function (m, b, L) {
       L = L == null ? M.active : L;
-      if (!md.regionChord(M.song, b)) return NaN;
+      if (!md.regionChord(M.song, b) && !(trackHook() && trackRegion(b, L))) return NaN;
       const V = api.column(b, L).V, rf = clamp((m - LO) * RPS, 0, R - 1), r = Math.min(R - 2, Math.floor(rf)), u = rf - r;
       return 1 - (V[r] * (1 - u) + V[r + 1] * u) ** 0.75;
     };
@@ -305,10 +388,14 @@
     api.at = function (t16, L) {
       const S = M.song;
       L = L == null ? M.active : clamp(L | 0, 0, S.layers.length - 1);
-      const b = md.regionAt(S, clamp(t16, 0, md.tot16(S) - 1e-6)), c = api.column(b, L), e = S.chords[b], T = S.tension || 0, Hh = hRows(c, T);
+      const tt = clamp(t16, 0, md.tot16(S) - 1e-6), b = md.regionAt(S, tt), sl = slotAt(Math.floor(tt) + 0.5);
+      const c = sl ? api.trackColumn(sl, L) : api.column(b, L), e = S.chords[b], T = S.tension || 0, Hh = hRows(c, T);
+      const consOf = (m) => { const rf = clamp((m - LO) * RPS, 0, R - 1), r = Math.min(R - 2, Math.floor(rf)), u = rf - r; return 1 - (c.V[r] * (1 - u) + c.V[r + 1] * u) ** 0.75; };
+      const cons = sl ? consOf : (m) => api.consonance(m, b, L);
       return {
+        track: !!sl,
         tension: T, H: Hh || null, Vh: Hh ? Hh.map((v) => 1 - v) : c.V,   // Vh: 0 = most highlighted (V itself at tension 0)
-        match: (m) => api.match(m, b, L),
+        match: (m) => (sl ? (T > 0 ? tm(consOf(m), T) : consOf(m)) : api.match(m, b, L)),
         matchPeaks() {   // highlighted maxima (midi), brightest first: peaks() at tension 0
           if (!Hh) return this.peaks();
           const out = [];
@@ -317,7 +404,7 @@
         },
         bar: md.barAt(S, e.at), region: b, a16: e.at, z16: md.regionEnd(S, b), chord: e.chord, layer: L, rows: R, D: c.D, V: c.V,
         midiOfRow: rowMidi, rowOfMidi: (m) => clamp((m - LO) * RPS, 0, R - 1),
-        consonance: (m) => api.consonance(m, b, L), snap: (m) => api.snap(m, b, L),
+        consonance: cons, snap: (m) => api.snap(m, b, L),
         peaks() {   // midi of local consonance maxima, brightest first
           if (!c.chord) return [];
           const out = [];

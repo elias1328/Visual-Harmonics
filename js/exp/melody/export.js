@@ -639,6 +639,7 @@
 .mx-dlg .mx-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
 .mx-dlg .mx-bar { height: 6px; border-radius: 3px; background: var(--line, #262b3a); overflow: hidden; margin-top: 10px; }
 .mx-dlg .mx-bar i { display: block; height: 100%; width: 0; background: var(--accent, #6fa3ff); transition: width 120ms linear; }
+.mx-dlg .mx-note { font-size: 12px; color: var(--muted, #7a8194); margin: 2px 0 0 2px; }
 .mx-dlg .mx-status { min-height: 18px; font-size: 12px; color: var(--muted, #7a8194); margin-top: 6px; }
 .mx-dlg .mx-go { background: var(--accent, #6fa3ff); color: #0b0d12; font-weight: 600; }
 .mx-dlg .mx-x { background: none; border: 0; color: var(--muted, #7a8194); font-size: 18px; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
@@ -723,7 +724,7 @@
     const ui = VH.ui, md = M.model, H = VH.harmony, NS = VH.melody;
     injectCss();
     let alive = true, dlg = null, busy = false;
-    const st = { fmt: 'midi', midiMode: 'mixed', scope: 'song', loops: 1, pick: null, backing: true, drums: true, region: false, section: false, normalize: true };
+    const st = { fmt: 'midi', midiMode: 'mixed', scope: 'song', loops: 1, pick: null, backing: true, drums: true, track: true, region: false, section: false, normalize: true };
     // The song to export: the whole arrangement (every section and repeat, md.flatten), one pass of the current section
     // ("Current section only"), or that section's loop region ("Export loop region only").
     const songOf = () => {
@@ -817,6 +818,10 @@
       const dOk = hasDrums();
       check(box, 'Backing chords', whole ? S.backing.on : st.backing, !whole, '', (v) => { st.backing = v; }, 'mx-backing');
       check(box, 'Drums' + (dOk ? '' : ' (no pattern)'), whole ? dOk : st.drums && dOk, dOk && !whole, '', (v) => { st.drums = v; }, 'mx-drums');
+      if (S.track) {   // the backing track (track.js): audio only
+        if (audio) check(box, 'Backing track · ' + S.track.name, whole ? !S.track.mute : st.track, !whole, '', (v) => { st.track = v; }, 'mx-track');
+        else box.append(ui.h('div', 'mx-note', 'MIDI leaves out the backing track audio; turn on Backing chords to include its detected chords.'));
+      }
       const r = ui.h('div', 'mx-row'); dlg.append(r);
       const go = ui.button(r, { label: '⤓ Download ' + st.fmt.toUpperCase(), onClick: () => run() });
       go.classList.add('mx-go'); go.disabled = busy;
@@ -831,14 +836,15 @@
     }
     function selection() {
       const S = M.song, whole = st.fmt !== 'midi' && st.scope === 'song';
-      if (whole) return { layers: S.layers.map((_, i) => i).filter((i) => md.layerGain(S, i) > 0), backing: S.backing.on, drums: hasDrums(), whole };
-      return { layers: S.layers.map((_, i) => i).filter((i) => st.pick[i]), backing: st.backing, drums: st.drums && hasDrums(), whole };
+      const tr = !!S.track && st.fmt !== 'midi';
+      if (whole) return { layers: S.layers.map((_, i) => i).filter((i) => md.layerGain(S, i) > 0), backing: S.backing.on, drums: hasDrums(), track: tr && !S.track.mute, whole };
+      return { layers: S.layers.map((_, i) => i).filter((i) => st.pick[i]), backing: st.backing, drums: st.drums && hasDrums(), track: tr && st.track, whole };
     }
 
     async function run() {
       if (busy) return;
       const sel = selection(), name = 'visual-harmonics-' + stamp();
-      if (!sel.layers.length && !sel.backing && !sel.drums) { progress(null, 'Choose at least one part.'); return; }
+      if (!sel.layers.length && !sel.backing && !sel.drums && !sel.track) { progress(null, 'Choose at least one part.'); return; }
       busy = true; render(); progress(0, st.fmt === 'midi' ? 'Writing MIDI…' : 'Preparing instruments…');
       try {
         if (st.fmt === 'midi') {
@@ -848,7 +854,7 @@
             tuned: md.tuningOf(src) !== '12tet',
             backingEvents: NS.sound && NS.sound.regionEvents ? (r) => NS.sound.regionEvents(src, r) : null });
           download(new Blob([bytes], { type: 'audio/midi' }), name + '.mid');
-          progress(1, 'Saved ' + name + '.mid (' + (st.midiMode === 'mixed' ? 'one track' : 'one track per part') + ').');
+          progress(1, 'Saved ' + name + '.mid (' + (st.midiMode === 'mixed' ? 'one track' : 'one track per part') + ').' + (M.song.track ? ' The backing track audio is not in MIDI.' : ''));
         } else {
           const rendered = await renderAudio(sel, st.loops, (f) => progress(f * (st.fmt === 'mp3' ? 0.7 : 0.95), 'Rendering… ' + Math.round(f * 100) + '%'));
           if (!alive) return;
@@ -976,6 +982,13 @@
               }
             }
           }
+        }
+        // parts that render their own audio (track.js: the backing track) get the context, the master input and the
+        // song's bars as { t16, n, k (section), b (bar in the section) }
+        if (sel.track) {
+          const bars = S.flat ? S.flat.bars.map((x) => ({ t16: x.a, n: x.n, k: x.sec, b: x.b }))
+            : md.barsOf(S).map((x, i) => ({ t16: x.a, n: x.n, k: M.song.cur, b: (st.region && md.regionOf(M.song) ? md.regionOf(M.song)[0] : 0) + i }));
+          M.emit('renderAudio', { ctx, dest: master, bars, loops, sec16, tot16: tot, song: S });
         }
         // layers: the engine's playback rules (glide = one legato voice per run, hit = re-strike per semitone)
         for (let r = 0; r < loops; r++) {

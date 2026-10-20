@@ -27,6 +27,7 @@
       // Engine hooks (see MELODY.md, Hooks). voiceOpts / pitchMod run every registered fn (M.addHook); bandExtras is one slot.
       hooks: {
         bandExtras: null,
+        bandTrack: null,   // track.js: (t16) -> the backing track's partials there (bands from the audio), null = off
         voiceOpts(L, kind, midi, o) {
           for (const f of hookFns.voiceOpts) {
             try { const r = f(L, kind, o.midi, o); if (r && typeof r === 'object') o = r; } catch (err) { console.error('[melody] voiceOpts hook', err); }
@@ -133,6 +134,7 @@
     };
     // Own sounds whose audio can't travel in a link (synths from the editor can: VH.sounds.portable).
     M.unsharedSounds = (song) => M.ownSounds(song).filter((x) => !(VH.sounds.portable && VH.sounds.portable(x)));
+    M.TRACK_NOTE = 'The backing track stays on your device; listeners hear the detected chords instead.';
     M.SHARE_NOTE = 'Imported and Babel sounds aren’t included in the link; listeners will hear the closest built-in instrument. Synths you made are included.';
 
     // ---------- edits, undo, persistence ----------
@@ -501,6 +503,8 @@
     // receiver can pick the closest built-in (checkMissing).
     M.shareCode = function () {
       const o = serialize(S, true), own = M.ownSounds(S);
+      // A backing track is local-only: the link carries the detected chords, played by the backing instead.
+      if (o.track) { delete o.track; o.backing = Object.assign({}, o.backing, { on: true }); }
       if (own.length) {
         const r3 = (v) => Math.round(v * 1000) / 1000;
         o.ext = Object.assign({}, o.ext, { snd: Object.fromEntries(own.map((x) => {
@@ -514,7 +518,11 @@
       return VH.store.encodeShare(o);
     };
     const publishAct = () => (VH.gallery && VH.gallery.openPublish ? { action: { label: 'Publish to gallery', run: () => M.publish() } } : undefined);
-    M.publish = () => (VH.gallery && VH.gallery.openPublish ? VH.gallery.openPublish(M) : null);
+    M.publish = () => {
+      if (!(VH.gallery && VH.gallery.openPublish)) return null;
+      if (S.track) M.ui.toast(M.TRACK_NOTE);
+      return VH.gallery.openPublish(M);
+    };
     M.share = async function () {
       M.ui.hideShareBox();
       if (VH.track) VH.track('share-link');
@@ -529,8 +537,9 @@
       let ok = false;
       try { if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(url); ok = true; } } catch (_) { ok = false; }
       if (!alive) return;
-      const note = unshared.length ? ' · ' + M.SHARE_NOTE : '';
-      M.ui.showShareNote(unshared.length ? M.SHARE_NOTE : '');
+      const notes = (S.track ? [M.TRACK_NOTE] : []).concat(unshared.length ? [M.SHARE_NOTE] : []);
+      const note = notes.length ? ' · ' + notes.join(' ') : '';
+      M.ui.showShareNote(notes.join(' '));
       if (ok) { M.ui.toast('Link copied' + note, publishAct()); return; }
       M.ui.showShareBox(url);
       M.toast('Copy the link below' + note);

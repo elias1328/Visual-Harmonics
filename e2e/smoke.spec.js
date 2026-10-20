@@ -604,3 +604,50 @@ test.describe('9 audio unlock', () => {
     });
   });
 });
+
+test.describe('12 backing track', () => {
+  test('import a 90 BPM beat: tempo, chords, key, WAV export with the track, share note', async ({ page }) => {
+    test.setTimeout(120_000);
+    const G = require('../test/beatgen.js');
+    const beat = G.makeBeat({ bpm: 90, bars: 8 });
+    await open(page);
+    await openPanel(page, 'Song');
+    const btn = page.locator('.mel-track-import');
+    await btn.scrollIntoViewIfNeeded();
+    const chooser = page.waitForEvent('filechooser');
+    await btn.click();
+    await (await chooser).setFiles({ name: 'beat90.wav', mimeType: 'audio/wav', buffer: Buffer.from(G.wavBytes(beat.x, beat.sr)) });
+    if (!(await audioOr(page, 'backing track decode + analysis'))) {
+      await expect(page.locator('.mel-toast')).toContainText(/Could not use that file/);
+      return;
+    }
+    await expect.poll(() => page.evaluate(() => !!(VH.melody.trackPart && VH.melody.trackPart.ready() && VH.melody.ctx.song.track)), { timeout: 60_000 }).toBe(true);
+    const S = await song(page);
+    expect(Math.abs(S.bpm - 90)).toBeLessThanOrEqual(1);
+    expect(Math.abs(S.track.offsetSec - beat.downbeats[0])).toBeLessThan(0.03);
+    expect(S.backing.on).toBe(false);
+    expect(S.sections[0].name).toBe('Track A');
+    const bars = await page.evaluate(() => { const M = VH.melody.ctx; return M.model.barChords(M.song); });
+    const ok = bars.filter((c, i) => c && c[0] === beat.chords[i][0] && c[1] === beat.chords[i][1]).length;
+    expect(ok).toBeGreaterThanOrEqual(6);
+    expect([S.key, S.mode]).toEqual([0, 'major']);
+    // the harmony map follows the audio
+    expect(await page.evaluate(() => VH.melody.ctx.bandsAt(1).track)).toBe(true);
+    // WAV: no notes drawn, so everything audible is the track
+    await openPanel(page, 'Export');
+    await page.getByRole('button', { name: /Export…/ }).click();
+    await page.locator('.mx-fmt button', { hasText: 'MIDI' }).click();
+    await expect(page.locator('.mx-dlg .mx-note')).toContainText('backing track');
+    await page.locator('.mx-fmt button', { hasText: 'WAV' }).click();
+    await expect(page.locator('.mx-track')).toHaveCount(1);
+    const dl = page.waitForEvent('download', { timeout: 60_000 });
+    await page.locator('.mx-go').click();
+    const w = parseWav(fs.readFileSync(await (await dl).path()));
+    expect(w.seconds).toBeGreaterThanOrEqual(8 * 4 * 60 / 90);
+    expect(w.rms).toBeGreaterThan(0.03);
+    // share: the track stays local, the note says so
+    const sh = await page.evaluate(async () => { const M = VH.melody.ctx; await M.share(); const o = await VH.store.decodeShare(await M.shareCode()); return { track: !!o.track, backing: o.backing.on }; });
+    expect(sh).toEqual({ track: false, backing: true });
+    await expect(page.locator('.mel-sharebox .mel-share-note')).toContainText('stays on your device');
+  });
+});

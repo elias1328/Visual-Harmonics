@@ -387,10 +387,25 @@
     if (S.tension > 0) o.tension = r3(S.tension);   // Tension dial (0..1) of the shown section; only when set
     if (tuningOf(S) !== '12tet') o.tuning = tuningOf(S);
     if (S.auto && S.auto.length) o.auto = autoOut(S.auto);   // automation lanes of the shown section; only when set
+    if (S.track) o.track = plain(S.track);   // backing track (track.js): local-only, M.shareCode drops it
     o.sections = (S.sections || []).map((x, k) => (k === S.cur ? secMeta(x) : Object.assign(secMeta(x), serContent(x.data, S.layers))));
     o.cur = S.cur | 0;
     if (full) Object.assign(o, { grid: S.grid, loop: S.loop, snap: S.snap });
     return o;
+  }
+
+  // Backing track (track.js): { blobKey, name, offsetSec, bpm, gainDb, mute, bands: 'track'|'chords', secs: { sectionId: start16 }, analysis }.
+  function trackIn(t) {
+    if (!t || typeof t !== 'object' || typeof t.blobKey !== 'string' || !t.blobKey) return null;
+    const x = plain(t);
+    x.name = typeof t.name === 'string' ? t.name.slice(0, 120) : 'Backing track';
+    x.offsetSec = num(t.offsetSec, -60, 600, 0);
+    x.bpm = num(t.bpm, 20, 400, 120);
+    x.gainDb = num(t.gainDb, -60, 6, -3);
+    x.mute = !!t.mute;
+    x.bands = t.bands === 'chords' ? 'chords' : 'track';
+    x.secs = t.secs && typeof t.secs === 'object' ? plain(t.secs) : {};
+    return x;
   }
 
   // Loop region: [firstBar, endBar) in whole bars (0 <= a < b <= bars), or null. Playback loops only those bars.
@@ -417,7 +432,7 @@
     const v4 = o.v >= 4, bars = barsIn(o.bars, v4), ts = TS[o.ts] ? o.ts : '4/4', v1 = !(o.v >= 2);
     const bpm = typeof o.bpm === 'number' ? o.bpm : typeof o.tempo === 'number' && o.tempo > 0 ? 240 / o.tempo : 120;
     const S = { key: num(o.key, 0, 11, 0) | 0, mode: modeIn(o.mode, 'major'), tuning: HM.tuningById(o.tuning).id, bars, ts,
-      bpm: Math.round(num(bpm, BPM_MIN, BPM_MAX, 120)), grid: o.grid === 16 ? 16 : 8, loop: o.loop !== false, snap: !!o.snap,
+      bpm: o.track ? Math.round(num(bpm, BPM_MIN, BPM_MAX, 120) * 100) / 100 : Math.round(num(bpm, BPM_MIN, BPM_MAX, 120)),   // a backing track keeps its detected (fractional) tempo grid: o.grid === 16 ? 16 : 8, loop: o.loop !== false, snap: !!o.snap,
       master: num(o.master, 0, VOL_MAX, 1), bandsOthers: !!o.bandsOthers, fx: plain(o.fx), drums: plain(o.drums), ext: plain(o.ext) };
     S.chords = parseChords(o.chords, v4, bars, ts);
     const src = (v1 ? o.layers.slice(0, 3) : o.layers.slice(0, MAX_LAYERS)).filter((l) => l && typeof l === 'object');
@@ -433,6 +448,7 @@
     S.tension = tensionOf(o.tension);
     S.migratedIds = assignIds(S.layers);   // > 0 for songs saved before layer ids (runtime info, not serialized)
     S.auto = autoIn(o.auto, S.layers);     // automation lanes of the shown section
+    S.track = trackIn(o.track);            // backing track reference (local-only; the audio is in VH.store blobs)
     S.migratedLines = migratedLines;       // > 0 for songs saved before strokes (v < 3)
     // vibrato (B1, ext.edit.vib[L]) was keyed by line sample of the one line: { l: ranges } -> { s: { s1: ranges } }
     const vib = S.ext.edit && S.ext.edit.vib;
