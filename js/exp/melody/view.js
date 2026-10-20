@@ -145,12 +145,24 @@
     };
     document.addEventListener('pointerdown', lookClose); document.addEventListener('keydown', lookClose);
     if (M.cleanups) M.cleanups.push(() => { document.removeEventListener('pointerdown', lookClose); document.removeEventListener('keydown', lookClose); });
-    function placeLookChip() {
-      const zr = V.VW / 2 - (V.VW <= 600 ? 12 : 16), zw = V.VW <= 600 ? 30 : 26, tw = tenChip.offsetWidth || 70;
-      lookChip.style.top = zoomEl.style.top; lookChip.style.right = 'calc(50% - ' + (zr - zw - 12 - tw) + 'px)';
-      lookPop.style.top = (V.topH + HDR + 6 + 30) + 'px'; lookPop.style.right = 'calc(50% - ' + zr + 'px)';
+    // Zoom, tension and look chips sit at the right end of the arrangement strip (above the chords), never on the map.
+    // Without a strip above the canvas they fall back to the map's top-right corner.
+    function placeBar() {
+      const small = V.VW <= 600, inBar = V.topH > 0, zw = small && !inBar ? 30 : 26, m = inBar ? 2 : (small ? 12 : 16);
+      const top = inBar ? Math.max(0, Math.round((V.topH - LANE_GAP - zw) / 2)) : V.topH + HDR + 6;
+      zoomEl.classList.toggle('inbar', inBar); wrap.classList.toggle('mel-chips-inbar', inBar);
+      const zoomW = inBar ? 2 * zw + 4 : zw, tw = tenChip.offsetWidth || 70, lw = lookChip.offsetWidth || 34;
+      const R = (px) => 'calc(50% - ' + (V.VW / 2 - px) + 'px)';
+      zoomEl.style.top = tenChip.style.top = lookChip.style.top = top + 'px';
+      zoomEl.style.right = R(m);
+      tenChip.style.right = R(m + zoomW + 6);
+      lookChip.style.right = R(m + zoomW + 6 + tw + 6);
+      tenPop.style.top = lookPop.style.top = (inBar ? V.topH + 2 : V.topH + HDR + 36) + 'px';
+      tenPop.style.right = lookPop.style.right = R(m);
+      wrap.style.setProperty('--mel-bar-reserve', inBar ? (m + zoomW + 6 + tw + 6 + lw + 8) + 'px' : '0px');
     }
-    V.placeLookChip = placeLookChip;
+    const placeLookChip = placeBar;
+    V.placeLookChip = placeBar;
     function syncZoomUi() {
       zIn.disabled = V.span <= Z_MIN + 1e-6; zOut.disabled = !V.zoomed();
       zoomEl.classList.toggle('zoomed', V.zoomed());
@@ -172,12 +184,7 @@
       if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
       cv.style.width = V.VW + 'px'; cv.style.height = V.TH + 'px'; scroller.style.width = V.VW + 'px';
       scroller.max = Math.max(0, Math.round(V.CW - V.GW));
-      zoomEl.style.top = (V.topH + HDR + 6) + 'px';
-      zoomEl.style.right = 'calc(50% - ' + (V.VW / 2 - (V.VW <= 600 ? 12 : 16)) + 'px)';
-      const zr = V.VW / 2 - (V.VW <= 600 ? 12 : 16), zw = V.VW <= 600 ? 30 : 26;
-      tenChip.style.top = zoomEl.style.top; tenChip.style.right = 'calc(50% - ' + (zr - zw - 6) + 'px)';
-      tenPop.style.top = (V.topH + HDR + 6 + 30) + 'px'; tenPop.style.right = 'calc(50% - ' + zr + 'px)';
-      placeLookChip();
+      placeBar();
       V.setScroll(V.scrollX);
       M.emit('layout', V);
     };

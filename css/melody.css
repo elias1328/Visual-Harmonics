@@ -220,7 +220,11 @@
 .mel-look-pop .vh-select { max-width: 100%; }
 
 /* arrangement strip (a top lane above the chord header): play mode, section blocks, + */
-.mel-arr { display: flex; align-items: center; gap: 6px; height: 28px; box-sizing: border-box; max-width: 100%; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+.mel-arr { display: flex; align-items: center; gap: 6px; height: 28px; box-sizing: border-box; max-width: 100%; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
+  padding-right: var(--mel-bar-reserve, 0px); }   /* room for the zoom / tension / look chips at the strip's right end */
+.mel-zoom.inbar { flex-direction: row; }
+.mel-chips-inbar .mel-zoom-b, .mel-chips-inbar .mel-tens-chip { height: 26px; }
+.mel-chips-inbar .mel-zoom-b { width: 26px; }
 .mel-arr-mode { flex: none; display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .mel-arr-m { border: 0; background: transparent; color: var(--muted); font: 11px system-ui, sans-serif; padding: 4px 8px; cursor: pointer; }
 .mel-arr-m.on { background: rgba(111, 163, 255, 0.25); color: #fff; }
