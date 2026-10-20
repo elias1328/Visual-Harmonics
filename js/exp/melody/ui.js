@@ -188,6 +188,7 @@
     const sShare = U.addPanelSection('Share', 10, { group: 'export' });
     const shRow = ui.h('div', 'vh-row'); sShare.append(shRow);
     ui.button(shRow, { label: '⤴ Copy share link', onClick: () => M.share() }).title = 'Copy a link to this song (also in the dock)';
+    if (VH.gallery && VH.gallery.openPublish) ui.button(shRow, { label: '☁ Publish to gallery', onClick: () => M.publish() }).classList.add('mel-publish');
     sShare.append(ui.h('div', 'vh-desc', 'The link holds the whole song, so anyone who opens it hears what you hear.'));
     // Songs with the user's own sounds: their audio can't travel in a link (main.js M.SHARE_NOTE).
     const shNote = ui.h('div', 'vh-desc mel-share-note'); sShare.append(shNote);
@@ -253,7 +254,7 @@
     const pop = ui.h('div', 'mel-pop'); pop.hidden = true; pop.setAttribute('role', 'dialog');
     const lmenu = ui.h('div', 'mel-float mel-layermenu'); lmenu.hidden = true; lmenu.setAttribute('role', 'dialog');
     const mix = U.addPanelSection('Mixer', 10, { group: 'mix' }); mix.classList.add('mel-mixer');
-    const shareBox = ui.h('div', 'mel-sharebox', '<span>Copy this link:</span><input type="text" readonly aria-label="Share link"><button type="button" class="vh-btn">Done</button><div class="mel-share-note" hidden></div>');
+    const shareBox = ui.h('div', 'mel-sharebox', '<span>Copy this link:</span><input type="text" readonly aria-label="Share link"><button type="button" class="vh-btn mel-sb-pub" hidden>Publish to gallery</button><button type="button" class="vh-btn mel-sb-done">Done</button><div class="mel-share-note" hidden></div>');
     shareBox.hidden = true;
     const toastEl = ui.h('div', 'mel-toast', '<span class="t"></span><button type="button" class="a"></button>'); toastEl.setAttribute('role', 'status');
     const toastTxt = toastEl.firstChild, toastAct = toastEl.lastChild;
@@ -281,7 +282,10 @@
       if (!o.sticky) toastT = later(() => { toastEl.classList.remove('on', 'act'); toastRun = null; }, a ? 6000 : 2600);
     };
     U.toastEl = toastEl;
-    shareBox.querySelector('button').addEventListener('click', () => { shareBox.hidden = true; });
+    shareBox.querySelector('.mel-sb-done').addEventListener('click', () => { shareBox.hidden = true; });
+    const sbPub = shareBox.querySelector('.mel-sb-pub');
+    sbPub.hidden = !(VH.gallery && VH.gallery.openPublish);
+    sbPub.addEventListener('click', () => { shareBox.hidden = true; M.publish(); });
     shareBox.querySelector('input').addEventListener('focus', (e) => e.target.select());
     U.showShareBox = (url) => { const inp = shareBox.querySelector('input'); inp.value = url; shareBox.hidden = false; inp.focus(); inp.select(); };
     U.hideShareBox = () => { shareBox.hidden = true; };

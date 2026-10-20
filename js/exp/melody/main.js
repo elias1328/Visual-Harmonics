@@ -474,6 +474,10 @@
           const c = it.chord;
           if (Array.isArray(c) && md.QI[c[1]] != null && isFinite(c[0])) M.startPlacing([((c[0] | 0) % 12 + 12) % 12, c[1]], from);
           else console.warn('[melody] inbox: bad chord', c);
+        } else if (it.type === 'song' && typeof it.code === 'string') {   // the Gallery's "Open in Melody"
+          const title = String(it.title || 'a song').slice(0, 60), by = String(it.author || 'Anonymous').slice(0, 30);
+          M.loadSong(it.code, { label: 'Open “' + title + '”', toast: 'Opened “' + title + '” by ' + by + ' (Ctrl+Z to go back)',
+            failToast: 'That song couldn’t be read' });
         } else if (it.type === 'sound' && typeof it.soundId === 'string') {
           const id = it.soundId;
           VH.sounds.ready.then(() => {
@@ -492,11 +496,10 @@
     M.consumeInbox = consumeInbox;
 
     // ---------- share ----------
-    M.share = async function () {
-      M.ui.hideShareBox();
-      if (VH.track) VH.track('share-link');
-      // Imported audio can't travel in a link: carry each own sound's name, play type and spectrum (ext.snd) so the
-      // receiver can pick the closest built-in (checkMissing).
+    // The song as share-link code (the text after '#melody/s='); the gallery publishes the same code.
+    // Imported audio can't travel in a link: carry each own sound's name, play type and spectrum (ext.snd) so the
+    // receiver can pick the closest built-in (checkMissing).
+    M.shareCode = function () {
       const o = serialize(S, true), own = M.ownSounds(S);
       if (own.length) {
         const r3 = (v) => Math.round(v * 1000) / 1000;
@@ -508,8 +511,15 @@
           return [x.id, e];
         })) });
       }
+      return VH.store.encodeShare(o);
+    };
+    const publishAct = () => (VH.gallery && VH.gallery.openPublish ? { action: { label: 'Publish to gallery', run: () => M.publish() } } : undefined);
+    M.publish = () => (VH.gallery && VH.gallery.openPublish ? VH.gallery.openPublish(M) : null);
+    M.share = async function () {
+      M.ui.hideShareBox();
+      if (VH.track) VH.track('share-link');
       const unshared = M.unsharedSounds(S);
-      const code = await VH.store.encodeShare(o);
+      const code = await M.shareCode();
       if (!alive) return;
       // Links made while running locally (localhost / file://) point at the public site so they work for anyone.
       const local = location.protocol === 'file:' || /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
@@ -521,23 +531,33 @@
       if (!alive) return;
       const note = unshared.length ? ' · ' + M.SHARE_NOTE : '';
       M.ui.showShareNote(unshared.length ? M.SHARE_NOTE : '');
-      if (ok) { M.toast('Link copied' + note); return; }
+      if (ok) { M.ui.toast('Link copied' + note, publishAct()); return; }
       M.ui.showShareBox(url);
       M.toast('Copy the link below' + note);
     };
-    function loadShare(sub) {
-      const m = /^s=(.+)$/.exec(sub || '');
-      if (!m) return;
-      VH.store.decodeShare(m[1]).then((o) => {
-        if (!alive) return;
-        const ns = o && parse(o);
-        if (!ns) { M.toast('That share link couldn’t be read'); return; }
+    // Load a song from share-link code (a link, the gallery). opts = { undoable (default true: one undo step, Ctrl+Z
+    // brings the previous song back), label, toast, keepHash }. Sounds are resolved as for links (checkMissing: synths
+    // in the code are installed, missing ones fall back to the closest built-in). Resolves true when loaded.
+    M.loadSong = function (code, opts) {
+      const o = opts || {};
+      return VH.store.decodeShare(code).then((obj) => {
+        if (!alive) return false;
+        const ns = obj && parse(obj);
+        if (!ns) { M.toast(o.failToast || 'That share link couldn’t be read'); return false; }
+        if (M.engine.playing) M.engine.stop();
         S = ns; active = 0;
         M.engine.stopAll();
-        if (!M.commit('Load shared song', true)) afterChange();
-        M.toast('Loaded a shared song · Ctrl+Z goes back');
+        if (o.undoable === false) { lastSnap = snap(); afterChange(); }
+        else if (!M.commit(o.label || 'Load shared song', { keepHash: !!o.keepHash })) afterChange();
+        M.toast(o.toast || 'Loaded a shared song · Ctrl+Z goes back');
         checkMissing();
+        M.emit('layer', active);
+        return true;
       });
+    };
+    function loadShare(sub) {
+      const m = /^s=(.+)$/.exec(sub || '');
+      if (m) M.loadSong(m[1], { keepHash: true });
     }
 
     // ---------- build ----------
