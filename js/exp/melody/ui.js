@@ -175,7 +175,7 @@
 
     // Edit tab: grid + snap
     const sGrid = U.addPanelSection('Grid & snap', 10, { group: 'edit' });
-    const syncGrid = seg(sGrid, 'Grid', [8, 16], (v) => '1/' + v, (g) => { M.song.grid = g; U.sync(); M.save(); });
+    const syncGrid = seg(sGrid, 'Grid', md.GRIDS, (v) => md.GRID_LABEL[v], (g) => { M.song.grid = g; U.sync(); M.save(); });
     const snRow = ui.h('div', 'vh-row mel-seg'); snRow.append(ui.h('span', 'mel-lbl', 'Snap')); sGrid.append(snRow);
     const snapPanelBtn = ui.button(snRow, { label: 'Snap to bright bands', title: 'Snap to bright bands (S)', pressed: M.song.snap, onClick: () => U.toggleSnap(true) });
     snapPanelBtn.title = 'Pitches snap to the brightest band nearby (key: S)';
@@ -283,7 +283,7 @@
       toastAct.textContent = a ? a.label : ''; toastAct.hidden = !a;
       // just under the chord header strip, so chord names stay visible and clickable (e.g. while placing a chord)
       const er = el.getBoundingClientRect(), cr = M.view.cv.getBoundingClientRect(), k = cr.height / M.view.TH || 1;
-      if (cr.height > 0) toastEl.style.top = Math.round(Math.max(8, cr.top - er.top + M.view.HDR * k + 8)) + 'px';
+      if (cr.height > 0) toastEl.style.top = Math.round(Math.max(8, cr.top - er.top + M.view.Y0 * k + 8)) + 'px';
       toastEl.classList.add('on'); toastEl.classList.toggle('act', !!a); toastEl.classList.toggle('sticky', !!o.sticky);
       M.forget(toastT); toastT = 0;
       if (!o.sticky) toastT = later(() => { toastEl.classList.remove('on', 'act'); toastRun = null; }, a ? 6000 : 2600);
@@ -379,7 +379,7 @@
       const V = M.view, er = el.getBoundingClientRect(), cr = V.cv.getBoundingClientRect(), k = cr.width / V.VW || 1, pw = pop.offsetWidth;
       const e = M.song.chords[popBar] || { at: 0 }, mid = (e.at + md.regionEnd(M.song, popBar)) / 2;
       const left = clamp(cr.left - er.left + V.sx(V.xOf(mid)) * k - pw / 2, 8, Math.max(8, er.width - pw - 8));
-      const top = cr.top - er.top + V.HDR * k + 4;
+      const top = cr.top - er.top + V.Y0 * k + 4;
       pop.style.left = left + 'px'; pop.style.top = top + 'px'; pop.style.maxHeight = Math.max(160, er.height - top - 10) + 'px';
     }
     const picker = M.picker = {

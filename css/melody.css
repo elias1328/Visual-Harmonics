@@ -1,6 +1,11 @@
 /* melody experiment styles (owned by the melody builder) */
 .mel-wrap { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 100%; }
-.mel-scroll { height: 14px; margin: 0; accent-color: var(--accent); cursor: ew-resize; max-width: 100%; }
+.mel-hbar { position: relative; flex: none; height: 12px; margin: 0; max-width: 100%; border-radius: 6px; background: rgba(255, 255, 255, 0.06); cursor: default; touch-action: none; user-select: none; }
+.mel-hbar[hidden] { display: none; }
+.mel-hbar-thumb { position: absolute; left: 0; top: 2px; height: 8px; border-radius: 4px; background: rgba(207, 213, 230, 0.45); cursor: grab; }
+.mel-hbar-thumb:hover, .mel-hbar-thumb.on { background: rgba(207, 213, 230, 0.7); }
+.mel-hbar-thumb.on { cursor: grabbing; }
+.mel-zoom-t { font-size: 10px; letter-spacing: -0.5px; }
 /* strips under the canvas (M.view.addLane): the view subtracts their height from the canvas */
 .mel-wrap > .mel-lane { flex: none; }
 /* the load hint sits under the chord header, over the map, so it never covers lanes under the canvas (drums) or the dock */
@@ -275,10 +280,18 @@
   background: rgba(12,14,20,0.55); color: var(--text, #d8dce6); font-size: 10.5px; line-height: 15px; pointer-events: none; max-width: 60%;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mel-au-lbl i { width: 7px; height: 7px; border-radius: 50%; flex: none; }
-.mel-au-x, .mel-au-sm { position: absolute; top: 3px; width: 22px; height: 18px; padding: 0; border-radius: 6px; border: 1px solid var(--line);
+.mel-au-x, .mel-au-sm, .mel-au-more { position: absolute; top: 3px; width: 22px; height: 18px; padding: 0; border-radius: 6px; border: 1px solid var(--line);
   background: rgba(20,24,36,0.85); color: var(--muted); font-size: 11px; line-height: 16px; cursor: pointer; }
 .mel-au-x { right: 3px; }
-.mel-au-sm { right: 28px; }
+.mel-au-sm { right: 53px; }
+.mel-au-more { right: 28px; }
+.mel-au-menu { position: fixed; z-index: 60; min-width: 190px; max-width: 260px; padding: 6px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2, #1b2030); color: var(--text, #d8dce6); font-size: 12px; box-shadow: 0 6px 24px rgba(0,0,0,0.5); display: flex; flex-direction: column; gap: 4px; }
+.mel-au-mi { padding: 5px 8px; border-radius: 7px; border: 1px solid var(--line); background: rgba(255,255,255,0.05); color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.mel-au-mi:hover { border-color: var(--accent); }
+.mel-au-go { background: var(--accent); color: #07101f; border-color: var(--accent); text-align: center; }
+.mel-au-mh { color: var(--muted); font-size: 11px; padding: 2px 2px 0; }
+.mel-au-ml { max-height: 180px; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.mel-au-mc { display: flex; align-items: center; gap: 4px; cursor: pointer; }
 .mel-au-sm[aria-pressed="true"] { color: #07101f; background: var(--accent); border-color: var(--accent); }
 .mel-au-x:hover { color: #fff; border-color: #ff8a8a; }
 .mel-au-tip { position: absolute; z-index: 3; pointer-events: none; padding: 2px 6px; border-radius: 6px; background: rgba(12,14,20,0.92);

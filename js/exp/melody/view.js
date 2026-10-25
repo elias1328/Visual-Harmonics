@@ -4,20 +4,23 @@
   'use strict';
   const VH = window.VH, H = VH.harmony, ui = VH.ui, NS = VH.melody, md = NS.model;
   const { LO, HI, SPAN, NATURAL, clamp, chordMidis, chordName, namesOf } = md;
-  const HDR = 40, LANE_GAP = 6;   // LANE_GAP = .mel-wrap's flex gap
+  // Header = ruler (RL, seek only) + chord strip (CH). The map starts at Y0 (PT of silent margin below the header); PB / PL / PR are
+  // silent margins below / left / right of the map where the pointer still works (input clamps to the valid range).
+  const RL = 14, CH = 40, HDR = RL + CH, PT = 10, PB = 10, PL = 12, PR = 16, Y0 = HDR + PT, LANE_GAP = 6;   // LANE_GAP = .mel-wrap's flex gap
   const Z_MIN = 12;               // pitch zoom: at least one octave stays visible
+  const DEF_SPAN = 36, DEF_TOP = 84, TZ_MIN = 0.4, TZ_MAX = 4;   // default view = the classic C3..C6; the song range is LO..HI
 
   NS.View = function (M, box) {
     const wrap = ui.h('div', 'mel-wrap'), cv = document.createElement('canvas'), ctx = cv.getContext('2d');
-    const scroller = ui.h('input', 'mel-scroll');
-    scroller.type = 'range'; scroller.min = 0; scroller.step = 1; scroller.hidden = true; scroller.setAttribute('aria-label', 'Scroll bars');
+    const hbar = ui.h('div', 'mel-hbar'), hthumb = ui.h('div', 'mel-hbar-thumb');
+    hbar.hidden = true; hbar.setAttribute('role', 'scrollbar'); hbar.setAttribute('aria-orientation', 'horizontal'); hbar.setAttribute('aria-label', 'Scroll the song in time'); hbar.append(hthumb);
     cv.style.cursor = 'crosshair'; cv.setAttribute('aria-label', 'Melody drawing area over the harmony map');
-    wrap.append(cv, scroller); box.append(wrap);
+    wrap.append(cv, hbar); box.append(wrap);
 
     // X0 = the piano strip's width: the time axis starts right of it (content x 0 = bar 1 = canvas x X0). GW = graph width.
     // Pitch zoom: `span` semitones are visible (SPAN .. Z_MIN), the top row is `pTop`. Persisted in VH.store 'melody.view'.
-    const V = { cv, ctx, wrap, scroller, HDR, VW: 800, TH: 540, MH: 500, BW: 200, CW: 800, scrollX: 0, dpr: 1, highlightBar: -1, regionPreview: null,
-      X0: 22, GW: 778, span: SPAN, pTop: HI, Z_MIN, showScale: VH.store.get('melody.showScale', true) !== false };
+    const V = { cv, ctx, wrap, hbar, hthumb, HDR, RL, CH, Y0, PT, PB, PL, PR, tz: 1, VW: 800, TH: 540, MH: 500, BW: 200, CW: 800, scrollX: 0, dpr: 1, highlightBar: -1, regionPreview: null,
+      X0: 22, GW: 778, span: DEF_SPAN, pTop: DEF_TOP, Z_MIN, showScale: VH.store.get('melody.showScale', true) !== false };
     let boxW = 800, boxH = 600;
     const lanes = [];   // { el, h, fixed, ro } added with V.addLane, stacked under the canvas (and its scroll bar)
     V.U = () => V.BW / md.spb(M.song);                        // px per sixteenth (the bar length follows the time signature)
@@ -26,8 +29,8 @@
     V.sx = (x) => x - V.scrollX + V.X0;                       // content x -> canvas x
     V.PPS = () => V.MH / V.span;                              // px per semitone (zoom)
     V.noteH = () => clamp(V.PPS() * 0.8, 6, 20);              // note bar height
-    V.yOf = (m) => HDR + (V.pTop - m) / V.span * V.MH;
-    V.midiOf = (y) => clamp(V.pTop - (y - HDR) / V.MH * V.span, LO, HI);
+    V.yOf = (m) => Y0 + (V.pTop - m) / V.span * V.MH;
+    V.midiOf = (y) => clamp(V.pTop - (y - Y0) / V.MH * V.span, LO, HI);
     // Pointer event -> content coords [x, y] (scroll and the piano strip included).
     V.xy = (e) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * V.VW / r.width + V.scrollX - V.X0, (e.clientY - r.top) * V.TH / r.height]; };
     // canvas px of a pointer event (no scroll / strip offset)
@@ -44,19 +47,32 @@
       syncZoomUi(); M.requestRender();
       if (!quiet) {
         M.emit('scroll', V);
-        if (M.forget) M.forget(zSave);
-        zSave = M.later ? M.later(() => VH.store.set(ZKEY, { span: Math.round(V.span * 1000) / 1000, top: Math.round(V.pTop * 1000) / 1000 }), 250) : 0;
+        saveView();
       }
     };
+    function saveView() {
+      if (M.forget) M.forget(zSave);
+      zSave = M.later ? M.later(() => VH.store.set(ZKEY, { span: Math.round(V.span * 1000) / 1000, top: Math.round(V.pTop * 1000) / 1000, tz: Math.round(V.tz * 1000) / 1000 }), 250) : 0;
+    }
+    // Time zoom (bar width x tz). Keeps the time under canvas x cx in place. A view preference: stored, not in undo.
+    V.setTimeZoom = function (tz, cx, quiet) {
+      tz = clamp(+tz || 1, TZ_MIN, TZ_MAX);
+      if (Math.abs(tz - V.tz) < 1e-6) return;
+      const ax = clamp(cx == null ? V.X0 + V.GW / 2 : cx, V.X0, V.X0 + V.GW), frac = V.CW > 0 ? (ax - V.X0 + V.scrollX) / V.CW : 0;
+      V.tz = tz; V.relayout(); V.setScroll(frac * V.CW - (ax - V.X0));
+      syncZoomUi();
+      if (!quiet) saveView();
+    };
+    V.zoomTime = (f, cx) => V.setTimeZoom(V.tz * f, cx);
     // Zoom by factor f (< 1 = in) keeping the pitch under canvas y in place.
     V.zoomAt = function (f, y) {
-      const yy = clamp(y == null ? HDR + V.MH / 2 : y, HDR, HDR + V.MH), m = V.pTop - (yy - HDR) / V.MH * V.span;
+      const yy = clamp(y == null ? Y0 + V.MH / 2 : y, Y0, Y0 + V.MH), m = V.pTop - (yy - Y0) / V.MH * V.span;
       const sp = clamp(V.span * f, Z_MIN, SPAN);
-      V.setPitchView(sp, m + (yy - HDR) / V.MH * sp);
+      V.setPitchView(sp, m + (yy - Y0) / V.MH * sp);
     };
     V.scrollPitch = (dm) => V.setPitchView(V.span, V.pTop + dm);
     const zs = VH.store.get(ZKEY, null);
-    if (zs && typeof zs === 'object') { V.span = clamp(+zs.span || SPAN, Z_MIN, SPAN); V.pTop = clamp(+zs.top || HI, LO + V.span, HI); }
+    if (zs && typeof zs === 'object') { V.span = clamp(+zs.span || DEF_SPAN, Z_MIN, SPAN); V.pTop = clamp(+zs.top || DEF_TOP, LO + V.span, HI); V.tz = clamp(+zs.tz || 1, TZ_MIN, TZ_MAX); }
     const zoomEl = ui.h('div', 'mel-zoom');
     zoomEl.setAttribute('role', 'group'); zoomEl.setAttribute('aria-label', 'Pitch zoom');
     const zBtn = (t, label, f) => {
@@ -64,6 +80,12 @@
       b.addEventListener('click', () => V.zoomAt(f)); zoomEl.append(b); return b;
     };
     const zIn = zBtn('+', 'Zoom in on pitch (+, Ctrl + wheel, pinch)', 1 / 1.4), zOut = zBtn('−', 'Zoom out on pitch (−)', 1.4);
+    // time zoom (bar width): same group, ↔ buttons (Alt + wheel)
+    const tBtn = (t, label, f) => {
+      const b = ui.h('button', 'mel-zoom-b mel-zoom-t', t); b.type = 'button'; b.title = label; b.setAttribute('aria-label', label);
+      b.addEventListener('click', () => V.zoomTime(f)); zoomEl.append(b); return b;
+    };
+    const tIn = tBtn('↔+', 'Stretch time: wider bars (Alt + wheel)', 1.25), tOut = tBtn('↔−', 'Squeeze time: narrower bars (Alt + wheel)', 0.8);
     wrap.append(zoomEl);
     // Tension dial: a "◐ Calm / Color / Tense" chip left of the zoom buttons; it opens a slider pop-over (M.setTension).
     const tenChip = ui.h('button', 'mel-tens-chip'); tenChip.type = 'button';
@@ -133,7 +155,7 @@
       return { sync };
     };
     V.setShowScale = (v) => { V.showScale = !!v; VH.store.set('melody.showScale', V.showScale); syncs.forEach((f) => f()); if (V.onScale) V.onScale(); M.requestRender(); };
-    M.on('look', () => { syncs.forEach((f) => f()); if (V.X0 !== V.KW()) V.relayout(); });
+    M.on('look', () => { syncs.forEach((f) => f()); if (V.X0 !== V.KW() + PL) V.relayout(); });
     let lookBuilt = false;
     lookChip.addEventListener('click', () => {
       if (!lookBuilt) { lookBuilt = true; V.buildLook(lookPop); }
@@ -149,15 +171,15 @@
     // Without a strip above the canvas they fall back to the map's top-right corner.
     function placeBar() {
       const small = V.VW <= 600, inBar = V.topH > 0, zw = small && !inBar ? 30 : 26, m = inBar ? 2 : (small ? 12 : 16);
-      const top = inBar ? Math.max(0, Math.round((V.topH - LANE_GAP - zw) / 2)) : V.topH + HDR + 6;
+      const top = inBar ? Math.max(0, Math.round((V.topH - LANE_GAP - zw) / 2)) : V.topH + Y0 + 6;
       zoomEl.classList.toggle('inbar', inBar); wrap.classList.toggle('mel-chips-inbar', inBar);
-      const zoomW = inBar ? 2 * zw + 4 : zw, tw = tenChip.offsetWidth || 70, lw = lookChip.offsetWidth || 34;
+      const zoomW = inBar ? 4 * zw + 12 : zw, tw = tenChip.offsetWidth || 70, lw = lookChip.offsetWidth || 34;
       const R = (px) => 'calc(50% - ' + (V.VW / 2 - px) + 'px)';
       zoomEl.style.top = tenChip.style.top = lookChip.style.top = top + 'px';
       zoomEl.style.right = R(m);
       tenChip.style.right = R(m + zoomW + 6);
       lookChip.style.right = R(m + zoomW + 6 + tw + 6);
-      tenPop.style.top = lookPop.style.top = (inBar ? V.topH + 2 : V.topH + HDR + 36) + 'px';
+      tenPop.style.top = lookPop.style.top = (inBar ? V.topH + 2 : V.topH + Y0 + 36) + 'px';
       tenPop.style.right = lookPop.style.right = R(m);
       wrap.style.setProperty('--mel-bar-reserve', inBar ? (m + zoomW + 6 + tw + 6 + lw + 8) + 'px' : '0px');
     }
@@ -165,33 +187,57 @@
     V.placeLookChip = placeBar;
     function syncZoomUi() {
       zIn.disabled = V.span <= Z_MIN + 1e-6; zOut.disabled = !V.zoomed();
-      zoomEl.classList.toggle('zoomed', V.zoomed());
+      tIn.disabled = V.tz >= TZ_MAX - 1e-6; tOut.disabled = V.tz <= TZ_MIN + 1e-6;
+      zoomEl.classList.toggle('zoomed', V.zoomed() || Math.abs(V.tz - 1) > 1e-6);
     }
     syncZoomUi();
 
     V.relayout = function () {
       const S = M.song;
       V.VW = Math.max(240, Math.min(1600, boxW));
-      V.X0 = V.KW(); V.GW = V.VW - V.X0;
-      V.BW = Math.max(V.GW / S.bars, Math.min(120, V.GW / 4)); V.CW = V.BW * S.bars;
+      V.X0 = V.KW() + PL; V.GW = Math.max(60, V.VW - V.X0 - PR);
+      V.BW = clamp(Math.max(V.GW / S.bars, Math.min(120, V.GW / 4)) * V.tz, 24, 1600); V.CW = V.BW * S.bars;
       const scrolls = V.CW > V.GW + 0.5;
-      scroller.hidden = !scrolls;
+      hbar.hidden = !scrolls;
       const laneH = lanes.reduce((a, l) => a + (l.el.hidden ? 0 : l.h + LANE_GAP), 0);
       V.topH = lanes.reduce((a, l) => a + (l.top && !l.el.hidden ? l.h + LANE_GAP : 0), 0);   // lanes above the canvas
-      V.TH = Math.max(200, boxH - (scrolls ? 20 : 0) - laneH); V.MH = V.TH - HDR; V.dpr = ui.dpr();
+      V.TH = Math.max(200, boxH - (scrolls ? 18 : 0) - laneH); V.MH = V.TH - Y0 - PB; V.dpr = ui.dpr();
       lanes.forEach((l) => { l.el.style.width = V.VW + 'px'; });
       const w = Math.round(V.VW * V.dpr), h = Math.round(V.TH * V.dpr);
       if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
-      cv.style.width = V.VW + 'px'; cv.style.height = V.TH + 'px'; scroller.style.width = V.VW + 'px';
-      scroller.max = Math.max(0, Math.round(V.CW - V.GW));
+      cv.style.width = V.VW + 'px'; cv.style.height = V.TH + 'px'; hbar.style.width = V.VW + 'px';
       placeBar();
       V.setScroll(V.scrollX);
       M.emit('layout', V);
     };
     V.setScroll = function (x) {
-      V.scrollX = clamp(x, 0, Math.max(0, V.CW - V.GW)); scroller.value = Math.round(V.scrollX);
+      V.scrollX = clamp(x, 0, Math.max(0, V.CW - V.GW)); syncHbar();
       M.requestRender(); M.emit('scroll', V);
     };
+    // Horizontal scroll bar: the thumb's width = visible / total, drag it, click the track to page.
+    function syncHbar() {
+      const tw = V.VW, vis = Math.min(1, V.GW / V.CW), thw = Math.max(28, tw * vis), room = Math.max(0, V.CW - V.GW);
+      const left = room > 0 ? V.scrollX / room * (tw - thw) : 0;
+      hthumb.style.width = thw + 'px'; hthumb.style.transform = 'translateX(' + left + 'px)';
+      hbar.setAttribute('aria-valuemin', '0'); hbar.setAttribute('aria-valuemax', String(Math.round(room))); hbar.setAttribute('aria-valuenow', String(Math.round(V.scrollX)));
+    }
+    {
+      let d = null;
+      hbar.addEventListener('pointerdown', (e) => {
+        if (e.button > 0) return;
+        e.preventDefault();
+        const th = hthumb.getBoundingClientRect();
+        if (e.target === hthumb) { d = { x0: e.clientX, s0: V.scrollX, id: e.pointerId }; try { hbar.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ } hthumb.classList.add('on'); return; }
+        V.setScroll(V.scrollX + (e.clientX < th.left ? -1 : 1) * V.GW * 0.9);   // track click = one page
+      });
+      hbar.addEventListener('pointermove', (e) => {
+        if (!d || e.pointerId !== d.id) return;
+        const tr = hbar.getBoundingClientRect(), k = tr.width ? V.VW / tr.width : 1, thw = parseFloat(hthumb.style.width) || 28, room = Math.max(1, V.CW - V.GW);
+        V.setScroll(d.s0 + (e.clientX - d.x0) * k * room / Math.max(1, V.VW - thw));
+      });
+      const done = (e) => { if (d && e.pointerId === d.id) { d = null; hthumb.classList.remove('on'); } };
+      hbar.addEventListener('pointerup', done); hbar.addEventListener('pointercancel', done);
+    }
     V.fit = () => ui.fit(box, (w, h) => { boxW = w; boxH = h; V.relayout(); });
     // A DOM strip under the canvas (e.g. the drum lane) that the layout makes room for: the canvas gets shorter by the
     // lane's height + 6 px. o.height = fixed px; omitted = measured (ResizeObserver), so content changes re-layout.
@@ -227,12 +273,12 @@
       return api;
     };
     V.lanes = () => lanes.map((l) => ({ el: l.el, height: l.h }));
-    scroller.addEventListener('input', () => V.setScroll(+scroller.value));
-    // Wheel: Ctrl/Cmd = pitch zoom around the cursor; plain vertical = pitch scroll while zoomed; Shift / horizontal =
-    // time scroll (a plain vertical wheel also scrolls time while not zoomed).
+    // Wheel: plain = scroll pitch up / down; Shift or a sideways trackpad swipe = scroll time; Ctrl/Cmd (and a pinch) =
+    // pitch zoom around the cursor; Alt (or Ctrl+Shift) = time zoom. At the full pitch range a plain wheel scrolls time.
     cv.addEventListener('wheel', (e) => {
       const k = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1, dx = e.deltaX * k, dy = e.deltaY * k;
-      if (e.ctrlKey || e.metaKey) { e.preventDefault(); V.zoomAt(Math.exp(clamp(dy, -200, 200) * 0.002), cxy(e)[1]); return; }
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey) { e.preventDefault(); V.zoomAt(Math.exp(clamp(dy, -200, 200) * 0.002), cxy(e)[1]); return; }
+      if (e.altKey || e.ctrlKey || e.metaKey) { e.preventDefault(); V.zoomTime(Math.exp(-clamp(dy || dx, -200, 200) * 0.002), cxy(e)[0]); return; }
       const horiz = e.shiftKey || Math.abs(dx) > Math.abs(dy);
       if (!horiz && V.zoomed()) { e.preventDefault(); V.scrollPitch(-dy / V.PPS()); return; }
       if (V.CW <= V.GW + 0.5) return;
@@ -270,6 +316,7 @@
     // split the chord there), 'name' (the chord name: picker) or 'empty' (seek / start of a loop-region drag).
     const hdrFont = (w) => (w < 34 ? 10 : w < 60 ? 12 : 15);
     V.hdrAt = function (x, y) {
+      y -= RL;   // canvas y -> chord-strip y
       const S = M.song, r = md.regionOf(S), BW = V.BW, u = V.U(), n = md.spb(S), tot = md.tot16(S);
       if (r && Math.hypot(x - (r[1] * BW - 11), y - 11) <= 11) return { kind: 'x', region: -1 };
       const t = clamp(x / u, 0, tot - 1e-6), i = md.regionAt(S, t), e = S.chords[i], z = md.regionEnd(S, i);
@@ -277,7 +324,7 @@
         const E = S.chords[q];
         if (E && q > 0 && E.at % n && Math.abs(x - E.at * u) <= 6) return { kind: 'edge', region: q, at: E.at };
       }
-      if (y >= HDR - 16) {
+      if (y >= CH - 16) {
         const b0 = Math.floor(t / n) * n;
         for (const p of md.beatGrid(S, false)) { const at = b0 + p; if (at > e.at && at < z && Math.abs(x - at * u) <= 7) return { kind: 'plus', region: i, at }; }
       }
@@ -305,7 +352,7 @@
     const lk = () => (M.bands && M.bands.look ? M.bands.look() : md.LOOK_DEFAULTS);   // the Map look (view preference)
     V.KW = () => (!lk().piano ? 0 : V.VW <= 600 ? 14 : 22);
     // The strip's key / step under y: a semitone in 12-TET, else the nearest step of the tuning grid (md.gridOf).
-    V.keyOf = (y) => (y >= HDR && y <= HDR + V.MH ? md.gridSnap(M.song, V.midiOf(y)) : null);
+    V.keyOf = (y) => (y >= Y0 && y <= Y0 + V.MH ? md.gridSnap(M.song, V.midiOf(y)) : null);
     function soundingNow(now) {
       const S = M.song, E = M.engine, out = new Map(), glow = new Set();
       const et = md.gridOf(S).et12, add = (m, col) => { m = et ? Math.round(m) : m; if (m < LO || m > HI) return; const a = out.get(m) || out.set(m, []).get(m); if (a.indexOf(col) < 0) a.push(col); };
@@ -325,12 +372,12 @@
     // Non-12 tunings: a step strip instead of the piano. One cell per tuning step (in-scale steps tinted, the key root
     // marked), step numbers (and cents when there is room), and 12-TET reference ticks at the right edge.
     function drawSteps(G, out, glow, now) {
-      const KW = V.X0, P = G.pts, PPS = V.PPS(), S = M.song;
-      ctx.fillStyle = '#20253a'; ctx.fillRect(0, HDR, KW, V.MH);
+      const KW = V.KW(), P = G.pts, PPS = V.PPS(), S = M.song;
+      ctx.fillStyle = '#20253a'; ctx.fillRect(0, Y0, KW, V.MH);
       for (let k = 0; k < P.length; k++) {
         const m = P[k], lo = k ? (P[k - 1] + m) / 2 : m - 0.25, hi = k + 1 < P.length ? (P[k + 1] + m) / 2 : m + 0.25;
         const y0 = V.yOf(hi), y1 = V.yOf(lo);
-        if (y1 < HDR || y0 > HDR + V.MH) continue;
+        if (y1 < Y0 || y0 > Y0 + V.MH) continue;
         const inSc = G.scaleCls.has(G.cls[k]), root = G.cls[k] === 0;
         ctx.fillStyle = root ? '#5a6894' : inSc && V.showScale ? '#3a4466' : k % 2 ? '#262c42' : '#2b3149';
         ctx.fillRect(0, y0, KW, y1 - y0);
@@ -347,26 +394,26 @@
         }
       }
       ctx.fillStyle = 'rgba(255,255,255,0.55)';   // 12-TET reference ticks (octave C ticks longer)
-      for (let m = LO; m <= HI; m++) { const y = Math.round(V.yOf(m)); if (y >= HDR && y <= HDR + V.MH) ctx.fillRect(KW - (m % 12 === 0 ? 7 : 4), y, m % 12 === 0 ? 7 : 4, 1); }
+      for (let m = LO; m <= HI; m++) { const y = Math.round(V.yOf(m)); if (y >= Y0 && y <= Y0 + V.MH) ctx.fillRect(KW - (m % 12 === 0 ? 7 : 4), y, m % 12 === 0 ? 7 : 4, 1); }
     }
     function drawKeys() {
-      const now = performance.now(), { out, glow } = soundingNow(now), KW = V.X0, rh = V.PPS(), bw = KW * 0.62;
+      const now = performance.now(), { out, glow } = soundingNow(now), KW = V.KW(), rh = V.PPS(), bw = KW * 0.62;
       const G = md.gridOf(M.song);
       if (!G.et12) {   // step strip (lit by grid pitch, keyed in milli-semitones)
         const o2 = new Map(), g2 = new Set(), gk = (m) => Math.round(G.snap(m) * 1000);
         out.forEach((c, m) => o2.set(gk(m), c)); glow.forEach((m) => g2.add(gk(m)));
-        ctx.save(); ctx.beginPath(); ctx.rect(0, HDR, KW, V.MH); ctx.clip();
+        ctx.save(); ctx.beginPath(); ctx.rect(0, Y0, KW, V.MH); ctx.clip();
         drawSteps(G, o2, g2, now);
         ctx.restore();
-        ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(KW, HDR, 1, V.MH);
+        ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(KW, Y0, 1, V.MH);
         return;
       }
       const scaleOn = V.showScale, sc = G.scaleCls;
       out.forEach((cols, m) => lit.set(m, { cols, t: now }));
       let fading = false;
       ctx.save();
-      ctx.beginPath(); ctx.rect(0, HDR, KW, V.MH); ctx.clip();
-      ctx.fillStyle = '#e9ecf4'; ctx.fillRect(0, HDR, KW, V.MH);
+      ctx.beginPath(); ctx.rect(0, Y0, KW, V.MH); ctx.clip();
+      ctx.fillStyle = '#e9ecf4'; ctx.fillRect(0, Y0, KW, V.MH);
       const mLo = Math.floor(V.pTop - V.span) - 1, mHi = Math.ceil(V.pTop) + 1;
       for (let m = LO; m <= HI; m++) {
         if (m < mLo || m > mHi) { const q = lit.get(m); if (q && !out.has(m) && now - q.t >= FADE) lit.delete(m); continue; }
@@ -400,7 +447,7 @@
         }
       }
       ctx.restore();
-      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(KW, HDR, 1, V.MH);
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(KW, Y0, 1, V.MH);
       if (fading || lit.size) { if (fading) M.requestRender(); }
     }
     // Pointer handling that runs before the tools (registered first): two-finger pinch (zoom + pan), the pitch scroll
@@ -408,7 +455,7 @@
     const touches = new Map();
     let pinch = null, pinchHold = false, keyDrag = null, sbDrag = null;
     const SBW = 10;
-    const inBar = (cx, cy) => V.zoomed() && cx >= V.VW - SBW && cy >= HDR && cy <= HDR + V.MH;
+    const inBar = (cx, cy) => V.zoomed() && cx >= V.VW - SBW && cy >= Y0 && cy <= Y0 + V.MH;
     function pinchState() {
       const p = [...touches.values()];
       return { d: Math.max(8, Math.hypot(p[0][0] - p[1][0], p[0][1] - p[1][1])), my: (p[0][1] + p[1][1]) / 2 };
@@ -422,8 +469,8 @@
           e.stopImmediatePropagation(); e.preventDefault();
           if (M.tools && M.tools.cancel) M.tools.cancel();
           keyDrag = null; sbDrag = null;
-          const st = pinchState(), my = clamp(st.my, HDR, HDR + V.MH);
-          pinch = { d0: st.d, span0: V.span, m: V.pTop - (my - HDR) / V.MH * V.span };
+          const st = pinchState(), my = clamp(st.my, Y0, Y0 + V.MH);
+          pinch = { d0: st.d, span0: V.span, m: V.pTop - (my - Y0) / V.MH * V.span };
           pinchHold = true;
           return;
         }
@@ -432,13 +479,13 @@
       if (e.button > 0) return;
       if (inBar(cx, cy)) {
         e.stopImmediatePropagation(); e.preventDefault();
-        const th = HDR + (HI - V.pTop) / SPAN * V.MH, tl = V.span / SPAN * V.MH;
+        const th = Y0 + (HI - V.pTop) / SPAN * V.MH, tl = V.span / SPAN * V.MH;
         sbDrag = { off: cy >= th && cy <= th + tl ? cy - th : tl / 2, id: e.pointerId };
         try { cv.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
         sbMove(cy);
         return;
       }
-      if (cx >= V.X0) return;
+      if (cx >= V.KW()) return;
       const m = V.keyOf(cy);
       if (m == null) return;
       e.stopImmediatePropagation(); e.preventDefault();
@@ -446,14 +493,14 @@
       try { cv.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
       if (!keyDrag.touch) M.engine.previewNote(M.active, m, 0.5);
     });
-    function sbMove(cy) { V.setPitchView(V.span, HI - (cy - sbDrag.off - HDR) / V.MH * SPAN); }
+    function sbMove(cy) { V.setPitchView(V.span, HI - (cy - sbDrag.off - Y0) / V.MH * SPAN); }
     cv.addEventListener('pointermove', (e) => {
       const [cx, cy] = cxy(e);
       if (e.pointerType === 'touch' && touches.has(e.pointerId)) touches.set(e.pointerId, [cx, cy]);
       if (pinch && touches.size >= 2) {
         e.stopImmediatePropagation();
-        const st = pinchState(), my = clamp(st.my, HDR, HDR + V.MH), sp = clamp(pinch.span0 * pinch.d0 / st.d, Z_MIN, SPAN);
-        V.setPitchView(sp, pinch.m + (my - HDR) / V.MH * sp);
+        const st = pinchState(), my = clamp(st.my, Y0, Y0 + V.MH), sp = clamp(pinch.span0 * pinch.d0 / st.d, Z_MIN, SPAN);
+        V.setPitchView(sp, pinch.m + (my - Y0) / V.MH * sp);
         return;
       }
       if (pinchHold && e.pointerType === 'touch') { e.stopImmediatePropagation(); return; }
@@ -464,7 +511,7 @@
         if (keyDrag.moved) V.setPitchView(V.span, keyDrag.top0 + (cy - keyDrag.y0) / V.PPS());
         return;
       }
-      const m = e.pointerType === 'touch' || cx >= V.X0 ? null : V.keyOf(cy);
+      const m = e.pointerType === 'touch' || cx >= V.KW() ? null : V.keyOf(cy);
       if (m !== V.hoverMidi) { V.hoverMidi = m; M.requestRender(); }
       if (inBar(cx, cy)) { e.stopImmediatePropagation(); cv.style.cursor = 'ns-resize'; }
     });
@@ -551,21 +598,34 @@
       const S = M.song, E = M.engine, A = M.active, names = namesOf(S), tot = md.tot16(S), u = V.U(), SPB = md.spb(S);
       const playing = E.playing, phase = E.phase, pos = phase * tot, { VW, TH, MH, BW, CW, scrollX, dpr, X0, GW } = V;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, VW, TH);
+      ctx.fillStyle = '#0d1019'; ctx.fillRect(0, 0, VW, TH);   // also the silent margins
       ctx.imageSmoothingEnabled = false;
       // the cached band image (1 px per sixteenth x R rows, top row = HI) cropped to the visible pitch range
       const RPS = M.bands.R / SPAN;
-      if (M.bands.off.width === tot) ctx.drawImage(M.bands.off, 0, (HI - V.pTop) * RPS, tot, V.span * RPS, X0 - scrollX, HDR, CW, MH);
+      if (M.bands.off.width === tot) { ctx.save(); ctx.beginPath(); ctx.rect(X0, Y0, GW, MH); ctx.clip(); ctx.drawImage(M.bands.off, 0, (HI - V.pTop) * RPS, tot, V.span * RPS, X0 - scrollX, Y0, CW, MH); ctx.restore(); }
       ctx.translate(X0 - scrollX, 0);
       const b0 = Math.max(0, Math.floor(scrollX / BW)), b1 = Math.min(S.bars - 1, Math.floor((scrollX + GW) / BW));
       const curReg = playing ? md.regionAt(S, pos) : -1, xa = scrollX, xb = scrollX + GW, hb = V.highlightBar, hv = V.hdrHover;
+      ctx.fillStyle = '#0f1320'; ctx.fillRect(xa, 0, GW, RL);   // ruler: bar numbers + beat ticks; click / drag only seeks
+      ctx.fillStyle = '#262b3a'; ctx.fillRect(xa, RL - 1, GW, 1);
+      {
+        const bt = md.tsOf(S).beats, showB = BW >= 56;
+        ctx.font = '10px system-ui, sans-serif'; ctx.textAlign = 'left';
+        for (let b = b0; b <= b1; b++) {
+          const x = Math.round(b * BW) + 0.5;
+          ctx.fillStyle = '#4a5270'; ctx.fillRect(x - 0.5, 0, 1, RL);
+          ctx.fillStyle = '#8b94ad'; ctx.fillText(String(b + 1), x + 4, 10.5);
+          if (showB) { ctx.fillStyle = '#343b55'; for (const q of bt) if (q) ctx.fillRect(Math.round(b * BW + q * u), RL - 4, 1, 4); }
+        }
+      }
+      ctx.save(); ctx.translate(0, RL);
       for (const R of md.regions(S)) {   // chord header strip: one block per chord region (its width = its duration)
         const x = R.a * u, w = (R.z - R.a) * u, ch = R.chord, b = R.i, inner = R.a % SPB !== 0;
         if (x > xb || x + w < xa) continue;
         const tints = lk().regions;
-        ctx.fillStyle = tints && b === hb ? '#24345a' : tints && b === curReg ? '#22345e' : tints && hv && hv.kind === 'name' && hv.region === b ? '#1a2133' : '#141824'; ctx.fillRect(x, 0, w, HDR);
-        ctx.strokeStyle = tints && b === hb ? '#6fa3ff' : '#262b3a'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, 0.5, w - 1, HDR - 1);
-        ctx.save(); ctx.beginPath(); ctx.rect(x + 2, 0, w - 4, HDR); ctx.clip();
+        ctx.fillStyle = tints && b === hb ? '#24345a' : tints && b === curReg ? '#22345e' : tints && hv && hv.kind === 'name' && hv.region === b ? '#1a2133' : '#141824'; ctx.fillRect(x, 0, w, CH);
+        ctx.strokeStyle = tints && b === hb ? '#6fa3ff' : '#262b3a'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, 0.5, w - 1, CH - 1);
+        ctx.save(); ctx.beginPath(); ctx.rect(x + 2, 0, w - 4, CH); ctx.clip();
         ctx.textAlign = 'center';
         ctx.fillStyle = ch ? '#fff' : '#7a8194'; ctx.font = '600 ' + hdrFont(w) + 'px system-ui, sans-serif';
         ctx.fillText(ch ? chordName(ch, names) : '—', x + w / 2, 18);
@@ -576,28 +636,29 @@
         ctx.restore();
         if (inner) {   // a chord change inside the bar: a grip to drag the boundary
           const on = (hv && hv.kind === 'edge' && hv.region === b) || V.edgeDrag === b;
-          ctx.fillStyle = on ? '#6fa3ff' : 'rgba(207,213,230,0.5)'; V.rrect(x - 1.5, 9, 3, HDR - 18, 1.5); ctx.fill();
+          ctx.fillStyle = on ? '#6fa3ff' : 'rgba(207,213,230,0.5)'; V.rrect(x - 1.5, 9, 3, CH - 18, 1.5); ctx.fill();
         }
       }
       if (hv && hv.kind === 'plus') {   // split here
-        const x = hv.at * u, y = HDR - 9;
+        const x = hv.at * u, y = CH - 9;
         ctx.fillStyle = '#6fa3ff'; ctx.beginPath(); ctx.arc(x, y, 6.5, 0, 2 * Math.PI); ctx.fill();
         ctx.strokeStyle = '#07101f'; ctx.lineWidth = 1.6;
         ctx.beginPath(); ctx.moveTo(x - 3.5, y); ctx.lineTo(x + 3.5, y); ctx.moveTo(x, y - 3.5); ctx.lineTo(x, y + 3.5); ctx.stroke();
       }
+      ctx.restore();
       const reg = V.regionPreview || md.regionOf(S);
       if (reg) {   // loop region: map outside it dimmed, a bright rule over its header bars
         const x0 = reg[0] * BW, x1 = reg[1] * BW;
         ctx.fillStyle = 'rgba(5,6,12,0.42)';
-        if (x0 > xa) ctx.fillRect(xa, HDR, Math.min(x0, xb) - xa, MH);
-        if (x1 < xb) ctx.fillRect(Math.max(x1, xa), HDR, xb - Math.max(x1, xa), MH);
+        if (x0 > xa) ctx.fillRect(xa, Y0, Math.min(x0, xb) - xa, MH);
+        if (x1 < xb) ctx.fillRect(Math.max(x1, xa), Y0, xb - Math.max(x1, xa), MH);
         ctx.fillStyle = 'rgba(111,163,255,0.16)'; ctx.fillRect(x0, 0, x1 - x0, HDR);
         ctx.fillStyle = '#6fa3ff'; ctx.fillRect(x0, 0, x1 - x0, 3);
         ctx.strokeStyle = 'rgba(111,163,255,0.55)'; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, HDR + MH); ctx.moveTo(x1 - 0.5, 0); ctx.lineTo(x1 - 0.5, HDR + MH); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, Y0 + MH); ctx.moveTo(x1 - 0.5, 0); ctx.lineTo(x1 - 0.5, Y0 + MH); ctx.stroke();
       }
       ctx.save();   // graph area: everything below is clipped to the visible map (zoom / scroll)
-      ctx.beginPath(); ctx.rect(xa, HDR, GW, MH); ctx.clip();
+      ctx.beginPath(); ctx.rect(xa, HDR, GW, MH + PT + PB); ctx.clip();
       const mLo = Math.max(LO, Math.floor(V.pTop - V.span)), mHi = Math.min(HI, Math.ceil(V.pTop));
       const G = md.gridOf(S);
       if (V.showScale) {   // scale tint: a faint band on the rows of the section's scale (tuning steps outside 12-TET)
@@ -632,7 +693,7 @@
         if (k % step && !isBeat) continue;
         const x = Math.round(k * u) + 0.5;
         ctx.strokeStyle = k % SPB === 0 ? 'rgba(255,255,255,0.4)' : isBeat ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.045)';
-        ctx.beginPath(); ctx.moveTo(x, HDR); ctx.lineTo(x, HDR + MH); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x, Y0); ctx.lineTo(x, Y0 + MH); ctx.stroke();
       }
       ctx.globalAlpha = 1;
       ctx.lineJoin = ctx.lineCap = 'round';
@@ -641,7 +702,7 @@
         if (key !== lkKey || lc.width !== cv.width || lc.height !== cv.height) {
           if (lc.width !== cv.width || lc.height !== cv.height) { lc.width = cv.width; lc.height = cv.height; } else lx.clearRect(0, 0, lc.width, lc.height);
           lx.setTransform(dpr, 0, 0, dpr, 0, 0); lx.translate(X0 - scrollX, 0);
-          lx.save(); lx.beginPath(); lx.rect(xa, HDR, GW, MH); lx.clip();
+          lx.save(); lx.beginPath(); lx.rect(xa, HDR, GW, MH + PT + PB); lx.clip();
           drawLayers(lx, S, A, playing, pos, xa, xb, u);
           lx.restore(); lkKey = key;
         }
@@ -663,28 +724,28 @@
       const lr = !V.regionPreview && md.regionOf(S);
       if (lr) {   // ✕ that clears the loop region (top-right of its last bar)
         const cx = lr[1] * BW - 11;
-        ctx.fillStyle = '#6fa3ff'; ctx.beginPath(); ctx.arc(cx, 11, 7.5, 0, 2 * Math.PI); ctx.fill();
+        ctx.fillStyle = '#6fa3ff'; ctx.beginPath(); ctx.arc(cx, RL + 11, 7.5, 0, 2 * Math.PI); ctx.fill();
         ctx.strokeStyle = '#07101f'; ctx.lineWidth = 1.6;
-        ctx.beginPath(); ctx.moveTo(cx - 3, 8); ctx.lineTo(cx + 3, 14); ctx.moveTo(cx + 3, 8); ctx.lineTo(cx - 3, 14); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(cx - 3, RL + 8); ctx.lineTo(cx + 3, RL + 14); ctx.moveTo(cx + 3, RL + 8); ctx.lineTo(cx - 3, RL + 14); ctx.stroke();
       }
       if (!playing && E.cue != null) {   // stopped with a cue: Play starts here
         const x = E.cue * u;
         ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
-        ctx.beginPath(); ctx.moveTo(x, HDR); ctx.lineTo(x, HDR + MH); ctx.stroke(); ctx.restore();
+        ctx.beginPath(); ctx.moveTo(x, Y0); ctx.lineTo(x, Y0 + MH); ctx.stroke(); ctx.restore();
         ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(x - 5, HDR - 7); ctx.lineTo(x + 5, HDR - 7); ctx.lineTo(x, HDR); ctx.fill();
       }
       if (playing) {   // playback cursor
         const x = phase * CW;
         ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, HDR + MH); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, Y0 + MH); ctx.stroke();
       }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.fillStyle = '#0d1019'; ctx.fillRect(0, 0, X0, HDR);   // corner over the piano strip (header scrolls under it)
       if (X0 > 0) drawKeys();
       if (V.zoomed()) {   // slim pitch scroll bar (right edge)
-        const th = HDR + (HI - V.pTop) / SPAN * MH, tl = Math.max(16, V.span / SPAN * MH), x = VW - 7;
-        ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(x, HDR, 6, MH);
-        ctx.fillStyle = 'rgba(207,213,230,0.7)'; V.rrect(x + 0.5, Math.min(th, HDR + MH - tl), 5, tl, 2.5); ctx.fill();
+        const th = Y0 + (HI - V.pTop) / SPAN * MH, tl = Math.max(16, V.span / SPAN * MH), x = VW - 7;
+        ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(x, Y0, 6, MH);
+        ctx.fillStyle = 'rgba(207,213,230,0.7)'; V.rrect(x + 0.5, Math.min(th, Y0 + MH - tl), 5, tl, 2.5); ctx.fill();
       }
     };
     return V;

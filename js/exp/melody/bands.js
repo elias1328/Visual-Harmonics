@@ -5,7 +5,7 @@
   'use strict';
   const VH = window.VH, H = VH.harmony, NS = VH.melody, md = NS.model;
   const { LO, HI, SPAN, clamp, chordMidis } = md;
-  const R = 301, RPS = (R - 1) / SPAN;   // rows, rows per semitone
+  const R = 501, RPS = (R - 1) / SPAN;   // rows, rows per semitone
   const rowMidi = (r) => LO + r / (R - 1) * SPAN;
 
   function pal(t, st) {   // harmony palette: navy -> violet -> cyan -> white (st: stops from md.lookStops; the default = Aurora)

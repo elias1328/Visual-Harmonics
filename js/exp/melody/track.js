@@ -468,7 +468,7 @@
       if (!tr || !cur || !cur.an || !cur.an.wave) return;
       const st = startOf(S, S.cur);
       if (st == null) return;
-      const y0 = view.HDR, h = 16, U = view.U(), tot = md.tot16(S), w = cur.an.wave, res = cur.an.waveRes || 0.01;
+      const y0 = view.Y0, h = 16, U = view.U(), tot = md.tot16(S), w = cur.an.wave, res = cur.an.waveRes || 0.01;
       const x0 = Math.max(0, Math.floor(view.scrollX)), x1 = Math.min(Math.ceil(view.scrollX + view.GW), Math.ceil(view.xOf(tot)));
       ctx.save();
       ctx.fillStyle = 'rgba(6, 8, 18, 0.62)'; ctx.fillRect(x0, y0, x1 - x0, h);

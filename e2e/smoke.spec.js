@@ -93,7 +93,7 @@ function parseWav(buf) {
 // Draw a line stroke in the given bar fraction range on the melody canvas.
 async function drawStroke(page, fx0 = 0.55, fx1 = 0.8, fy = 0.5) {
   const b = await box(melCanvas(page));
-  const y = b.y + 40 + (b.height - 40) * fy;
+  const y = b.y + 64 + (b.height - 74) * fy;
   await page.mouse.move(b.x + b.width * fx0, y);
   await page.mouse.down();
   for (let i = 1; i <= 12; i++) await page.mouse.move(b.x + b.width * (fx0 + (fx1 - fx0) * i / 12), y - i * 2);
@@ -101,9 +101,9 @@ async function drawStroke(page, fx0 = 0.55, fx1 = 0.8, fy = 0.5) {
 }
 // Open the chord picker for the first bar (click the chord name in the header strip).
 async function openChordPicker(page) {
-  const b = await box(melCanvas(page)), S = await song(page), kw = 22;   // piano strip width (desktop)
-  const bw = (b.width - kw) / S.bars;
-  await page.mouse.click(b.x + kw + bw / 2, b.y + 18);   // the chord name sits centred in bar 1's header
+  const b = await box(melCanvas(page)), S = await song(page), kw = 22 + 12;   // piano strip + left margin (desktop)
+  const bw = (b.width - kw - 16) / S.bars;
+  await page.mouse.click(b.x + kw + bw / 2, b.y + 14 + 18);   // the chord name sits centred in bar 1's header
   await expect(page.locator('.mel-pop .mel-quick')).toBeVisible();
 }
 // Click a control by its box (no Playwright auto-scroll: during a pop-over's entry animation Playwright's retry scrolls
@@ -181,7 +181,7 @@ test.describe('2 melody basics', () => {
     await page.keyboard.press('Escape');
     const n0 = (await song(page)).layers[0].notes.length;
     const b = await box(melCanvas(page));
-    await page.mouse.click(b.x + b.width * 0.7, b.y + 40 + (b.height - 40) * 0.3);
+    await page.mouse.click(b.x + b.width * 0.7, b.y + 64 + (b.height - 74) * 0.3);
     await expect.poll(async () => (await song(page)).layers[0].notes.length).toBe(n0 + 1);
   });
 
@@ -514,10 +514,9 @@ test.describe('11 Safari pinch (gesture events)', () => {
   }, [sel, scale]);
   test('pinch zooms the Melody map and the Babel map', async ({ page }) => {
     await open(page);
-    const zoomOut = page.getByRole('button', { name: /Zoom out on pitch/ });
-    await expect(zoomOut).toBeDisabled();
+    const span = () => page.evaluate(() => VH.melody.ctx.view.span), s0 = await span();
     expect(await pinch(page, 'canvas[aria-label="Melody drawing area over the harmony map"]', 2)).toBe(true);
-    await expect(zoomOut).toBeEnabled();
+    expect(await span()).toBeLessThan(s0);
     await page.evaluate(() => { location.hash = '#babel'; });
     await page.waitForFunction(() => VH.app.current === 'babel');
     await pinch(page, 'canvas[aria-label="Map of sounds in eight biomes"]', 0.8);   // saves a view to compare with
@@ -837,5 +836,135 @@ test.describe('14 playback + editing regressions', () => {
     await expect(p2.locator('#banner')).toBeHidden();
     expect(errs).toEqual([]);
     await ctx2.close();
+  });
+});
+
+// =====================================================================================================================
+// Graph editor: finer grids, ruler, scroll bar, edge margins, hold-and-drag notes, wider range + scrolling + time stretch.
+test.describe('15 graph editor', () => {
+  // canvas geometry (CSS px, relative to the canvas) + view state
+  const geo = (page) => page.evaluate(() => { const V = VH.melody.ctx.view; return { X0: V.X0, Y0: V.Y0, RL: V.RL, HDR: V.HDR, U: V.U(), BW: V.BW, CW: V.CW, GW: V.GW, scrollX: V.scrollX, span: V.span, pTop: V.pTop, MH: V.MH, PPS: V.PPS(), tz: V.tz }; });
+  const toNotes = (page) => page.evaluate(() => { const M = VH.melody.ctx; M.setActive(1); M.song.layers[1].notes.length = 0; M.song.snap = false; M.requestRender(); });
+  const noteCell = async (page, t16, m) => {   // page coords of sixteenth t16 and midi m
+    const b = await box(melCanvas(page)), g = await geo(page);
+    const y = await page.evaluate((m) => VH.melody.ctx.view.yOf(m), m);
+    return [b.x + g.X0 + t16 * g.U - g.scrollX, b.y + y];
+  };
+
+  test('grids 1/32 and 1/16T: selectable, 1/32 notes place and round-trip, old songs keep 1/8', async ({ page }) => {
+    await open(page);
+    expect(await page.evaluate(() => [...document.querySelectorAll('button')].map((b) => b.textContent))).toEqual(expect.arrayContaining(['1/8', '1/16', '1/32', '1/8T', '1/16T']));
+    await toNotes(page);
+    await page.evaluate(() => { VH.melody.ctx.song.grid = 32; });
+    const [x, y] = await noteCell(page, 3.3, 60);
+    await page.mouse.click(x, y);
+    let notes = (await song(page)).layers[1].notes;
+    expect(notes).toEqual([[3, 0.5, 60]]);
+    await page.evaluate(() => { VH.melody.ctx.song.layers[1].notes.length = 0; VH.melody.ctx.song.grid = 24; });
+    const [x2, y2] = await noteCell(page, 3.4, 62);
+    await page.mouse.click(x2, y2);
+    notes = (await song(page)).layers[1].notes;
+    expect(notes.length).toBe(1);
+    expect(notes[0][0]).toBeCloseTo(3.33333, 4);
+    expect(notes[0][1]).toBeCloseTo(0.66667, 4);
+    const rt = await page.evaluate(() => {
+      const md = VH.melody.model, o = JSON.parse(VH.melody.song()), p = md.parse(o);
+      const old = md.parse(Object.assign({}, o, { grid: undefined })), bad = md.parse(Object.assign({}, o, { grid: 5 }));
+      return { grid: p.grid, notes: p.layers[1].notes, old: old.grid, bad: bad.grid };
+    });
+    expect(rt.grid).toBe(24); expect(rt.old).toBe(8); expect(rt.bad).toBe(8);
+    expect(rt.notes[0].d).toBeCloseTo(2 / 3, 4);
+  });
+
+  test('ruler seeks and never edits chords; the chord strip never seeks', async ({ page }) => {
+    await open(page);
+    const b = await box(melCanvas(page)), g = await geo(page), chords0 = (await song(page)).chords;
+    await page.evaluate(() => VH.melody.ctx.engine.seek(1));
+    await page.mouse.click(b.x + g.X0 + g.BW * 2 + 5, b.y + g.RL / 2);
+    const cue = await page.evaluate(() => VH.melody.ctx.engine.cue);
+    expect(cue).toBeGreaterThan(30); expect(cue).toBeLessThan(36);
+    expect((await song(page)).chords).toEqual(chords0);
+    await page.evaluate(() => VH.melody.ctx.engine.seek(20));
+    await page.mouse.click(b.x + g.X0 + 4, b.y + g.RL + 8);   // empty chord-strip space, top part (no split "+")
+    expect(await page.evaluate(() => VH.melody.ctx.engine.cue)).toBe(20);
+    // dragging along the ruler scrubs
+    await page.mouse.move(b.x + g.X0 + 10, b.y + g.RL / 2); await page.mouse.down();
+    await page.mouse.move(b.x + g.X0 + g.BW * 3, b.y + g.RL / 2, { steps: 5 }); await page.mouse.up();
+    expect(await page.evaluate(() => VH.melody.ctx.engine.cue)).toBeGreaterThan(40);
+    expect((await song(page)).chords).toEqual(chords0);
+  });
+
+  test('horizontal scroll bar: thumb ~ visible fraction, drags, hidden when it all fits', async ({ page }) => {
+    await open(page);
+    const bar = page.locator('.mel-hbar');
+    await expect(bar).toBeHidden();
+    await page.evaluate(() => VH.melody.ctx.setBars(16));
+    await expect(bar).toBeVisible();
+    const g = await geo(page), tb = await box(bar), th = await box(page.locator('.mel-hbar-thumb'));
+    expect(th.width / tb.width).toBeGreaterThan(g.GW / g.CW - 0.03);
+    expect(th.width / tb.width).toBeLessThan(g.GW / g.CW + 0.03);
+    await page.mouse.move(th.x + th.width / 2, th.y + th.height / 2); await page.mouse.down();
+    await page.mouse.move(th.x + th.width / 2 + 80, th.y + th.height / 2, { steps: 4 }); await page.mouse.up();
+    expect((await geo(page)).scrollX).toBeGreaterThan(100);
+    await page.mouse.click(tb.x + 3, tb.y + tb.height / 2);   // track click left of the thumb = page back
+    expect((await geo(page)).scrollX).toBe(0);
+    await page.evaluate(() => VH.melody.ctx.setBars(2));
+    await expect(bar).toBeHidden();
+  });
+
+  test('edge margin: a press 8px left of the graph starts a stroke at time 0', async ({ page }) => {
+    await open(page);
+    const b = await box(melCanvas(page)), g = await geo(page);
+    await page.evaluate(() => { const M = VH.melody.ctx; M.setActive(0); M.song.layers[0].lines.length = 0; });
+    const y = b.y + g.Y0 + g.MH / 2;
+    await page.mouse.move(b.x + g.X0 - 8, y); await page.mouse.down();
+    await page.mouse.move(b.x + g.X0 + 60, y - 10, { steps: 4 }); await page.mouse.up();
+    const first = await page.evaluate(() => { const v = VH.melody.ctx.song.layers[0].lines[0].v; return [v[0], v.findIndex((x) => !Number.isNaN(x))]; });
+    expect(first[1]).toBe(0); expect(Number.isNaN(first[0])).toBe(false);
+  });
+
+  test('notes: press + drag right and up makes one longer, higher note; one undo removes it', async ({ page }) => {
+    await open(page);
+    await toNotes(page);
+    await page.evaluate(() => { VH.melody.ctx.song.grid = 16; });
+    const [x, y] = await noteCell(page, 2.5, 60), g = await geo(page);
+    await page.mouse.move(x, y); await page.mouse.down();
+    await page.mouse.move(x + 1.5 * g.U, y - 30, { steps: 4 });
+    await page.mouse.move(x + 2 * g.U, y - 30, { steps: 3 });
+    await page.mouse.up();
+    let notes = (await song(page)).layers[1].notes;
+    expect(notes.length).toBe(1);
+    expect(notes[0][0]).toBe(2); expect(notes[0][1]).toBe(3); expect(notes[0][2]).toBeGreaterThan(60);
+    await page.keyboard.press('Control+z');
+    expect((await song(page)).layers[1].notes.length).toBe(0);
+    // drag left of the start: the note spans the dragged range
+    const [x2, y2] = await noteCell(page, 8.5, 60);
+    await page.mouse.move(x2, y2); await page.mouse.down();
+    await page.mouse.move(x2 - 2 * g.U, y2, { steps: 5 }); await page.mouse.up();
+    notes = (await song(page)).layers[1].notes;
+    expect(notes[0].slice(0, 2)).toEqual([6, 3]); expect(notes[0][2]).toBe(60);
+  });
+
+  test('range: an octave more each way, pitch scroll, time stretch (stored)', async ({ page }) => {
+    await open(page);
+    const r = await page.evaluate(() => [VH.melody.model.LO, VH.melody.model.HI]);
+    expect(r[0]).toBeLessThanOrEqual(36); expect(r[1]).toBeGreaterThanOrEqual(96);
+    const b = await box(melCanvas(page)), g = await geo(page);
+    await page.mouse.move(b.x + b.width / 2, b.y + g.Y0 + g.MH / 2);
+    await page.mouse.wheel(0, 200);
+    expect((await geo(page)).pTop).toBeLessThan(g.pTop);   // wheel down = lower pitches
+    for (let i = 0; i < 20; i++) await page.mouse.wheel(0, 400);
+    const low = await geo(page);
+    expect(low.pTop - low.span).toBeLessThan(40);          // reaches below the old C3 floor (48)
+    for (let i = 0; i < 40; i++) await page.mouse.wheel(0, -400);
+    const hi = await geo(page);
+    expect(hi.pTop).toBeGreaterThan(90);
+    await page.getByRole('button', { name: /Stretch time/ }).click();
+    const g2 = await geo(page);
+    expect(g2.BW).toBeGreaterThan(g.BW * 1.2); expect(g2.tz).toBeCloseTo(1.25, 2);
+    await expect.poll(() => page.evaluate(() => (JSON.parse(localStorage.getItem('vh:melody.view') || '{}')).tz)).toBeCloseTo(1.25, 2);
+    await page.mouse.move(b.x + b.width / 2, b.y + g.Y0 + g.MH / 2);
+    await page.keyboard.down('Alt'); await page.mouse.wheel(0, 300); await page.keyboard.up('Alt');
+    expect((await geo(page)).tz).toBeLessThan(1.25);
   });
 });

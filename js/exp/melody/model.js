@@ -9,7 +9,7 @@
 
   const H = VH.harmony || require('../../core/harmony.js');   // Node tests load this file without the core scripts
   const SHARP = H.NAMES;
-  const LO = 48, HI = 84, SPAN = HI - LO, LPB = 48, SPB = 16, MAX_LAYERS = 8, BPM_MIN = 40, BPM_MAX = 200;
+  const LO = 36, HI = 96, SPAN = HI - LO, CBASE = 48, LPB = 48, SPB = 16, MAX_LAYERS = 8, BPM_MIN = 40, BPM_MAX = 200;
   const FLAT = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
   const QUALS = H.CHORD_Q.map((q) => [q, H.CHORD_SUFFIX[q], H.CHORD_IV[q]]);   // [id, name suffix, intervals]
   const QI = {}; QUALS.forEach((q, i) => { QI[q[0]] = i; });
@@ -122,6 +122,16 @@
     }
     return out.sort((x, y) => x.a - y.a || x.b - y.b);
   }
+
+  // Time grids (the song's `grid`): 8 = 1/8, 16 = 1/16, 32 = 1/32, 12 = 1/8 triplet, 24 = 1/16 triplet. gridStep = sixteenths per step.
+  const GRIDS = [8, 16, 32, 12, 24], GRID_STEP = { 8: 2, 16: 1, 32: 0.5, 12: 4 / 3, 24: 2 / 3 };
+  const GRID_LABEL = { 8: '1/8', 16: '1/16', 32: '1/32', 12: '1/8T', 24: '1/16T' };
+  const gridStep = (g) => GRID_STEP[g] || 2;
+  const r5 = (x) => Math.round(x * 1e5) / 1e5;
+  // floor / round a sixteenth position to the grid (tolerates the 5-digit rounding of triplets)
+  const gridFloor = (t, g) => { const q = gridStep(g); return r5(Math.floor(t / q + 1e-3) * q); };
+  const gridRound = (t, g) => { const q = gridStep(g); return r5(Math.round(t / q) * q); };
+  const gridCeil = (t, g) => { const q = gridStep(g); return r5(Math.ceil(t / q - 1e-3) * q); };
 
   function defaultSong() {
     return { v: 3, key: 0, mode: 'major', bars: 4, chords: [[0, 'maj'], [9, 'min'], [5, 'maj'], [7, 'maj']],
@@ -251,7 +261,20 @@
     for (const x of list) { const m = /^S(\d{1,4})$/.exec(x.id || ''); if (m) n = Math.max(n, +m[1]); }
     return 'S' + (n + 1);
   }
-  const secMeta = (x) => ({ id: x.id, name: x.name, color: x.color, rep: x.rep });
+  // Per-section backing override: section.back = { sound?, style? } (absent = follows the song-wide backing). Written only when set.
+  const backIn = (b, styles) => {
+    if (!b || typeof b !== 'object') return null;
+    const o = {};
+    if (typeof b.sound === 'string' && b.sound) o.sound = b.sound;
+    if (typeof b.style === 'string' && (!styles || styles.includes(b.style))) o.style = b.style;
+    return Object.keys(o).length ? o : null;
+  };
+  const secMeta = (x) => { const o = { id: x.id, name: x.name, color: x.color, rep: x.rep }; if (x.back) o.back = backIn(x.back); if (!o.back) delete o.back; return o; };
+  // The backing instrument + style that play in section k (default: the shown section): { sound, style, over (has an override) }
+  function backOf(S, k) {
+    const B = S.backing, x = S.sections && S.sections[k == null ? S.cur : k], o = x && x.back;
+    return { sound: (o && o.sound) || B.sound, style: (o && o.style) || B.style, over: !!o };
+  }
   function liveContent(S) {   // the current section's content, by reference
     const dr = Object.assign({}, S.drums); delete dr.vol;
     const ed = S.ext && S.ext.edit, layers = {};
@@ -359,7 +382,7 @@
 
   function serLayerContent(l) {
     return { lines: strokes(l).map((st) => ({ id: st.id, segs: segs(st.v) })).filter((x) => x.segs.length),
-      notes: l.notes.slice().sort((a, b) => a.s - b.s || a.m - b.m).map((n) => [n.s, n.d, r2(n.m)]) };
+      notes: l.notes.slice().sort((a, b) => a.s - b.s || a.m - b.m).map((n) => [r5(n.s), r5(n.d), r2(n.m)]) };
   }
   function serContent(d, layers) {
     const o = { bars: d.bars, ts: d.ts, key: d.key, mode: d.mode, chords: serChords(d.chords), drums: plain(d.drums),
@@ -434,7 +457,7 @@
     const S = { key: num(o.key, 0, 11, 0) | 0, mode: modeIn(o.mode, 'major'), tuning: HM.tuningById(o.tuning).id, bars, ts,
       // a backing track keeps its detected (fractional) tempo
       bpm: o.track ? Math.round(num(bpm, BPM_MIN, BPM_MAX, 120) * 100) / 100 : Math.round(num(bpm, BPM_MIN, BPM_MAX, 120)),
-      grid: o.grid === 16 ? 16 : 8, loop: o.loop !== false, snap: !!o.snap,
+      grid: GRIDS.includes(o.grid) ? o.grid : 8, loop: o.loop !== false, snap: !!o.snap,
       master: num(o.master, 0, VOL_MAX, 1), bandsOthers: !!o.bandsOthers, fx: plain(o.fx), drums: plain(o.drums), ext: plain(o.ext) };
     S.chords = parseChords(o.chords, v4, bars, ts);
     const src = (v1 ? o.layers.slice(0, 3) : o.layers.slice(0, MAX_LAYERS)).filter((l) => l && typeof l === 'object');
@@ -476,6 +499,7 @@
       const m = { id, name: typeof x.name === 'string' && x.name.trim() ? x.name.trim().slice(0, 20) : 'Section ' + (k + 1),
         color: typeof x.color === 'string' && /^#[0-9a-f]{6}$/i.test(x.color) ? x.color : SEC_COLORS[k % SEC_COLORS.length],
         rep: clamp(Math.round(+x.rep) || 1, 1, MAX_REP), data: null };
+      const bk = backIn(x.back); if (bk) m.back = bk;
       if (k !== cur) m.data = parseContent(x, S);
       return m;
     });
@@ -620,7 +644,7 @@
     });
     pruneStrokes(lay);
     lay.notes = (Array.isArray(l.notes) ? l.notes : []).filter((n) => Array.isArray(n) && n.length >= 3)
-      .map((n) => ({ s: n[0] | 0, d: n[1] | 0, m: num(n[2], LO, HI, 60) }))
+      .map((n) => ({ s: r5(num(n[0], 0, 1e6, -1)), d: r5(num(n[1], 0, 1e6, 0)), m: num(n[2], LO, HI, 60) }))
       .filter((n) => n.s >= 0 && n.d > 0 && n.s < tot);
     lay.notes.forEach((n) => { n.d = Math.min(n.d, tot - n.s); });
     return lay;
@@ -644,8 +668,8 @@
   // key root: ch.kp in flattened songs, else S.key). Without S (names, the header): the plain equal-tempered midis.
   const chordMidis = (ch, S) => {
     const iv = QUALS[QI[ch[1]]][2];
-    if (!S || tuningOf(S) === '12tet') return iv.map((i) => LO + ch[0] + i);
-    return HM.tunedChord(tuningOf(S), ch.kp != null ? ch.kp : S.key, ch[0], iv, LO);
+    if (!S || tuningOf(S) === '12tet') return iv.map((i) => CBASE + ch[0] + i);
+    return HM.tunedChord(tuningOf(S), ch.kp != null ? ch.kp : S.key, ch[0], iv, CBASE);
   };
   const scaleOf = (S) => SCALE[S.mode] || SCALE.major;
   const namesOf = (S) => (scaleOf(S).flat.includes(S.key) ? FLAT : SHARP);
@@ -688,12 +712,12 @@
     return l.vol;
   };
 
-  NS.model = { LOOK_DEFAULTS, LOOK_THEMES, lookIn, lookCurve, lookStops, tensionH, tensionName, tensionTint, TENSION_W, LO, HI, SPAN, LPB, SPB, MAX_LAYERS, BPM_MIN, BPM_MAX, SHARP, FLAT, QUALS, QI, SCALE, NATURAL, COLORS,
+  NS.model = { LOOK_DEFAULTS, LOOK_THEMES, lookIn, lookCurve, lookStops, tensionH, tensionName, tensionTint, TENSION_W, LO, HI, SPAN, CBASE, GRIDS, GRID_LABEL, gridStep, gridFloor, gridRound, gridCeil, r5, LPB, SPB, MAX_LAYERS, BPM_MIN, BPM_MAX, SHARP, FLAT, QUALS, QI, SCALE, NATURAL, COLORS,
     GAIN, VOL_MAX, MAX_STROKES, strokes, nextStrokeId, addStroke, strokeEmpty, pruneStrokes, lineAt, hasLine, lineRuns, withLegacyLine, volDb, volLabel, clamp, r2, regionOf, newLayer, nextLayerId, assignIds, defaultSong, segs, serialize, parse, chordMidis, scaleOf, namesOf, chordName, diatonic,
     scaleChords, scaleLabel, SCALE_GROUPS, TUNINGS, tuningOf, gridOf, gridSnap, modeIn,
     secPerBar, secPer16, layerGain,
     TS, TS_LIST, tsOf, spb, lpb, tot16, barsOf, barAt, beatGrid,
     normChords, regionAt, regionEnd, chordAt, regionChord, regions, barChords, isBarStart, splitAt, mergeAt, serChords, parseChords,
-    MAX_SECTIONS, MAX_BARS, MAX_REP, SEC_COLORS, SEC_NAMES, nextSecId, liveContent, copyContent, contentOf, applyContent, selectSection,
+    MAX_SECTIONS, MAX_BARS, MAX_REP, SEC_COLORS, SEC_NAMES, nextSecId, liveContent, copyContent, contentOf, applyContent, selectSection, backOf,
     emptyContent, sectionSong, arrangement, songTot, flatten, autoIn, autoOut, autoCopy, AUTO_RE, MAX_AUTO };
 })();

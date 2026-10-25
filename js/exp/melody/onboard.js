@@ -197,7 +197,7 @@
       if (id === 'draw') {
         const x0 = Math.max(V.X0, V.sx(V.xOf(GHOST_BARS[0] * SPB))), x1 = Math.min(V.VW, V.sx(V.xOf((GHOST_BARS[1] + 1) * SPB)));
         if (x1 <= x0) return null;
-        return { left: cr.left - er.left + x0 * k, top: cr.top - er.top + V.HDR * k, width: (x1 - x0) * k, height: V.MH * k };
+        return { left: cr.left - er.left + x0 * k, top: cr.top - er.top + V.Y0 * k, width: (x1 - x0) * k, height: V.MH * k };
       }
       if (id === 'inst') {
         const b = M.ui.dock.querySelector('[title="Instrument of the active layer"]');
@@ -215,7 +215,7 @@
       }
       if (id === 'chord') {
         const b = Math.min(2, M.song.bars - 1), cx = V.sx((b + 0.5) * V.BW), w = Math.min(V.BW - 8, 70);
-        return { left: cr.left - er.left + (cx - w / 2) * k, top: cr.top - er.top + 3 * k, width: w * k, height: (V.HDR - 6) * k };
+        return { left: cr.left - er.left + (cx - w / 2) * k, top: cr.top - er.top + (V.RL + 3) * k, width: w * k, height: (V.CH - 6) * k };
       }
       return null;
     }

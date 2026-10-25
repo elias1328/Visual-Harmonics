@@ -84,8 +84,19 @@
       const b = VH.sounds.get(S.backing.sound); prepare(b); backSnd = b || fallback();
     }
     M.soundOf = (L) => sndOf[L] || VH.sounds.get((S.layers[L] || {}).sound) || fallback();
-    M.backingSound = () => backSnd || fallback();
-    M.usesSound = (id, exceptLayer) => S.backing.sound === id || S.layers.some((l, i) => i !== exceptLayer && l.sound === id);
+    // The backing instrument of section k (default: the shown one): a per-section override (section.back) or the song-wide one
+    M.backingSoundOf = (k) => { const id = md.backOf(S, k).sound; if (id === S.backing.sound) return backSnd || fallback(); const b = VH.sounds.get(id); prepare(b); return b || backSnd || fallback(); };
+    M.backingSound = () => M.backingSoundOf(S.cur);
+    const backIds = (T) => [T.backing.sound].concat((T.sections || []).map((x) => x.back && x.back.sound).filter(Boolean));
+    // Set (patch) or clear (null) the shown section's backing override { sound?, style? }; one undo step
+    M.setSectionBack = (patch, label) => {
+      const x = S.sections[S.cur];
+      if (!x) return;
+      if (patch == null) delete x.back;
+      else { const b = Object.assign({}, x.back, patch); Object.keys(b).forEach((q) => { if (b[q] == null) delete b[q]; }); if (Object.keys(b).length) x.back = b; else delete x.back; }
+      M.engine.restartBacking(); M.commit(label || 'Section backing');
+    };
+    M.usesSound = (id, exceptLayer) => backIds(S).includes(id) || S.layers.some((l, i) => i !== exceptLayer && l.sound === id);
     M.soundsChanged = () => { if (!alive) return; resolveSounds(); M.bands.refresh(); M.ui.sync(); M.emit('sounds'); };
     // A sound this song uses that is not on this device (a share link with imported sounds, a deleted sound): the closest
     // built-in by play type + spectrum (from the link's ext.snd snapshot, see M.share), named in a toast. Drum-kit rows
@@ -113,6 +124,7 @@
       };
       S.layers.forEach((l) => { if (!VH.sounds.get(l.sound)) l.sound = sub(l.sound, l.name); });
       if (!VH.sounds.get(S.backing.sound)) S.backing.sound = sub(S.backing.sound, 'backing');
+      S.sections.forEach((x) => { if (x.back && x.back.sound && !VH.sounds.get(x.back.sound)) x.back.sound = sub(x.back.sound, 'backing, ' + x.name); });
       const kit = S.ext && S.ext.kit;
       if (kit && Array.isArray(kit.rows)) kit.rows.forEach((r) => { if (r && r.sound && !VH.sounds.get(r.sound)) { miss.push((r.sname || r.name) + ' → built-in ' + (r.syn || 'perc') + ' (drums)'); r.sound = null; } });
       M.missing = miss;
@@ -127,7 +139,7 @@
     }
     // Sounds of the user's own (imported, Babel, tone copies) used by song S: [{ id, name, play, spectrum }].
     M.ownSounds = function (song) {
-      const T = song || S, ids = new Set(T.layers.map((l) => l.sound).concat(T.backing.sound));
+      const T = song || S, ids = new Set(T.layers.map((l) => l.sound).concat(backIds(T)));
       const kit = T.ext && T.ext.kit;
       if (kit && Array.isArray(kit.rows)) kit.rows.forEach((r) => r && r.sound && ids.add(r.sound));
       return [...ids].map((id) => VH.sounds.get(id)).filter((x) => x && x.source !== 'preset' && x.source !== 'sample');
@@ -388,6 +400,7 @@
       if (!dup) data.drums = md.copyContent(md.liveContent(S)).drums;   // a new section keeps the groove (no notes, tonic chords)
       const x = { id: md.nextSecId(S.sections), name: dup ? nameFor(cur.name.replace(/ \d+$/, '')) : nameFor(),
         color: dup ? cur.color : md.SEC_COLORS.find((c) => !used.has(c)) || md.SEC_COLORS[S.sections.length % md.SEC_COLORS.length], rep: 1, data };
+      if (dup && cur.back) x.back = Object.assign({}, cur.back);
       const k = S.cur + 1;
       if (M.engine.playing) M.engine.stop();
       S.sections.splice(k, 0, x);
@@ -695,11 +708,16 @@
       { keys: 'Space', label: 'Play / stop' },
       { keys: 'P', label: 'Pen: draw a free line' },
       { keys: 'L', label: 'Line: straight glide (hold Shift for whole semitones)' },
-      { keys: 'N', label: 'Notes: click to place, drag right to lengthen' },
+      { keys: 'N', label: 'Notes: click to place; hold and drag right/left to set the length, up/down for the pitch' },
       { keys: 'V', label: 'Select: click or drag a box (Shift adds), drag to move' },
       { keys: 'E', label: 'Eraser' },
       { keys: 'S', label: 'Snap to bright bands on / off' },
       { keys: '= / −', label: 'Zoom the pitch range in / out (the + key works too)' },
+      { keys: 'Wheel', label: 'Scroll the pitch up / down (at the full range: scroll time)' },
+      { keys: 'Shift+Wheel / swipe sideways', label: 'Scroll time' },
+      { keys: 'Ctrl+Wheel / pinch', label: 'Zoom the pitch range' },
+      { keys: 'Alt+Wheel (or Ctrl+Shift+Wheel)', label: 'Stretch / squeeze time (wider or narrower bars; the ↔ buttons too)' },
+      { keys: 'Click the ruler', label: 'Move the playhead (drag to scrub); the chord strip below it never seeks' },
       { keys: 'Ctrl+Z', label: 'Undo' },
       { keys: 'Ctrl+Shift+Z / Ctrl+Y', label: 'Redo' },
       { keys: 'Delete / Backspace', label: 'Delete the selection' },

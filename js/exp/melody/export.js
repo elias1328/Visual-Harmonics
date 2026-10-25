@@ -331,7 +331,13 @@
     }
     const regs = chordRegions(song);
     if (o.backing && regs.some((e) => e.chord)) {
-      const ch = takeCh(8), snd = o.backingSound || { id: song.backing && song.backing.sound };
+      const ch = takeCh(8), snd0 = o.backingSound || { id: song.backing && song.backing.sound };
+      // per-section backing instrument (section.back): the section of a flattened song's bar, its sound -> GM program (changes sent at the region start)
+      const fb = song.flat && song.flat.bars, secOf = (t16) => { if (!fb) return null; let q = null; for (const b of fb) { if (b.a <= t16 + 1e-9) q = b.sec; else break; } return q; };
+      const sndOf2 = (k) => (o.backingSoundOf ? o.backingSoundOf(k) : null) || snd0;
+      const firstR = regs.find((e) => e.chord), snd = firstR ? sndOf2(secOf(firstR.at)) : snd0, prog = gmProgram(snd);
+      const pcs = [];   // program changes [tick, program]
+      let curProg = prog;
       let ev = [];
       const notes = [];   // tuned: { a, z (ticks), m (midi float), v }, written below with one channel per voice
       for (let r = 0; r < loops; r++) {
@@ -339,6 +345,7 @@
           const c = R.chord;
           if (!c) return;
           const t0 = (r * tot + R.at) * T16, t1 = (r * tot + R.z) * T16;
+          if (fb && o.backingSoundOf) { const pg = gmProgram(sndOf2(secOf(R.at))); if (pg !== curProg) { curProg = pg; pcs.push([Math.max(0, Math.round(t0) - 1), pg]); } }
           // the backing style + its sub-settings (B2's events per chord region: p = sixteenth from the region start,
           // dt / dur in seconds, g = gain)
           const bev = o.backingEvents ? o.backingEvents(b, c) : null;
@@ -358,13 +365,14 @@
           }
         });
       }
-      const name = 'Backing chords – ' + (snd.name || snd.id || 'chords'), prog = gmProgram(snd), bvol = song.backing ? song.backing.vol : 0.4;
+      const name = 'Backing chords – ' + (snd.name || snd.id || 'chords'), bvol = song.backing ? song.backing.vol : 0.4;
       const tone = (x, c) => { const k = clamp(Math.round(x.m), 0, 127); return [bendEv(x.a, c, bendOf(x.m - k)), { t: x.a, o: O.on, b: [0x90 | c, k, x.v] }, { t: x.z, o: O.off, b: [0x80 | c, k, 0] }]; };
       if (tuned) packVoices(notes).forEach((vs, k) => {
         const c = k ? takeCh(ch) : ch;
-        const evk = [].concat(...vs.map((x) => tone(x, c)));
+        const evk = pcs.map(([t, pg]) => ({ t, o: O.setup, b: [0xc0 | c, pg & 127] })).concat(...vs.map((x) => tone(x, c)));
         if (!k) ev = evk; else parts.push({ name: name + ' (voice ' + (k + 1) + ')', ch: c, program: prog, vol: bvol, track: 'backing', own: 'backing', events: evk });
       });
+      if (!tuned) ev = pcs.map(([t, pg]) => ({ t, o: O.setup, b: [0xc0 | ch, pg & 127] })).concat(ev);
       parts.push({ name, ch, program: prog, vol: bvol, track: tuned ? 'backing' : undefined, own: 'backing', events: ev });
     }
     if (o.drums) {
@@ -850,7 +858,7 @@
         if (st.fmt === 'midi') {
           const src = songOf();
           const bytes = songToMidi(src, { mode: st.midiMode, layers: sel.layers, backing: sel.backing, drums: sel.drums, loops: st.loops,
-            soundOf: (i) => M.soundOf(i), backingSound: M.backingSound(), chordMidis: (ch) => md.chordMidis(ch, src), drumHits: sel.drums ? drumList() : null,
+            soundOf: (i) => M.soundOf(i), backingSound: M.backingSound(), backingSoundOf: (k) => M.backingSoundOf(k), chordMidis: (ch) => md.chordMidis(ch, src), drumHits: sel.drums ? drumList() : null,
             tuned: md.tuningOf(src) !== '12tet',
             backingEvents: NS.sound && NS.sound.regionEvents ? (r) => NS.sound.regionEvents(src, r) : null });
           download(new Blob([bytes], { type: 'audio/midi' }), name + '.mid');
@@ -909,7 +917,7 @@
       const S = songOf(), sr = 44100, tot = md.tot16(S), sec16 = md.secPer16(S), songSec = loops * tot * sec16;
       const seconds = songSec + TAIL;
       const ids = new Set(sel.layers.map((i) => M.soundOf(i).id));   // samplers must be decoded first
-      if (sel.backing) ids.add(M.backingSound().id);
+      if (sel.backing) { ids.add(M.backingSound().id); S.sections.forEach((x, k) => { if (x.back && x.back.sound) ids.add(M.backingSoundOf(k).id); }); }
       if (sel.drums && NS.sound && NS.sound.kitSoundIds) NS.sound.kitSoundIds(S).forEach((id) => ids.add(id));   // the kit's sampled rows
       await Promise.all([...ids].map((id) => (VH.sounds.prepare ? VH.sounds.prepare(id).catch(() => null) : null)));
       if (!alive) throw new Error('cancelled');
@@ -932,7 +940,7 @@
             backing: Object.assign({}, S.backing, { on: sel.whole ? S.backing.on : !!sel.backing }),
             drums: Object.assign({}, S.drums, { on: !!sel.drums }),
           });
-          b2 = B.offline(ctx, S2, master, { loops, backingSound: back, backing: !!sel.backing, drums: !!sel.drums });
+          b2 = B.offline(ctx, S2, master, { loops, backingSound: back, backingSoundOf: (k) => M.backingSoundOf(k), backing: !!sel.backing, drums: !!sel.drums });
           layerIn = (i) => b2.layerIn(i);
           if (!sel.whole) S.layers.forEach((l, i) => { const n = b2.layerIn(i); if (n) n.gain.value = l.vol; });
           fxUsed = true; drumsUsed = !!sel.drums;
@@ -1148,7 +1156,8 @@
     const addSel = document.createElement('select'); addSel.className = 'mel-au-add'; addSel.setAttribute('aria-label', 'Add an automation lane');
     addSel.title = 'Add a lane: draw how a setting changes over time';
     const hint = ui.h('span', 'mel-au-hint', 'Draw how volume, pan or filter change over time');
-    head.append(tog, addSel, hint);
+    const pasteLaneBtn = ui.h('button', 'mel-au-tog', 'Paste lane'); pasteLaneBtn.type = 'button'; pasteLaneBtn.hidden = true;
+    head.append(tog, addSel, pasteLaneBtn, hint);
     rootEl.append(head, body);
     const tip = ui.h('div', 'mel-au-tip'); tip.hidden = true; tip.setAttribute('aria-hidden', 'true');
     rootEl.append(tip);
@@ -1173,17 +1182,27 @@
     // rows: one per lane of the shown section
     const rows = new Map();   // lane id -> { el, cv, lbl, x, sm, id }
     let sel = null, drag = null, hoverRow = null, lastTap = null;
+    // multi-selection (marquee / Shift-click): point refs of ONE lane (msLane); active = the last press was in a lane (so Ctrl+C/X/V/A act on points, not notes)
+    const ms = new Set();
+    let msLane = null, lastLane = null, active = false;
+    const r3 = (v) => Math.round(v * 1000) / 1000, MAXP = 400;
+    const msPts = () => { const ln = lanes().find((x) => x.id === msLane); return ln ? ln.points.filter((p) => ms.has(p)) : []; };
+    const curLane = () => lanes().find((x) => x.id === lastLane) || null;
+    const clipOf = () => NS.autoClip || null;   // { target, pts: [[t16, v, smooth?]], len (source section t16), whole } survives section switches
+    const nextId = (L) => { let n = 0; L.forEach((x) => { const m = /^a(\d+)$/.exec(x.id); if (m) n = Math.max(n, +m[1]); }); return 'a' + (n + 1); };
     const laneOf = (r) => lanes().find((x) => x.id === r.id) || null;
     function makeRow(ln) {
       const el = ui.h('div', 'mel-au-row'), cv = document.createElement('canvas'), lbl = ui.h('span', 'mel-au-lbl', '<i></i><span></span>');
-      const x = ui.h('button', 'mel-au-x', '✕'), sm = ui.h('button', 'mel-au-sm', '∿');
-      x.type = 'button'; sm.type = 'button'; sm.hidden = true;
+      const x = ui.h('button', 'mel-au-x', '✕'), sm = ui.h('button', 'mel-au-sm', '∿'), mo = ui.h('button', 'mel-au-more', '⋯');
+      x.type = 'button'; sm.type = 'button'; mo.type = 'button'; sm.hidden = true;
+      mo.title = 'Lane menu: copy this lane to other sections'; mo.setAttribute('aria-label', 'Lane menu');
       sm.title = 'Smooth curve after the selected point (Alt+click a point)';
       cv.className = 'mel-au-cv';
       el.style.height = ROW_H + 'px';
       el.dataset.target = ln.target;
-      el.append(cv, lbl, sm, x);
-      const r = { el, cv, lbl, x, sm, id: ln.id };
+      el.append(cv, lbl, mo, sm, x);
+      const r = { el, cv, lbl, x, sm, mo, id: ln.id };
+      mo.addEventListener('click', () => openMenu(r));
       x.addEventListener('click', () => removeLane(r.id));
       sm.addEventListener('click', () => { if (sel && sel.lane === r.id) toggleSmooth(sel.pt); });
       cv.addEventListener('pointerdown', (e) => onDown(r, e));
@@ -1226,9 +1245,13 @@
         r.x.setAttribute('aria-label', 'Remove lane ' + nm); r.x.title = 'Remove this lane';
         r.cv.setAttribute('aria-label', nm + ' automation: click to add a point, drag to move, double-click or right-click to delete');
         if (sel && sel.lane === ln.id && !ln.points.includes(sel.pt)) sel = null;
-        r.sm.hidden = !(sel && sel.lane === ln.id);
+        r.sm.hidden = !(sel && sel.lane === ln.id) || ms.size > 1;
         r.sm.setAttribute('aria-pressed', String(!!(sel && sel.lane === ln.id && sel.pt[2])));
       });
+      for (const p of [...ms]) if (!L.some((x) => x.id === msLane && x.points.includes(p))) ms.delete(p);
+      const cl = clipOf();
+      pasteLaneBtn.hidden = !open || !cl || !cl.whole;
+      if (cl) pasteLaneBtn.title = 'Paste the copied lane (' + nameOf(cl.target) + ') into this section, stretched to its length';
       drawAll();
     }
 
@@ -1279,13 +1302,19 @@
           c.globalAlpha = 0.16; c.fillStyle = col; c.fill(); c.globalAlpha = 1;
         }
         for (const p of P) {
-          const x = g.xOf(p[0]), y = yOf(p[1]), on = sel && sel.pt === p;
+          const x = g.xOf(p[0]), y = yOf(p[1]), on = (sel && sel.pt === p) || ms.has(p);
           if (x < g.x0 - 6 || x > w + 6) continue;
           c.beginPath();
           if (p[2]) { c.moveTo(x, y - 5); c.lineTo(x + 5, y); c.lineTo(x, y + 5); c.lineTo(x - 5, y); c.closePath(); } else c.arc(x, y, 4, 0, Math.PI * 2);
           c.fillStyle = on ? '#fff' : col; c.fill();
           c.lineWidth = 1.5; c.strokeStyle = on ? col : 'rgba(10,12,18,0.9)'; c.stroke();
+          if (ms.has(p)) { c.beginPath(); c.arc(x, y, 7, 0, Math.PI * 2); c.strokeStyle = '#fff'; c.lineWidth = 1.5; c.stroke(); }
         }
+      }
+      if (drag && drag.mq && drag.r === r) {   // marquee
+        const mx = Math.min(drag.x0, drag.x), my = Math.min(drag.y0, drag.y);
+        c.fillStyle = 'rgba(255,255,255,0.12)'; c.strokeStyle = 'rgba(255,255,255,0.8)'; c.lineWidth = 1;
+        c.fillRect(mx, my, Math.abs(drag.x - drag.x0), Math.abs(drag.y - drag.y0)); c.strokeRect(mx + 0.5, my + 0.5, Math.abs(drag.x - drag.x0), Math.abs(drag.y - drag.y0));
       }
       if (E.playing) {   // playhead
         const x = Math.round(g.xOf(E.pos16)) + 0.5;
@@ -1322,26 +1351,45 @@
       const g = geo(r), [x, y] = local(r, e);
       if (x < g.x0) return;
       e.preventDefault();
-      const h = hitPt(r, ln, e);
+      const h = hitPt(r, ln, e), multi = e.shiftKey || e.ctrlKey || e.metaKey;
+      lastLane = ln.id; active = true;
       if (h && e.altKey) { sel = { lane: ln.id, pt: h }; toggleSmooth(h); return; }
+      if (!h && multi) {   // Shift / Ctrl + drag on empty space = marquee
+        drag = { r, ln, mq: true, add: multi, x0: x, y0: y, x, y };
+        try { r.cv.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+        return;
+      }
+      if (h && multi) {   // Shift-click toggles a point in the selection
+        if (msLane !== ln.id) ms.clear();
+        msLane = ln.id;
+        if (ms.has(h)) ms.delete(h); else ms.add(h);
+      } else if (!(h && ms.has(h) && msLane === ln.id)) ms.clear();
       // a second press on the same point within 400 ms = double-click / double-tap: delete it
       if (h && lastTap && lastTap.pt === h && e.timeStamp - lastTap.t < 400) { lastTap = null; delPoint(ln, h); return; }
       lastTap = h ? { pt: h, t: e.timeStamp } : null;
       let pt = h, added = false;
       if (!pt) { pt = [snapT(g.tOf(x), e), Math.round(vOf(y) * 1000) / 1000]; ln.points.push(pt); sortPts(ln); added = true; }
       sel = { lane: ln.id, pt };
-      drag = { r, ln, pt, added, moved: false, x0: x, y0: y };
+      const group = !added && ms.has(pt) && msLane === ln.id && ms.size > 1 ? [...ms].map((p) => ({ p, t: p[0], v: p[1] })) : null;
+      drag = { r, ln, pt, added, moved: false, x0: x, y0: y, group };
       try { r.cv.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
       readout(r, ln, x, y, pt);
       render();
     }
     function onMove(r, e) {
       const [x, y] = local(r, e);
+      if (drag && drag.r === r && drag.mq) { drag.x = x; drag.y = y; draw(r); return; }
       if (drag && drag.r === r) {
         if (!drag.moved && Math.hypot(x - drag.x0, y - drag.y0) < 3) return;
         drag.moved = true; lastTap = null;
         const g = geo(r);
-        drag.pt[0] = snapT(g.tOf(x), e); drag.pt[1] = Math.round(vOf(y) * 1000) / 1000;
+        const nt = snapT(g.tOf(x), e), nv = Math.round(vOf(y) * 1000) / 1000;
+        if (drag.group) {
+          const G = drag.group, o = G.find((q) => q.p === drag.pt), tot = md.tot16(M.song);
+          const dt = clamp(nt - o.t, -Math.min(...G.map((q) => q.t)), tot - Math.max(...G.map((q) => q.t)));
+          const dv = clamp(nv - o.v, -Math.min(...G.map((q) => q.v)), 1 - Math.max(...G.map((q) => q.v)));
+          for (const q of G) { q.p[0] = r3(q.t + dt); q.p[1] = r3(q.v + dv); }
+        } else { drag.pt[0] = nt; drag.pt[1] = nv; }
         sortPts(drag.ln);
         readout(r, drag.ln, x, y, drag.pt);
         draw(r);
@@ -1358,8 +1406,17 @@
       if (!drag || drag.r !== r) return;
       const d = drag;
       drag = null;
+      if (d.mq) {
+        const g = geo(r), mx = Math.min(d.x0, d.x), Mx = Math.max(d.x0, d.x), my = Math.min(d.y0, d.y), My = Math.max(d.y0, d.y);
+        if (!d.add || msLane !== d.ln.id) ms.clear();
+        msLane = d.ln.id;
+        if (Mx - mx >= 3 || My - my >= 3) for (const p of d.ln.points) { const px = g.xOf(p[0]), py = yOf(p[1]); if (px >= mx && px <= Mx && py >= my && py <= My) ms.add(p); }
+        sel = ms.size === 1 ? { lane: d.ln.id, pt: [...ms][0] } : null;
+        render();
+        return;
+      }
       if (d.added) M.commit('Add automation point');
-      else if (d.moved) M.commit('Move automation point');
+      else if (d.moved) M.commit(d.group ? 'Move automation points' : 'Move automation point');
       render();
     }
     function delPoint(ln, p) {
@@ -1374,9 +1431,128 @@
       if (p[2]) p.length = 2; else p[2] = 1;
       M.commit(p[2] ? 'Smooth automation' : 'Linear automation');
     }
-    // Delete / Backspace removes the selected point while the pointer is over a lane
+    // ---------- select / copy / paste (points of the lane last pressed; otherwise the keys fall through to the graph's notes) ----------
+    function copyPts(cut) {
+      const ln = curLane(), P = msPts();
+      if (!ln || !P.length) return false;
+      NS.autoClip = { target: ln.target, pts: P.map((p) => p.slice()), len: md.tot16(M.song), whole: false };
+      if (cut) { ln.points = ln.points.filter((p) => !ms.has(p)); ms.clear(); sel = null; M.commit('Cut automation points'); } else M.toast('Copied ' + P.length + ' point' + (P.length > 1 ? 's' : ''));
+      render(); return true;
+    }
+    function pasteHere() {
+      const cl = clipOf(), ln = curLane();
+      if (!cl || !cl.pts.length || !ln) return false;
+      const S = M.song, tot = md.tot16(S), at = E.playing ? E.pos16 : (E.cue != null ? E.cue : E.pos16), t0 = Math.min(...cl.pts.map((p) => p[0]));
+      const add = cl.pts.map((p) => { const q = p.slice(); q[0] = r3(p[0] - t0 + at); return q; }).filter((p) => p[0] <= tot).slice(0, Math.max(0, MAXP - ln.points.length));
+      if (!add.length) { M.toast('Nothing to paste here (past the end of the section)'); return true; }
+      ln.points.push(...add); sortPts(ln);
+      ms.clear(); msLane = ln.id; add.forEach((p) => ms.add(p)); sel = null;
+      M.commit('Paste automation points');
+      render(); return true;
+    }
+    function selectAllPts() {
+      const ln = curLane();
+      if (!ln) return false;
+      ms.clear(); msLane = ln.id; ln.points.forEach((p) => ms.add(p)); sel = null; render(); return true;
+    }
+    function delSelPts() {
+      const ln = lanes().find((x) => x.id === msLane), P = msPts();
+      if (!ln || !P.length) return false;
+      ln.points = ln.points.filter((p) => !ms.has(p)); ms.clear(); sel = null; tip.hidden = true;
+      M.commit('Delete automation point' + (P.length > 1 ? 's' : ''));
+      render(); return true;
+    }
+    // Paste lane: the copied lane replaces the lane of its target in this section (made if missing), times stretched to this section's length
+    function pasteLane() {
+      const cl = clipOf();
+      if (!cl || !cl.whole) return;
+      const L = lanes(), S = M.song;
+      let ln = L.find((x) => x.target === cl.target);
+      if (!ln) {
+        const q = A.parseTarget(cl.target);
+        if (!q || (q.layer && !S.layers.some((l) => l.id === q.layer)) || L.length >= md.MAX_AUTO) { M.toast('Cannot paste that lane here'); return; }
+        ln = { id: nextId(L), target: cl.target, points: [] }; L.push(ln);
+      }
+      const f = md.tot16(S) / (cl.len || 1);
+      ln.points = cl.pts.map((p) => { const q = p.slice(); q[0] = r3(p[0] * f); return q; });
+      ms.clear(); openState = true;
+      M.commit('Paste lane: ' + nameOf(cl.target));
+      render();
+    }
+    pasteLaneBtn.addEventListener('click', pasteLane);
+    // Copy to sections: times are scaled proportionally to each target section's length; an existing lane of the same target is replaced
+    function copyToSections(ln, ks) {
+      const S = M.song, t0 = md.tot16(S) || 1;
+      let n = 0;
+      ks.forEach((k) => {
+        const x = S.sections[k];
+        if (!x || k === S.cur || !x.data) return;
+        const d = x.data, f = md.tot16(md.sectionSong(S, k)) / t0;
+        if (!Array.isArray(d.auto)) d.auto = [];
+        let dst = d.auto.find((a) => a.target === ln.target);
+        if (!dst) { if (d.auto.length >= md.MAX_AUTO) return; dst = { id: nextId(d.auto), target: ln.target, points: [] }; d.auto.push(dst); }
+        dst.points = ln.points.map((p) => { const q = p.slice(); q[0] = r3(p[0] * f); return q; });
+        n++;
+      });
+      if (n) { M.commit('Copy lane to ' + n + ' section' + (n > 1 ? 's' : '')); M.toast('Copied "' + nameOf(ln.target) + '" to ' + n + ' section' + (n > 1 ? 's' : '')); }
+      return n;
+    }
+    // lane menu (fixed pop-over): Copy lane, Copy to sections (checklist)
+    let menu = null;
+    function closeMenu() { if (menu) { menu.remove(); menu = null; } }
+    function openMenu(r) {
+      closeMenu();
+      const ln = laneOf(r);
+      if (!ln) return;
+      const S = M.song, m = ui.h('div', 'mel-au-menu');
+      m.setAttribute('role', 'dialog'); m.setAttribute('aria-label', 'Lane menu: ' + nameOf(ln.target));
+      const b1 = ui.h('button', 'mel-au-mi', 'Copy lane'); b1.type = 'button'; b1.title = 'Copy the whole lane; use Paste lane in another section';
+      b1.addEventListener('click', () => { NS.autoClip = { target: ln.target, pts: ln.points.map((p) => p.slice()), len: md.tot16(S), whole: true }; closeMenu(); M.toast('Lane copied: switch section, then "Paste lane"'); render(); });
+      const hd = ui.h('div', 'mel-au-mh', 'Copy to sections (times stretch to each length)');
+      const list = ui.h('div', 'mel-au-ml'), boxes = [];
+      S.sections.forEach((x, k) => {
+        if (k === S.cur) return;
+        const lb = ui.h('label', 'mel-au-mc'), cb = document.createElement('input'); cb.type = 'checkbox'; cb.value = k;
+        lb.append(cb, document.createTextNode(' ' + (x.name || 'Section ' + (k + 1)))); list.append(lb); boxes.push(cb);
+      });
+      const all = ui.h('button', 'mel-au-mi', 'All other sections'); all.type = 'button';
+      all.addEventListener('click', () => { boxes.forEach((b) => { b.checked = true; }); });
+      const go = ui.h('button', 'mel-au-mi mel-au-go', 'Copy'); go.type = 'button';
+      go.addEventListener('click', () => { const ks = boxes.filter((b) => b.checked).map((b) => +b.value); if (ks.length) copyToSections(ln, ks); closeMenu(); render(); });
+      m.append(b1, hd);
+      if (boxes.length) m.append(all, list, go); else m.append(ui.h('div', 'mel-au-mh', 'Add another section first.'));
+      document.body.appendChild(m); menu = m;
+      const br = r.mo.getBoundingClientRect();
+      m.style.top = Math.round(Math.max(0, Math.min(br.bottom + 2, root.innerHeight - m.offsetHeight - 4))) + 'px';
+      m.style.left = Math.round(Math.max(4, Math.min(br.right - m.offsetWidth, root.innerWidth - m.offsetWidth - 4))) + 'px';
+    }
+    const onDocDown = (e) => {
+      if (menu && !menu.contains(e.target) && !(e.target.classList && e.target.classList.contains('mel-au-more'))) closeMenu();
+      if (!rootEl.contains(e.target)) active = false;
+    };
+    document.addEventListener('pointerdown', onDocDown, true);
+    M.cleanups.push(() => { document.removeEventListener('pointerdown', onDocDown, true); closeMenu(); });
+
+    // Ctrl+C / X / V / A act on points while a lane is the active context; Delete / Backspace remove the selected points
     const onKey = (e) => {
-      if (!sel || !hoverRow || (e.key !== 'Delete' && e.key !== 'Backspace')) return;
+      if (!alive) return;
+      const t = e.target, tag = t && t.tagName;
+      if (tag === 'TEXTAREA' || (t && t.isContentEditable) || (tag === 'INPUT' && !/^(range|checkbox|radio|button)$/.test(t.type))) return;
+      const k = (e.key || '').toLowerCase();
+      if (e.key === 'Escape' && menu) { closeMenu(); return; }
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+        if (!active || !curLane()) return;
+        let did = false;
+        if (k === 'a') did = selectAllPts();
+        else if (k === 'c') did = copyPts(false);
+        else if (k === 'x') did = copyPts(true);
+        else if (k === 'v') did = pasteHere();
+        if (did) { e.preventDefault(); e.stopPropagation(); }
+        return;
+      }
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+      if (ms.size && (active || hoverRow) && delSelPts()) { e.preventDefault(); e.stopPropagation(); return; }
+      if (!sel || !hoverRow) return;
       const ln = lanes().find((x) => x.id === sel.lane);
       if (!ln) return;
       e.preventDefault(); e.stopPropagation();
@@ -1452,12 +1628,12 @@
     M.on('stop', () => { sch.dirty = true; idle(); drawAll(); });
     M.on('seek', () => { if (!E.playing) idle(); });
     M.on('song', () => { sch.dirty = true; idle(); render(); });
-    M.on('section', () => { sch.dirty = true; render(); });
+    M.on('section', () => { sch.dirty = true; ms.clear(); lastLane = null; closeMenu(); render(); });
     M.on('layout', () => render()); M.on('scroll', drawAll);
     M.on('layer', render);
 
     // debug / tests
-    NS.autoPart = { M, render, addLane, removeLane, rows, sch, isOpen, el: rootEl,
+    NS.autoPart = { M, render, addLane, removeLane, rows, sch, isOpen, el: rootEl, ms, copyToSections, pasteLane, laneOf: (id) => lanes().find((x) => x.id === id),
       get open() { return openState; }, set open(v) { openState = v; render(); }, geo: (id) => (rows.get(id) ? geo(rows.get(id)) : null) };
     mountLane();
     render();

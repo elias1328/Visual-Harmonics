@@ -139,7 +139,7 @@
     const touchy = (p) => p && p.e && p.e.pointerType === 'touch';
     const lay = () => M.song.layers[M.active];
     const tot16 = () => md.tot16(M.song);
-    const grid = () => (M.song.grid === 16 ? 1 : 2);
+    const grid = () => md.gridStep(M.song.grid);
     const nh = () => V.noteH();
     const lu = () => V.U() / SPS;
     const LEN = () => tot16() * SPS;
@@ -247,8 +247,8 @@
       if (!d.moved && Math.hypot(p.x - d.x0, p.y - d.y0) < 3) return;
       d.moved = true;
       const q = l.mode === 'notes' ? grid() : 1;
-      let dt = Math.round((p.t16 - d.t0) / q) * q;
-      dt = clamp(dt, -Math.floor(d.lo / q) * q, Math.floor((tot16() - d.hi) / q) * q);
+      let dt = md.r5(Math.round((p.t16 - d.t0) / q) * q);
+      dt = clamp(dt, -Math.floor(d.lo / q + 1e-3) * q, Math.floor((tot16() - d.hi) / q + 1e-3) * q);
       const raw = V.midiOf(p.y) - V.midiOf(d.y0);
       let dm;
       if (S.snap) {
@@ -261,7 +261,7 @@
       const snapN = (JSON.parse(d.vstore) || {}).n || [];
       const x = vstore(S, L, snapN.length > 0);
       if (x) x.n = snapN;
-      d.notes.forEach((o) => { o.n.s = o.s + dt; o.n.m = Math.round((o.m + dm) * 1000) / 1000; });
+      d.notes.forEach((o) => { o.n.s = md.r5(o.s + dt); o.n.m = Math.round((o.m + dm) * 1000) / 1000; });
       d.notes.forEach((o) => { if (o.v) setNoteVib(S, L, { s: o.s, m: o.m }, null); });
       d.notes.forEach((o) => { if (o.v) setNoteVib(S, L, o.n, o.v); });
       // line samples, per stroke (vacated samples clear, the destination in the same stroke is overwritten)
@@ -345,7 +345,7 @@
       if (!clip) return;
       const q = lay().mode === 'notes' ? grid() : 1;
       const t = hover && hover.mouse ? V.t16Of(hover.x) : M.engine.pos16;
-      pasteAt(Math.floor(t / q) * q);
+      pasteAt(md.r5(Math.floor(t / q + 1e-3) * q));
     }
     function duplicate() {
       if (!copySel()) return;

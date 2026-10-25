@@ -141,7 +141,8 @@
   }
   const drumsW = (S) => { S.drums = drumsOf(S); return S.drums; };
   const patFor = (d, bar) => (d.vary && d.bars[bar] ? d.bars[bar] : d.pat);
-  const styleOf = (S) => (STYLES.some((s) => s[0] === S.backing.style) ? S.backing.style : 'drone');
+  // the backing style in section k (default: the shown one), honouring a per-section override (section.back, see model.js backOf)
+  const styleOf = (S, k) => { const st = md.backOf(S, k).style; return STYLES.some((s) => s[0] === st) ? st : 'drone'; };
   // Sub-settings of a style, validated, with defaults for anything missing (old songs have none).
   function styleOptsOf(S, style) {
     const def = STYLE_DEF[style];
@@ -571,7 +572,7 @@
   function regionEvents(S, r) {
     const e = S.chords[r];
     if (!e || !e.chord) return null;
-    const st = styleOf(S), bl = barOf(S, e.at), a = e.at - bl.a;
+    const bl = barOf(S, e.at), st = styleOf(S, bl.sec), a = e.at - bl.a;   // bl.sec: the section of a flattened bar
     return backingEvents(st, chordMidis(e.chord, S), md.secPer16(S), styleOptsOf(S, st), bl.b, { ts: bl.ts, a, len: md.regionEnd(S, r) - e.at })
       .map((x) => Object.assign(x, { p: x.p - a }));
   }
@@ -599,7 +600,8 @@
     const srcs = { backing: c.createGain() }, layerIns = S.layers.map((_, i) => { const n = c.createGain(); n.gain.value = md.layerGain(S, i); srcs['L' + i] = n; return n; });
     srcs.backing.gain.value = S.backing.on ? S.backing.vol : 0;
     g.update(S, srcs);
-    const snd = o.backingSound || VH.sounds.get(S.backing.sound) || VH.sounds.get('string'), hum = !!(o.humanize != null ? o.humanize : extra(S, 'humanize', false));
+    const sndK = (k) => { const b = md.backOf(S, k); return (!b.over && o.backingSound) || (o.backingSoundOf && o.backingSoundOf(k)) || VH.sounds.get(b.sound) || o.backingSound || VH.sounds.get('string'); };
+    const hum = !!(o.humanize != null ? o.humanize : extra(S, 'humanize', false));
     const log = [];
     VH.audio.withContext(c, () => {
       for (let r = 0; r < loops; r++) {
@@ -610,11 +612,11 @@
         }
         if (o.backing !== false && S.backing.on) for (const R of md.regions(S)) {
           if (!R.chord) continue;
-          const bl = barOf(S, R.a), base = off + bl.a * sec;
-          for (const e of backingEvents(styleOf(S), chordMidis(R.chord, S), sec, styleOptsOf(S, styleOf(S)), bl.b, { ts: bl.ts, a: R.a - bl.a, len: R.z - R.a })) {
+          const bl = barOf(S, R.a), base = off + bl.a * sec, st = styleOf(S, bl.sec), snd = sndK(bl.sec);
+          for (const e of backingEvents(st, chordMidis(R.chord, S), sec, styleOptsOf(S, st), bl.b, { ts: bl.ts, a: R.a - bl.a, len: R.z - R.a })) {
             const h = humanize(hum), t = base + e.p * sec + e.dt + h.dt;
             VH.audio.trigger(snd, VH.audio.midiToHz(e.m), e.dur, { gain: e.g * h.v, dest: srcs.backing, when: t });
-            log.push(['n', e.m, t]);
+            log.push(['n', e.m, t, snd.id]);
           }
         }
       }
@@ -1027,6 +1029,36 @@
       b.dataset.style = id;
       return b;
     });
+    // This section only: a different backing instrument (and style) for the shown section (section.back, see model.js backOf)
+    const ovBox = ui.h('div', 'mel-secback'); secStyle.append(ovBox);
+    ovBox.setAttribute('role', 'group'); ovBox.setAttribute('aria-label', 'Backing for this section only');
+    const ovRow = ui.h('div', 'vh-row'); ovBox.append(ovRow);
+    const ovBtn = ui.button(ovRow, { label: 'This section only', pressed: false, onClick: () => {
+      if (md.backOf(M.song).over) M.setSectionBack(null, 'Section backing: follow song');
+      else M.setSectionBack({ sound: M.song.backing.sound }, 'Section backing override');
+    } });
+    ovBtn.title = 'Give the shown section its own backing instrument (and style); the other sections follow the song-wide setting';
+    const ovInfo = ui.h('div', 'vh-desc mel-secback-info'); ovBox.append(ovInfo);
+    const ovReset = ui.button(ovRow, { label: 'Reset', pressed: false, onClick: () => M.setSectionBack(null, 'Section backing: follow song') });
+    ovReset.title = 'Back to the song-wide backing for this section';
+    const ovSel = ui.soundPicker(ovBox, { title: 'Section instrument', value: M.song.backing.sound, imports: false, synths: false,
+      onChange: (id) => { if (VH.sounds.get(id) && md.backOf(M.song).sound !== id) M.setSectionBack({ sound: id }, 'Section backing instrument'); } });
+    const ovStyle = ui.h('div', 'vh-row mel-secback-style'); ovBox.append(ovStyle);
+    ovStyle.setAttribute('role', 'group'); ovStyle.setAttribute('aria-label', 'Section backing style');
+    const ovBtns = [['', 'Song style']].concat(STYLES).map(([id, label]) => {
+      const b = ui.button(ovStyle, { label, pressed: false, onClick: () => M.setSectionBack({ style: id || null }, 'Section backing style: ' + label) });
+      b.dataset.sstyle = id;
+      return b;
+    });
+    function syncOverride() {
+      const S = M.song, b = md.backOf(S), x = S.sections[S.cur], snd = VH.sounds.get(b.sound);
+      ovBtn.set({ pressed: b.over });
+      ovReset.hidden = !b.over; ovSel.el.hidden = !b.over; ovStyle.hidden = !b.over;
+      ovInfo.textContent = b.over
+        ? 'Section override (' + (x ? x.name : '') + '): ' + (snd ? snd.name : b.sound) + (x.back.style ? ' · ' + STYLE_LABEL[x.back.style] : '') + ' — the other sections keep the song-wide backing.'
+        : 'All sections follow the song-wide backing. Turn on “This section only” to change just this one.';
+      if (b.over) { ovSel.set(b.sound); const bs = (x.back && x.back.style) || ''; ovBtns.forEach((q) => q.set({ pressed: q.dataset.sstyle === bs })); }
+    }
     const STYLE_DESC = {
       drone: 'Held: each bar’s chord sustains for the whole bar.',
       strum: 'Strum: the chord once per bar, one string after another.',
@@ -1074,8 +1106,9 @@
     { const b = optBlock('broken');
       selOpt(b, 'broken', 'pattern', 'Pattern', { bc: 'Bass, chord', bcc: 'Bass, chord, chord (waltz feel)', alberti: 'Alberti (low, high, mid, high)' }); }
     function syncStyleUI() {
-      const st = styleOf(M.song);
-      styleBtns.forEach((b) => b.set({ pressed: b.dataset.style === st }));
+      const st = styleOf(M.song), sw = STYLES.some((q) => q[0] === M.song.backing.style) ? M.song.backing.style : 'drone';
+      styleBtns.forEach((b) => b.set({ pressed: b.dataset.style === sw }));
+      syncOverride();
       styleDesc.textContent = STYLE_DESC[st];
       Object.keys(optBlocks).forEach((k) => { optBlocks[k].hidden = k !== st; });
       optSyncs.forEach((f) => f());

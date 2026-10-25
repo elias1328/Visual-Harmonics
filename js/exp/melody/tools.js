@@ -1,5 +1,5 @@
 // melody/tools.js - pointer tools on the melody canvas. The chord header strip is always handled first: chord name =
-// picker, empty space = seek, drag = loop region, ✕ = clear it (or places an incoming chord). Below it, the current tool
+// picker, drag = loop region (the ruler above it seeks), ✕ = clear it (or places an incoming chord). Below it, the current tool
 // gets down/move/up/hover, and a readout near the pointer shows note + cents + fit %. Built-in tool: 'draw' (Line pen or
 // Notes, per the layer's mode).
 // Parts add tools with M.ui.addTool({ id, label, icon, ... }). See MELODY.md (Tools).
@@ -32,9 +32,11 @@
       },
     };
     // Pointer info passed to tools (content coords).
+    // x is clamped to the song and the pitch to LO..HI, so a press in the silent edge margins still works (left / right / bottom).
+    // The header is the ruler (inRuler: seek only) over the chord strip (inChord: chords, loop region).
     function info(e) {
-      const [x, y] = V.xy(e), S = M.song, t16 = clamp(V.t16Of(x), 0, md.tot16(S) - 1e-6);
-      return { e, x, y, t16, midi: V.midiOf(y), bar: md.barAt(S, t16), region: md.regionAt(S, t16), layer: M.active, inHeader: y < V.HDR };
+      const [x0, y] = V.xy(e), S = M.song, x = clamp(x0, 0, V.CW - 1e-6), t16 = clamp(V.t16Of(x), 0, md.tot16(S) - 1e-6);
+      return { e, x, y, t16, midi: V.midiOf(y), bar: md.barAt(S, t16), region: md.regionAt(S, t16), layer: M.active, inHeader: y < V.HDR, inRuler: y < V.RL, inChord: y >= V.RL && y < V.HDR };
     }
 
     // ---------- built-in: draw (line pen / notes) ----------
@@ -112,6 +114,8 @@
       return -1;
     }
     T.noteAt = noteAt;
+    // Pitch for a new / dragged note at canvas-content y, start s: snapped to the bright bands (Snap on) or to the tuning grid.
+    const notePitch = (y, s) => { const S = M.song, raw = V.midiOf(y); return clamp(S.snap ? M.bands.snap(raw, md.regionAt(S, s)) : md.gridSnap(S, raw), LO, HI); };
     T.add({
       id: 'draw', label: 'Draw', icon: '✎', title: 'Draw (P pen, N notes): line pen or notes, per layer mode',
       down(p) {
@@ -124,19 +128,27 @@
         }
         const hit = noteAt(p.x, p.y);
         if (hit >= 0) { l.notes.splice(hit, 1); M.commit('Delete note'); return false; }
-        const g = S.grid === 16 ? 1 : 2, s = Math.floor(p.x / V.U() / g) * g;
-        if (s >= md.tot16(S)) return false;
-        const b = md.regionAt(S, s), raw = V.midiOf(p.y), m = clamp(S.snap ? M.bands.snap(raw, b) : md.gridSnap(S, raw), LO, HI);
-        const n = { s, d: g, m };
-        l.notes.push(n); drag = { kind: 'note', n, g }; M.requestRender();
+        const st = md.gridStep(S.grid), s = md.gridFloor(p.x / V.U(), S.grid), tot = md.tot16(S);
+        if (s >= tot) return false;
+        const m = notePitch(p.y, s), n = { s, d: Math.min(st, tot - s), m };
+        l.notes.push(n); drag = { kind: 'note', n, st, s0: s, y0: p.y, vert: false }; M.requestRender();
         M.engine.previewNote(M.active, m, 0.3);
         return true;
       },
       move(p) {
         if (drag && drag.kind === 'line' && pen) { penHover = { x: p.x, y: p.y }; penTo(p.x, p.y); return; }
-        if (drag && drag.kind === 'note') {
-          const n = drag.n, end = Math.ceil(p.x / V.U() / drag.g) * drag.g;
-          n.d = clamp(end - n.s, drag.g, md.tot16(M.song) - n.s); M.requestRender();
+        if (drag && drag.kind === 'note') {   // hold + drag: right = longer, left of the start = the note spans the range, up / down = pitch
+          const S = M.song, n = drag.n, tot = md.tot16(S), tt = p.x / V.U(), g = S.grid;
+          let a = drag.s0, z = drag.s0 + drag.st;
+          if (tt < drag.s0) a = Math.max(0, md.gridFloor(tt, g)); else z = Math.max(z, md.gridCeil(tt, g));
+          z = Math.min(z, tot);
+          n.s = a; n.d = md.r5(Math.max(z - a, Math.min(drag.st, tot - a)));
+          if (!drag.vert && Math.abs(p.y - drag.y0) >= 5) drag.vert = true;
+          if (drag.vert) {
+            const m = notePitch(p.y, a);
+            if (m !== n.m) { n.m = m; M.engine.previewNote(M.active, m, 0.3); }
+          }
+          M.requestRender();
         }
       },
       up(p) {
@@ -184,7 +196,7 @@
     function hideReadout() { if (!ro.hidden) ro.hidden = true; }
     T.hideReadout = hideReadout;
 
-    // ---------- chord header strip: chord name = picker, empty space = seek, drag = loop region, ✕ = clear region ----------
+    // ---------- chord header strip: chord name = picker, drag = loop region, ✕ = clear region ----------
     // Chord regions: "+" at a beat boundary (hover near the strip's bottom) splits; a grip between two chords drags the
     // boundary (snaps to beats, Shift: half-beats); dropping it on the next / previous boundary merges; right-click menu.
     let hdr = null;
@@ -257,8 +269,13 @@
       if (h.kind === 'x') { M.setLoopRegion(null); return; }
       if (h.kind === 'plus') { M.picker.close(); M.splitChord(h.hit.at); return; }
       if (h.kind === 'name') { M.picker.toggle(h.hit.region); return; }
-      M.picker.close();
-      M.engine.seek(clamp(Math.round(p.t16), 0, md.tot16(M.song) - 1));
+      M.picker.close();   // empty chord-strip space never seeks (that is the ruler's job)
+    }
+    // Ruler above the chord strip: click / drag only seeks the playhead.
+    let rul = null;
+    function rulerTo(p) {
+      const t = clamp(Math.round(p.t16), 0, md.tot16(M.song) - 1);
+      if (rul.t !== t) { rul.t = t; M.engine.seek(t); }
     }
     // Right-click on the chord strip: Split here / Merge / Change chord.
     const cmenu = VH.ui.h('div', 'mel-cmenu mel-float'); cmenu.hidden = true; cmenu.setAttribute('role', 'menu');
@@ -286,7 +303,7 @@
     };
     cv.addEventListener('contextmenu', (e) => {
       const p = info(e);
-      if (!p.inHeader) return;
+      if (!p.inChord) return;
       e.preventDefault();
       T.openMenu(p, e.clientX, e.clientY);
     });
@@ -310,6 +327,11 @@
     cv.addEventListener('pointerdown', (e) => {
       if (e.button > 0) return;
       const p = info(e); lastP = p;
+      if (p.inRuler) {
+        hideReadout(); M.picker.close(); rul = { t: -1, id: e.pointerId };
+        try { cv.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+        rulerTo(p); return;
+      }
       if (p.inHeader) { hideReadout(); headerDown(e, p); return; }
       if (M.picker.isOpen) { M.picker.close(); return; }
       if (e.pointerType === 'touch') showReadout(e, p);
@@ -319,18 +341,20 @@
     });
     cv.addEventListener('pointermove', (e) => {
       const p = info(e); lastP = p;
+      if (rul) { rulerTo(p); return; }
       if (hdr) { headerMove(p); return; }
-      const hv = p.inHeader && !M.placing ? V.hdrAt(p.x, p.y) : null, ov = V.hdrHover;
+      const hv = p.inChord && !M.placing ? V.hdrAt(p.x, p.y) : null, ov = V.hdrHover;
       if ((hv ? hv.kind + hv.region + ':' + hv.at : '') !== (ov ? ov.kind + ov.region + ':' + ov.at : '')) { V.hdrHover = hv; M.requestRender(); }
       showReadout(e, p);
       if (capture) { if (cur.move) call(cur.move, p); return; }
       if (cur && cur.hover) call(cur.hover, p);
       const c = cur && cur.cursor;
-      cv.style.cursor = p.inHeader ? (M.placing ? 'copy' : hv.kind === 'empty' ? 'text' : hv.kind === 'edge' ? 'ew-resize' : 'pointer')
+      cv.style.cursor = p.inRuler ? 'col-resize' : p.inHeader ? (M.placing ? 'copy' : hv.kind === 'empty' ? 'default' : hv.kind === 'edge' ? 'ew-resize' : 'pointer')
         : typeof c === 'function' ? call(c, p) || 'crosshair' : c || 'crosshair';
     });
     const end = (e) => {
       if (e.pointerType === 'touch' || e.type === 'pointercancel') hideReadout();
+      if (rul) { rul = null; return; }
       if (hdr) {
         if (e.type === 'pointercancel') { if (hdr.edge != null) { M.song.chords[hdr.edge].at = hdr.at0; V.edgeDrag = null; } hdr = null; V.regionPreview = null; M.requestRender(); } else headerUp(info(e));
         return;

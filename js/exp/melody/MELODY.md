@@ -136,6 +136,16 @@ VH.melody.parts.push((M) => {
   collapsed by default at <= 600 px), Settings > Mix > Automation "Show automation" (`melody.showAuto`). Gestures: click =
   add (1/16 snap, Shift free), drag = move, double-click / right-click = delete, Alt+click or ∿ = smooth. One undo step
   per gesture. Debug handle: `VH.melody.autoPart`.
+- Selecting + reuse: Shift/Ctrl + drag on empty space = marquee, Shift-click toggles a point, drag moves all selected, Delete removes them.
+  While a lane was the last thing pressed (`active`), Ctrl+A / C / X / V act on its points (paste at the playhead, relative offsets kept,
+  into the lane last pressed); otherwise the keys fall through to the graph's notes (tools-edit.js). The clipboard is `VH.melody.autoClip`
+  and survives section switches. Lane menu (⋯): "Copy lane" (then "Paste lane" in the header of another section: replaces/creates the lane of
+  that target) and "Copy to sections" (checklist; replaces the same-target lane there). Times are scaled proportionally to each target
+  section's length. One undo step each.
+- **Backing per section**: `sections[k].back = { sound?, style? }` (model.js `backOf(S, k)` -> `{ sound, style, over }`; serialized in the section
+  meta only when set, so old songs and links are unchanged). `M.backingSoundOf(k)`, `M.backingSound()` (= the shown section's), `M.setSectionBack(patch|null)`.
+  sound.js `styleOf(S, k)`; offline / MIDI read the section of each flattened bar (`flat.bars[i].sec`); MIDI sends a program change at each
+  region whose section uses another GM program. UI: Settings > Sound > Backing style > "This section only".
 
 ## Sections + arrangement
 

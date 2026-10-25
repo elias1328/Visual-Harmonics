@@ -135,7 +135,7 @@
   }
   function melody(M, L, o, rnd) {
     const S = M.song, md = M.model, SPB = md.spb(S), tot = md.tot16(S), dens = DENS[o.density] || DENS.medium;
-    const [lo, hi] = RANGES[o.range] || RANGES.mid, unit = o.notes ? (S.grid === 16 ? 1 : 2) : 1;
+    const [lo, hi] = RANGES[o.range] || RANGES.mid, unit = o.notes ? Math.max(1, Math.round(md.gridStep(S.grid))) : 1;
     const phraseLen = 2 * SPB;
     const cache = new Map();
     const tg = (bar) => { if (!cache.has(bar)) cache.set(bar, targetsFor(M, bar, L, lo, hi)); return cache.get(bar); };
@@ -259,7 +259,7 @@
     let ver = 0, doneVer = -1, perLayer = [], assembled = new Map(), timer = 0, dirtyAt = 0;
     const stats = { computeMs: 0, delayMs: 0, runs: 0 };
     function compute() {
-      const t0 = performance.now(), S = M.song, cols = S.grid || 8;
+      const t0 = performance.now(), S = M.song, cols = S.grid === 16 ? 16 : 8;
       perLayer = S.layers.map((l, L) => {
         if (!(md.layerGain(S, L) > 0)) return null;
         const sp = M.bands.spectrumOf(M.soundOf(L)).slice().sort((a, b) => b[1] - a[1]).slice(0, 8).sort((a, b) => a[0] - b[0]);
