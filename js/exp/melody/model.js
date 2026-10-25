@@ -5,13 +5,13 @@
   'use strict';
   const VH = window.VH;
   const NS = VH.melody = VH.melody || {};
-  NS.parts = NS.parts || [];   // Wave B parts: VH.melody.parts.push((M) => ({ ... }))
+  NS.parts = NS.parts || [];   // parts: VH.melody.parts.push((M) => ({ ... }))
 
+  const H = VH.harmony || require('../../core/harmony.js');   // Node tests load this file without the core scripts
+  const SHARP = H.NAMES;
   const LO = 48, HI = 84, SPAN = HI - LO, LPB = 48, SPB = 16, MAX_LAYERS = 8, BPM_MIN = 40, BPM_MAX = 200;
-  const SHARP = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
   const FLAT = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
-  const QUALS = [['maj', '', [0, 4, 7]], ['min', 'm', [0, 3, 7]], ['dim', 'dim', [0, 3, 6]], ['aug', 'aug', [0, 4, 8]],
-    ['sus2', 'sus2', [0, 2, 7]], ['sus4', 'sus4', [0, 5, 7]], ['7', '7', [0, 4, 7, 10]], ['maj7', 'maj7', [0, 4, 7, 11]], ['m7', 'm7', [0, 3, 7, 10]]];
+  const QUALS = H.CHORD_Q.map((q) => [q, H.CHORD_SUFFIX[q], H.CHORD_IV[q]]);   // [id, name suffix, intervals]
   const QI = {}; QUALS.forEach((q, i) => { QI[q[0]] = i; });
   // Scales (VH.harmony.SCALES): the key is root + scale, per section (S.key + S.mode; 'major' / 'minor' = Ionian /
   // Aeolian, so old songs load unchanged). q / rn: the chords on each degree (see harmony.scaleChords).

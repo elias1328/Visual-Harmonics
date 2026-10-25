@@ -1,4 +1,4 @@
-// melody/tools-edit.js - B1 editing tools (a Wave B part, see MELODY.md):
+// melody/tools-edit.js - editing tools (a part, see MELODY.md):
 //   tool palette Pen (P) · Line (L, straight glide) · Notes (N) · Select (V) · Eraser (E) in the dock's Tool pop-over,
 //   selection (click / box / Shift adds, drag to move with snap, Delete, Ctrl+C/X/V, Ctrl+A, Esc),
 //   vibrato per line range / note (floating mini toolbar; stored in song.ext.edit so it is undoable and re-editable;

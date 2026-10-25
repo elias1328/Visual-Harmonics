@@ -1,4 +1,4 @@
-// melody/export.js - Wave B part (B3): MIDI / WAV / MP3 export. See MELODY.md.
+// melody/export.js - part: MIDI / WAV / MP3 export. See MELODY.md.
 // Pure helpers (Node-testable): songToMidi(song, opts) -> Uint8Array (Standard MIDI File), encodeWav(channels, sr),
 // drumHits(drums, bars), gmProgram(sound). In the browser the part adds a Settings section "Export" with a dialog.
 // Audio is rendered offline (OfflineAudioContext) through the real voices via VH.audio.withContext; MP3 uses the

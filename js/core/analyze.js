@@ -475,7 +475,7 @@
     return top.filter((p) => p[1] >= mx * 0.02).map((p) => [p[0], p[1] / mx]).sort((p, q) => p[0] - q[0]);
   }
   // ---------- chords + key ----------
-  const CHORD_IV = { maj: [0, 4, 7], min: [0, 3, 7], dim: [0, 3, 6], aug: [0, 4, 8], sus2: [0, 2, 7], sus4: [0, 5, 7], '7': [0, 4, 7, 10], maj7: [0, 4, 7, 11], m7: [0, 3, 7, 10] };
+  const CHORD_IV = ((root.VH && root.VH.harmony) || require('./harmony.js')).CHORD_IV;   // shared table (js/core/harmony.js)
   const CHORD_PRIOR = { maj: 1, min: 1, '7': 0.93, m7: 0.93, maj7: 0.9, sus2: 0.86, sus4: 0.86, dim: 0.86, aug: 0.8 };
   const CHORD_Q = Object.keys(CHORD_IV);
   function chordTemplate(root, q) { const t = new Float64Array(12); CHORD_IV[q].forEach((iv, j) => { t[(root + iv) % 12] = j ? 1 : 1.15; }); return t; }

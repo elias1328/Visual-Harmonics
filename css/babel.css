@@ -20,8 +20,6 @@
 
 .bb-nick { font-size: 20px; font-weight: 600; margin: 4px 0 2px; line-height: 1.3; }
 .bb-nick .bb-tier { margin-right: 4px; }
-.vh-table tr.bb-ing td { color: #e9d9ff; }
-.vh-table tr.bb-ing td + td { color: #e9d9ff; }
 /* a gem's halo: the neighbour carries a trace of it (wording only; never where it is) */
 .vh-table tr.bb-aura td + td { color: #efe3b8; font-style: italic; }
 

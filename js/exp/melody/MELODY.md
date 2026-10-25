@@ -10,12 +10,15 @@ Melody is split into classic scripts. They share `window.VH.melody` (no ES modul
 | `engine.js` | transport, buses, voices, backing → `M.engine` |
 | `tools.js` | pointer tool registry and the built-in `draw` tool → `M.tools` |
 | `ui.js` | dock, Settings sections, chord picker, layer menu, mixer, tone → `M.ui` |
-| `tools-edit.js`, `sound.js`, `export.js`, `generate.js` | **Wave B parts** (B1, B2, B3, B3) |
+| `tools-edit.js` | part: Line / Select / Eraser tools, copy & paste, vibrato, auto-fit, pure intonation |
+| `sound.js` | part: mixer rows, effects, drum lane + kits, backing (drone) instrument and style, play feel |
+| `export.js` | part: MIDI / WAV / MP3 export, automation lanes |
+| `generate.js` | part: random progression / melody, "harmony includes other layers" |
 | `track.js` | part: backing track (import a beat, tempo / beats / chords / key, synced playback, bands from the audio; see Backing track) |
 | `onboard.js` | part: first-visit demo song, ghost path, 5-step tutorial, Settings > Song > "Start here" (see Onboarding) |
 | `main.js` | builds `M`, history, autosave, share, keys, frame loop; starts the parts; registers the experiment |
 
-Parts edit **only their own file(s)**. A2 owns the core API (`js/core`); the melody core files above are shared. If you need something that `M` does not offer, ask for a hook. Do not wrap `M.*` methods or `VH.audio.*` functions, and do not patch other parts' DOM. Everything a part needs is listed below: `M.addHook`, `M.on('layerRemoved')`, `M.view.addLane`, `M.ui.mixer.addRow`, `M.markBandsDirty`, `M.engine.layerBusFor`.
+Parts edit **only their own file(s)**. The core API (`js/core`) is shared by every experiment; the melody core files above are shared. If you need something that `M` does not offer, ask for a hook. Do not wrap `M.*` methods or `VH.audio.*` functions, and do not patch other parts' DOM. Everything a part needs is listed below: `M.addHook`, `M.on('layerRemoved')`, `M.view.addLane`, `M.ui.mixer.addRow`, `M.markBandsDirty`, `M.engine.layerBusFor`.
 
 ## Writing a part
 
@@ -52,7 +55,7 @@ VH.melody.parts.push((M) => {
   backing: { sound, vol 0..1, on, style: 'drone'|'strum'|'arp'|'pulse'|'broken',
              styleOpts?: { arp: { rate, pattern, oct, gate }, strum: { speed, dir }, pulse: { rate, gate }, broken: { pattern } } },
   master: 0..1, bandsOthers: bool,
-  fx: {}, drums: {}, ext: {},     // free-form JSON for parts: B2 owns fx + drums; others use ext.<partName>
+  fx: {}, drums: {}, ext: {},     // free-form JSON for parts: sound.js owns fx + drums; others use ext.<partName>
   loopRegion?: [a, b] | null,     // loop only bars a..b-1 (whole bars). Serialized only when set; part of undo, autosave, share
   auto: [{ id, target, points: [[t16, v 0..1, smooth?]] }],   // automation lanes of the shown SECTION (see Automation lanes)
   grid: 8|16, loop, snap }        // view prefs: autosaved and shared, but NOT part of undo
@@ -67,7 +70,7 @@ VH.melody.parts.push((M) => {
   assigning an array replaces all strokes with one. New code reads `lines`.
 - **Layer ids** are stable. They are unique within the song and kept by undo/redo, autosave and share links. `M.addLayer` takes `max + 1`.
   - Songs saved before ids existed get `l1..lN` in layer order when parsed (`S.migratedIds` > 0 then). An old autosave is saved back in the new format.
-  - Part data may be keyed by id, or by index and kept aligned with `'layerRemoved'`. B1's `ext.edit.vib` and B2's `fx.layers` are index-keyed and shift there.
+  - Part data may be keyed by id, or by index and kept aligned with `'layerRemoved'`. tools-edit.js's `ext.edit.vib` and sound.js's `fx.layers` are index-keyed and shift there.
 - Pitch range: `model.LO` = 48 (C3) to `model.HI` = 84 (C6). Time unit: the **sixteenth**; line samples: 3 per sixteenth.
   The bar length follows the section's time signature: use `md.spb(S)` (sixteenths per bar), `md.lpb(S)` (line samples
   per bar), `md.tot16(S)` (section length), `md.barAt(S, t16)`, `md.barsOf(S)`, `md.beatGrid(S, half)`, `md.tsOf(S)`
@@ -92,10 +95,10 @@ VH.melody.parts.push((M) => {
   play, spectrum } }` and shows `M.SHARE_NOTE`; on load a missing sound becomes `VH.sounds.closest(info)` (same play type,
   then spectral similarity), kit rows the synth drum, and a toast names each fallback (`M.missing`).
 - `backing.styleOpts` holds each backing style's own sub-settings (sound.js: `NS.sound.styleOptsOf(S, style)` validates and fills defaults; missing = the original fixed patterns). It is serialized only when set, so older songs serialize unchanged. Live playback, the WAV render (`NS.sound.offline`) and the MIDI export (`NS.sound.barEvents`) all read it.
-- Notes may carry extra runtime fields such as `sel: true` (B1 selection; the view draws it with a white outline). Those fields are **not** serialized.
+- Notes may carry extra runtime fields such as `sel: true` (tools-edit.js selection; the view draws it with a white outline). Those fields are **not** serialized.
 - Model helpers (`M.model`): `nextLayerId(layers)`, `assignIds(layers)`, `chordMidis(ch)`, `chordName(ch, names)`, `namesOf(S)`, `scaleOf(S)`, `diatonic(S)`, `secPerBar(S)`, `secPer16(S)`, `layerGain(S, i)` (0 when muted or not soloed), `serialize(S, full)`, `parse(obj)`, `newLayer(i, opts, bars)`, `COLORS`, `MAX_LAYERS` = 8, `QUALS`.
 
-## Scales, modes + tunings (M1)
+## Scales, modes + tunings
 
 - **Key = root + scale, per section** (live `S.key` / `S.mode` are the shown section's; `liveContent` / `sections[k].data`
   carry `key`, `mode`). 19 scales in `VH.harmony.SCALES` (`{ id, name, group: Common|Modes|Exotic, steps, hint }`);
@@ -177,7 +180,7 @@ Actions, each of which commits:
 - `M.setBackingSound(id)`
 - `M.setChord(bar, ch|null, { extra(song)? })` (also previews the chord)
   - `extra` may edit more of the song in the same undo step.
-  - It commits with `{ chords: [bar], source: 'chord' }`, so auto-fit (B1) can turn it into 'Chord + fit'.
+  - It commits with `{ chords: [bar], source: 'chord' }`, so auto-fit (tools-edit.js) can turn it into 'Chord + fit'.
 - `M.setBars(n)` (1..16, current section; new bars repeat the chords and splits of the bars before them)
 - `M.setLoopRegion([a, b] | null)`: one undo step ('Loop bars 2–3' / 'Clear loop region'); clears the cue; when playing outside the new region it seeks to its start.
 - `M.replaceSong(obj, label?, prep?)`: replace the whole song (serialized form). With `label` it is one undo step; without, no step (first-visit demo). `prep(song)` may edit the new song before it is recorded (its sounds and bands are ready).
@@ -209,7 +212,7 @@ Sounds:
 | `'play'` / `'stop'` | none | transport |
 | `'tick'` | `(t)` | every frame while playing (also `M.onPlayTick(cb)`) |
 | `'bar'` | `(b)` | playhead entered bar b (after the backing has been told) |
-| `'draw'` | `(ctx, view)` | overlay drawing. The ctx is already scaled for dpr, translated by `X0 - scrollX` and clipped to the visible map, so draw in **content coords** with `view.xOf` / `view.yOf`. Runs after layers, before the playhead. |
+| `'draw'` | `(ctx, view)` | overlay drawing. The ctx is already scaled for dpr, translated by `X0 - scrollX` and clipped to the visible map, so draw in **content coords** with `view.xOf` / `view.yOf`. Runs after layers, before the playhead. During playback the layer stack (lines + notes) is a cached bitmap that is redrawn only when something it shows changes, so draw moving things here, not by mutating layers per frame. |
 | `'layout'` / `'scroll'` | `(view)` | canvas resized or scrolled (time scroll or pitch zoom / scroll) |
 | `'sounds'` | none | sound library changed (resolved sounds and bands refreshed) |
 | `'tools'` / `'tool'` | none | tool list or current tool changed |
@@ -267,7 +270,7 @@ backing voice ─► backingBus() ──┼─► sumBus() ─► [insert chain]
 - `engine.playing`, `phase`, `pos16`, `bar`, `ctx`, `play()`, `stop()`, `toggle()`, `seek(t16)`, `secPer16()`, `secPerBar()`, `playOf(sound)` ('glide' | 'hit'), `gainOf(i)`, `backingGain()`.
 - `engine.previewChord(bar)` and `engine.previewNote(i, midi, dur)` are for gesture handlers only. `engine.stopAll()`, `engine.stopLayer(i)`.
 - Line playback: one voice per **stroke** (overlapping strokes sound together; `engine.lineVoices()` counts the live ones). 'glide' sounds play legato within a stroke's run (`setFreq`). 'hit' sounds re-trigger only when a stroke crosses a semitone, at least `engine.MIN_GAP` = 70 ms apart on the audio clock (per stroke).
-- Voices are started with `{ gain, dest: bus, when }`. The core applies `sound.tone` itself, so do **not** also pass `opts.tone` for the same sound. For offline export (B3), rebuild the graph in an OfflineAudioContext with `VH.audio.withContext` and the song data (or `layerBusFor`); the live buses belong to the live context.
+- Voices are started with `{ gain, dest: bus, when }`. The core applies `sound.tone` itself, so do **not** also pass `opts.tone` for the same sound. For offline export (export.js), rebuild the graph in an OfflineAudioContext with `VH.audio.withContext` and the song data (or `layerBusFor`); the live buses belong to the live context.
 
 ## Hooks: `M.addHook(name, fn)` returns `off()`
 
@@ -275,9 +278,9 @@ Registered functions live as long as the mount and are released with `M`. Never 
 
 | hook | signature | called |
 |---|---|---|
-| `'voiceOpts'` | `fn(layer, kind, midi, opts) -> opts?` | when the engine starts one of its voices. See below. B2: humanize (±15 ms, ±10 % on notes). |
-| `'pitchMod'` | `fn(layer, kind, t, ref) -> cents` | every play tick, for each engine voice. See below. B1: vibrato; B2: harmony magnet. |
-| `'beforeCommit'` | `fn(cx)` | inside `M.commit`, before the snapshot. See below. B1: auto-fit for `source` `'chord'` / `'generate'` ('Chord + fit' / 'Generate + fit'). |
+| `'voiceOpts'` | `fn(layer, kind, midi, opts) -> opts?` | when the engine starts one of its voices. See below. sound.js: humanize (±15 ms, ±10 % on notes). |
+| `'pitchMod'` | `fn(layer, kind, t, ref) -> cents` | every play tick, for each engine voice. See below. tools-edit.js: vibrato; sound.js: harmony magnet. |
+| `'beforeCommit'` | `fn(cx)` | inside `M.commit`, before the snapshot. See below. tools-edit.js: auto-fit for `source` `'chord'` / `'generate'` ('Chord + fit' / 'Generate + fit'). |
 
 Auto-fit (tools-edit.js, Settings > Edit > "Auto-fit notes to a new chord", `melody.autofit`): only what clashes with
 the new chord moves (`fitCtx.fits`), onto equal-tempered semitones within ±2. Notes keep a deliberate microtonal offset
@@ -289,7 +292,7 @@ into the new pitch over a sixteenth. Each line stroke is fitted on its own. Line
 index (unchanged); note vibrato is re-keyed. Tests can set `VH.melody.fitStats = { items: [] }` to collect
 `{ L, kind: 'note'|'plateau', stroke?, from, to, micro, kept }`.
 
-Vibrato store (B1): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, to, cents, hz]] }, n: [[s, m, cents, hz]] }`.
+Vibrato store (tools-edit.js): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, to, cents, hz]] }, n: [[s, m, cents, hz]] }`.
 `VH.melody.vibrato.lineAt(S, L, i, strokeId)`, `lineArray(S, L, strokeId)`; the export's `vibReader(song, L).line(i, strokeId)`.
 
 `voiceOpts`:
@@ -323,7 +326,7 @@ Vibrato store (B1): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, to, cents, 
 
 - Rows run from LO to HI.
 - Bands = the layer's spectrum (candidate partials) against the chord voiced with the **backing instrument's** spectrum (chord partials). Spectra come from `VH.sounds.spectrumOf`, which includes the tone.
-- **"Bands include other layers"** is the `M.song.bandsOthers` setting, with a panel toggle in Harmony. B3 implements the hook:
+- **"Bands include other layers"** is the `M.song.bandsOthers` setting, with a panel toggle in Harmony. generate.js implements the hook:
   - `M.hooks.bandExtras = (bar, layerIdx) => [{ hz, spectrum? }, ...]`: extra voices that count like chord tones for that bar and layer. Omit `spectrum` to use the backing spectrum.
   - The hook is only consulted while `bandsOthers` is on, and results are cached by value.
   - Call `M.markBandsDirty(bars?)` when the hook's results changed, and the map is redrawn on the next frame. Columns are cached by value (chord + spectra + extras), so unchanged bars cost nothing. `M.invalidateBands()` also drops that cache.
@@ -348,6 +351,8 @@ Vibrato store (B1): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, to, cents, 
   ui.js asks `M.askDrop(files, asSounds)` ("Backing track or instrument?"). mp3 / wav / ogg / m4a / flac, <= 30 MB, <= 6 min.
   The file goes to IndexedDB (`VH.store.putBlob(blobKey, file)`), the heavy analysis to `blobKey + ':an'`; decoded audio
   + analysis are cached per page session (`mem`), so undo / redo / remount are instant and a reload restores the track.
+  Removing or replacing the track leaves the blob in place (undo can bring it back); `VH.store.gcBlobs` deletes it on a
+  later start once nothing saved or in memory refers to it (see PLAN.md, Storage).
 - **Song**: `S.track = { blobKey, name, offsetSec (track time of bar 1), bpm (detected, may be fractional; the song's
   bpm then is too), gainDb, mute, bands: 'track'|'chords', secs: { sectionId: start16 in the track }, analysis: { nBars,
   key, bars: [[[at beat, root, q]...] per bar], chords (summary), dur, bpm0, offset0 } }` (model.js `trackIn`; serialized
@@ -356,7 +361,7 @@ Vibrato store (B1): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, to, cents, 
 - **Analysis** (`VH.analyze.track`, pure, `test/track.test.js`): 11 kHz mono; onset envelope (log spectral flux, hop
   5.8 ms) -> ACF over 60–180 BPM with a weak log-tempo prior, then a comb search refines period + phase; STFT (4096 / 512)
   -> median-filter HPSS (harmonic part kept) -> per frame <= 32 parabolic peaks + a peak chroma; `grid(frames, bpm,
-  phase)` -> beat chroma, Viterbi chord sequence (templates of `model.QUALS`, change penalty), downbeat (chord novelty),
+  phase)` -> beat chroma, Viterbi chord sequence (templates of `VH.harmony.CHORD_IV`, the same qualities as `model.QUALS`, change penalty), downbeat (chord novelty),
   chords per bar (split at the half when the halves differ), Krumhansl key (+ the first chord as tonic hint);
   `slots(frames, bpm, first, dur)` -> the strongest <= 24 partials per half beat (peaks pooled on a 1/8-semitone grid).
   `analyze()` is async and yields every ~40 ms with progress (the section shows a bar).
@@ -404,7 +409,7 @@ Vibrato store (B1): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, to, cents, 
 - Conversions: `U()` (px per sixteenth), `xOf(t16)`, `t16Of(x)`, `yOf(midi)`, `midiOf(y)`.
 - `xy(pointerEvent)` returns `[x, y]` in content coords (scroll and strip offset applied).
 - `rrect(x, y, w, h, r)`, `setScroll(x)`, `relayout()`.
-- `addLane(el, { height? })` puts a DOM strip under the canvas and makes room for it. B2's drum lane is one.
+- `addLane(el, { height? })` puts a DOM strip under the canvas and makes room for it. sound.js's drum lane is one.
   - The lane goes below the canvas's scroll bar and is as wide as the canvas. Content that should line up with the song uses `view.xOf` / `BW` / `scrollX` and listens to `'layout'` / `'scroll'` (the drum lane's step columns sit exactly under the canvas's bar and beat lines and scroll with it).
   - The canvas gets shorter by the lane's height + 6 px.
   - Without `height`, the lane is measured with a ResizeObserver, so content changes re-layout.
@@ -415,7 +420,7 @@ Vibrato store (B1): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, to, cents, 
 - The dock is: Play, Instrument, Layers, **Tool** (one button showing the current tool; it opens a pop-over with every tool and its key), Mixer, Share, Settings. Snap lives in Settings > Edit (key **S**).
 - `addDockButton({ icon, label, title, pressed, onClick })` returns the button (`btn.set({ icon, label, pressed })`). It is inserted before Settings.
   - Keep the dock calm: prefer Settings sections for secondary controls.
-- `configureTools({ items: [[id, icon, label, key, title], ...], pick(id) })`: the Tool pop-over's list (B1 supplies its palette; without it every registered tool is listed). `pickTool(id)`, `syncTools()`, `toolPop.open() / close()`.
+- `configureTools({ items: [[id, icon, label, key, title], ...], pick(id) })`: the Tool pop-over's list (tools-edit.js supplies its palette; without it every registered tool is listed). `pickTool(id)`, `syncTools()`, `toolPop.open() / close()`.
 - `toggleSnap()`.
 - `addPanelSection(title, order = 60, { group, collapsed, advanced })` (or one object `{ title, order, group, ... }`) returns a `.vh-section`: the body of a collapsible accordion on one of the Settings panel's category tabs, sorted by order within its tab.
   - `group`: `'song'` | `'sound'` | `'mix'` | `'edit'` | `'export'`. Without a group the section goes to a "General" tab, which is hidden while empty. The tab strip and the "Find a setting" filter appear once two or more groups have sections.
@@ -458,7 +463,7 @@ Vibrato store (B1): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, to, cents, 
   dialog offers "Current section only" (with 2+ sections) and, with a loop region, "Export loop region only"
   (`exportLib.sliceSong(S, a, b)`).
 - `toast(msg, { sticky, action: { label, run } })` (sticky stays until replaced or `toast(null)`; an action adds a button, e.g. Undo), `mixer.open() / close() / refresh()` (the mixer is the panel's Mix tab; the dock's Mixer button opens it there), `layerMenu.open(i)`, `drawer` (the Settings panel API), `openPanel(group)`, `closeFloats()`.
-- `mixer.addRow({ id, label, color?, get() -> 0..1, set(v), commit?, mute?: { get() -> bool, set(bool) }, muteTitle?, quiet?() })` adds a row between the backing and the master, with class `mel-mix-<id>`. It returns `remove()`. B2's Drums row is one.
+- `mixer.addRow({ id, label, color?, get() -> 0..1, set(v), commit?, mute?: { get() -> bool, set(bool) }, muteTitle?, quiet?() })` adds a row between the backing and the master, with class `mel-mix-<id>`. It returns `remove()`. sound.js's Drums row is one.
   - `set` runs while dragging.
   - On release, the row commits `commit`: a label or a function. The default label is '<label> volume'.
   - `mute.set` should commit itself.

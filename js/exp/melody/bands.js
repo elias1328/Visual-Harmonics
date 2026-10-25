@@ -13,17 +13,8 @@
     const mix = (a, b, u) => a.map((v, i) => v + (b[i] - v) * u);
     return t < 0.33 ? mix(c0, c1, t / 0.33) : t < 0.66 ? mix(c1, c2, (t - 0.33) / 0.33) : mix(c2, c3, (t - 0.66) / 0.34);
   }
-  function tilt(sp, b) {   // local stand-in for a tone filter when the core can't apply it to the spectrum
-    const out = sp.map(([r, a]) => [r, a * Math.pow(r, b)]), mx = Math.max(...out.map((p) => p[1])) || 1;
-    return out.map(([r, a]) => [r, a / mx]);
-  }
-  // The truthful spectrum of a sound, including its tone (bright) when it has one.
-  function spectrumOf(s) {
-    if (!s) return VH.sounds.spectrumOf(null);
-    if (VH.sounds.toneOf) return VH.sounds.spectrumOf(s);   // core applies the sound's own tone
-    const sp = VH.sounds.spectrumOf(s);
-    return s.tone && s.tone.bright ? tilt(sp, s.tone.bright) : sp;
-  }
+  // The truthful spectrum of a sound, including its tone (bright) when it has one (core applies the sound's own tone).
+  const spectrumOf = (s) => VH.sounds.spectrumOf(s || null);
 
   NS.Bands = function (M) {
     const cache = new Map(), off = document.createElement('canvas'), cols = [];

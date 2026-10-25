@@ -1,5 +1,5 @@
 // melody/ui.js - dock, Settings panel sections, chord picker, layer menu, mixer strip, tone controls, toast, share box.
-// Wave B extends it through M.ui.addDockButton / addPanelSection / addTool. See MELODY.md (M.ui).
+// Parts extend it through M.ui.addDockButton / addPanelSection / addTool. See MELODY.md (M.ui).
 (function () {
   'use strict';
   const VH = window.VH, ui = VH.ui, NS = VH.melody, md = NS.model;
@@ -177,7 +177,7 @@
     const sGrid = U.addPanelSection('Grid & snap', 10, { group: 'edit' });
     const syncGrid = seg(sGrid, 'Grid', [8, 16], (v) => '1/' + v, (g) => { M.song.grid = g; U.sync(); M.save(); });
     const snRow = ui.h('div', 'vh-row mel-seg'); snRow.append(ui.h('span', 'mel-lbl', 'Snap')); sGrid.append(snRow);
-    const snapPanelBtn = ui.button(snRow, { label: 'Snap to bright bands', pressed: M.song.snap, onClick: () => U.toggleSnap(true) });
+    const snapPanelBtn = ui.button(snRow, { label: 'Snap to bright bands', title: 'Snap to bright bands (S)', pressed: M.song.snap, onClick: () => U.toggleSnap(true) });
     snapPanelBtn.title = 'Pitches snap to the brightest band nearby (key: S)';
     snapPanelBtn.classList.add('mel-snapbtn');
     U.toggleSnap = (quiet) => {
@@ -575,13 +575,6 @@
       for (let j = 1; out.length < p.n; j++) out.push([last[0] + j, last[1] * 0.8 ** j]);
       return out.map(([r, a]) => [Math.round(r ** p.stretch * 10000) / 10000, Math.round(a * Math.pow(r, p.bright) * 10000) / 10000]);
     }
-    function localDerive(base, o) {
-      const s = JSON.parse(JSON.stringify(base));
-      Object.assign(s, { id: 'custom-' + base.id, name: base.name + ' (custom)', source: 'custom', base: base.id });
-      if (o.partials && s.kind === 'synth') { s.synth.partials = o.partials; s.spectrum = null; }
-      if (o.tone) s.tone = o.tone;
-      return VH.sounds.save(s);
-    }
     let tonePending = null, toneTimer = 0, toneEditing = null;
     function toneInput(k, v) {
       const s = M.soundOf(M.active);
@@ -607,7 +600,7 @@
         else M.soundsChanged();
       };
       try {
-        const r = VH.sounds.derive ? VH.sounds.derive(t.baseId, opts) : localDerive(base, opts);
+        const r = VH.sounds.derive(t.baseId, opts);
         if (r && typeof r.then === 'function') r.then(done).catch((err) => console.error('[melody] derive', err)); else done(r);
       } catch (err) { console.error('[melody] derive failed', err); U.toast('Couldn’t make a custom copy of ' + base.name); }
       if (!toneTimer) later(() => { if (!tonePending && !toneTimer) { toneEditing = null; syncTone(); } }, 400);

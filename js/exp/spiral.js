@@ -15,7 +15,7 @@
   const REFS = [...Array.from({ length: 12 }, (_, i) => ['dyad ' + (i + 1), [0, i + 1]]),
     ['maj', [0, 4, 7]], ['min', [0, 3, 7]], ['dim', [0, 3, 6]], ['aug', [0, 4, 8]], ['sus4', [0, 5, 7]], ['7', [0, 4, 7, 10]]];
   const METER_STOPS = [[0, [97, 26, 140]], [0.55, [0, 191, 220]], [1, [235, 255, 255]]];
-  const hzToMidi = (f) => 69 + 12 * Math.log2(f / 440);
+  const hzToMidi = VH.audio.hzToMidi;
   const pcOf = (f) => ((Math.round(hzToMidi(f)) % 12) + 12) % 12;
   const hueOf = (f) => pcOf(f) * 30;
   const clamp01 = (x) => Math.max(0, Math.min(1, x));
@@ -26,10 +26,8 @@
     }
     return METER_STOPS[METER_STOPS.length - 1][1];
   }
-  // Melody's chord qualities (same ids, suffixes and intervals as js/exp/melody/model.js QUALS; song.chords = [rootPc, quality]).
-  const QUALS = [['maj', '', [0, 4, 7]], ['min', 'm', [0, 3, 7]], ['dim', 'dim', [0, 3, 6]], ['aug', 'aug', [0, 4, 8]],
-    ['sus2', 'sus2', [0, 2, 7]], ['sus4', 'sus4', [0, 5, 7]], ['7', '7', [0, 4, 7, 10]], ['maj7', 'maj7', [0, 4, 7, 11]], ['m7', 'm7', [0, 3, 7, 10]]];
-  const PC_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  // Melody's chord qualities (VH.harmony: ids, name suffixes, intervals; song.chords = [rootPc, quality]).
+  const QUALS = H.CHORD_Q.map((q) => [q, H.CHORD_SUFFIX[q], H.CHORD_IV[q]]), PC_NAMES = H.NAMES;
   // Name the chord a set of MIDI notes forms (octaves and doublings ignored): { root: 0..11, quality, name } or null.
   // The lowest note wins as root when several readings fit (aug is symmetric; Csus2 = Gsus4).
   function identifyChord(midis) {

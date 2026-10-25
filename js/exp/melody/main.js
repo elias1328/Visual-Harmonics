@@ -1,5 +1,5 @@
 // melody/main.js - builds the Melody context M (see MELODY.md), wires model / bands / view / engine / tools / ui,
-// undo history (M.commit), autosave, share links, keyboard, the frame loop, Wave B parts, and registers the experiment.
+// undo history (M.commit), autosave, share links, keyboard, the frame loop, the parts, and registers the experiment.
 (function () {
   'use strict';
   const PUBLIC_URL = 'https://elias1328.github.io/Visual-Harmonics/';
@@ -581,7 +581,7 @@
     cleanups.push(M.view.fit());
     M.bands.computeBg(); M.ui.sync();
 
-    // Wave B parts (separate files): VH.melody.parts.push((M) => ({ destroy() {} }))
+    // Parts (separate files): VH.melody.parts.push((M) => ({ destroy() {} }))
     for (const factory of NS.parts) {
       try { const p = factory(M); if (p) parts.push(p); } catch (err) { console.error('[melody] part failed to start', err); }
     }
@@ -665,6 +665,7 @@
       { keys: 'V', label: 'Select: click or drag a box (Shift adds), drag to move' },
       { keys: 'E', label: 'Eraser' },
       { keys: 'S', label: 'Snap to bright bands on / off' },
+      { keys: '= / −', label: 'Zoom the pitch range in / out (the + key works too)' },
       { keys: 'Ctrl+Z', label: 'Undo' },
       { keys: 'Ctrl+Shift+Z / Ctrl+Y', label: 'Redo' },
       { keys: 'Delete / Backspace', label: 'Delete the selection' },

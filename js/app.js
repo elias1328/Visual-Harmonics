@@ -19,6 +19,19 @@
   }
   // Settings panel categories, in tab order (drawer.addSection's `group`). Anything else lands in 'General'.
   const GROUPS = [['song', 'Song'], ['sound', 'Sound'], ['mix', 'Mix'], ['edit', 'Edit'], ['export', 'Export'], ['general', 'General']];
+  // <select> options [{ value, label, group }] -> <option>s inside one <optgroup> per group (first-seen order).
+  function fillOptions(sel, opts) {
+    sel.innerHTML = '';
+    const groups = new Map();
+    for (const op of opts) {
+      let par = sel;
+      if (op.group) {
+        if (!groups.has(op.group)) { const g = h('optgroup'); g.label = op.group; groups.set(op.group, g); sel.append(g); }
+        par = groups.get(op.group);
+      }
+      const e = h('option'); e.value = op.value; e.textContent = op.label; par.append(e);
+    }
+  }
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   // ---------- shared components ----------
@@ -81,16 +94,7 @@
       const api = {
         el: wrap, select: sel,
         setOptions(opts, value) {
-          sel.innerHTML = '';
-          const groups = new Map();
-          for (const op of opts) {
-            let parent = sel;
-            if (op.group) {
-              if (!groups.has(op.group)) { const g = h('optgroup'); g.label = op.group; groups.set(op.group, g); sel.append(g); }
-              parent = groups.get(op.group);
-            }
-            const e = h('option'); e.value = op.value; e.textContent = op.label; parent.append(e);
-          }
+          fillOptions(sel, opts);
           api.value = value;
         },
         get value() { return sel.value; },
@@ -103,18 +107,11 @@
     },
 
     // How a sound is best played on a continuous line: 'glide' (legato) or 'hit' (re-triggered notes).
-    // Uses sound.play when present (core API), otherwise derives it from family / envelope.
+    // Uses sound.play when present, otherwise VH.sounds.playOf derives it from family / envelope.
     playOf(s) {
       if (!s) return 'glide';
       if (s.play === 'glide' || s.play === 'hit') return s.play;
-      if (VH.sounds && VH.sounds.playOf) return VH.sounds.playOf(s);
-      const f = String(s.family || '').toLowerCase();
-      if (/pluck|pizz|harp|piano|keys|mallet|marimba|xylo|glock|celesta|kalimba|bell|perc|struck|drum|lute|harpsi/.test(f)) return 'hit';
-      if (/string|organ|flute|wood|wind|brass|trem|choir|pad|pure|custom|voice/.test(f)) {
-        return s.kind === 'synth' && s.synth && (s.synth.sustain ?? 1) < 0.3 ? 'hit' : 'glide';
-      }
-      if (s.kind === 'synth') return s.synth && (s.synth.sustain ?? 1) < 0.3 ? 'hit' : 'glide';
-      return 'hit';
+      return VH.sounds.playOf(s);
     },
     SOUND_GROUPS: ['Synths', 'Instruments', 'Your sounds', 'Local'],
     soundGroup(s) {
@@ -141,16 +138,7 @@
       const api = {
         el: sel, select: sel,
         setOptions(opts, value) {
-          sel.innerHTML = '';
-          const groups = new Map();
-          for (const op of opts) {
-            let par = sel;
-            if (op.group) {
-              if (!groups.has(op.group)) { const g = h('optgroup'); g.label = op.group; groups.set(op.group, g); sel.append(g); }
-              par = groups.get(op.group);
-            }
-            const e = h('option'); e.value = op.value; e.textContent = op.label; par.append(e);
-          }
+          fillOptions(sel, opts);
           api.value = value;
         },
         get value() { return sel.value; },
@@ -412,6 +400,7 @@
     button(parent, o) {
       const b = h('button', 'vh-btn');
       b.type = 'button'; b.textContent = o.label;
+      if (o.title) b.title = o.title;
       if (o.pressed != null) b.setAttribute('aria-pressed', String(!!o.pressed));
       b.set = (p) => { if (p.label != null) b.textContent = p.label; if (p.pressed != null) b.setAttribute('aria-pressed', String(!!p.pressed)); };
       if (o.onClick) b.addEventListener('click', o.onClick);
@@ -434,8 +423,7 @@
   // confirmation (root note ± cents with a preview, play type, name) in a small dialog, stores the audio
   // (VH.store.putBlob) and saves Sounds with source 'import'. Several files -> one multi-zone instrument (or several drums).
   const IMP = { MAX_BYTES: 20 * 1024 * 1024, MAX_SEC: 30, EXT: /\.(wav|wave|mp3|ogg|oga|opus|flac|m4a|mp4|aac)$/i };
-  const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-  const noteName = (m) => NOTES[((Math.round(m) % 12) + 12) % 12] + (Math.floor(Math.round(m) / 12) - 1);
+  const noteName = (m) => VH.harmony.noteName(Math.round(m));
   const isAudioFile = (f) => !!f && (IMP.EXT.test(f.name || '') || /^audio\//.test(f.type || ''));
   function wavBlob(x, sr) {
     const n = x.length, ab = new ArrayBuffer(44 + n * 2), v = new DataView(ab);
@@ -443,7 +431,7 @@
     str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVE'); str(12, 'fmt '); v.setUint32(16, 16, true);
     v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true);
     v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, 'data'); v.setUint32(40, n * 2, true);
-    for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, x[i])) * 32767, true);
+    for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.round(Math.max(-1, Math.min(1, x[i])) * 32767), true);
     return new Blob([ab], { type: 'audio/wav' });
   }
   // Decode + analyze one file -> { file, name, x (mono, <= 30 s), sr, trimmed, an } or { file, error }.
@@ -833,6 +821,21 @@
     root.addEventListener('hashchange', route);
     initBanner();
     route();
+    housekeeping();
+  }
+
+  // Once per start, while idle: drop localStorage keys of older versions and audio blobs nothing refers to (VH.store).
+  function housekeeping() {
+    const st = VH.store;
+    if (!st || !st.tidy) return;
+    const idle = root.requestIdleCallback ? (f) => root.requestIdleCallback(f, { timeout: 10000 }) : (f) => setTimeout(f, 3000);
+    idle(() => {
+      st.tidy();
+      if (!root.indexedDB) return;
+      let live = '';
+      try { const m = VH.melody; if (m) live = JSON.stringify([m.hist, m.song && m.song()]); } catch (_) { return; }   // unreadable: skip
+      st.gcBlobs({ live }).catch(() => {});
+    });
   }
 
   VH.registerExperiment = registerExperiment;

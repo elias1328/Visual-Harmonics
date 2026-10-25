@@ -461,6 +461,7 @@
     });
 
     // ---------- waveform strip + beat ticks under the chord header ----------
+    let waveP = null;   // { w, k, path }: the strip's bars for the current view
     M.on('draw', (ctx, view) => {
       const S = M.song, tr = S.track;
       if (!tr || !cur || !cur.an || !cur.an.wave) return;
@@ -471,15 +472,22 @@
       ctx.save();
       ctx.fillStyle = 'rgba(6, 8, 18, 0.62)'; ctx.fillRect(x0, y0, x1 - x0, h);
       ctx.fillStyle = 'rgba(232, 162, 92, 0.85)';
-      let pk = 0; for (let i = 0; i < w.length; i++) if (w[i] > pk) pk = w[i];
-      pk = pk || 1;
-      for (let x = x0; x < x1; x++) {
-        const ta = timeAt(S, S.cur, x / U), tb = timeAt(S, S.cur, (x + 1) / U);
-        let m = 0;
-        for (let i = Math.max(0, Math.floor(ta / res)); i <= Math.min(w.length - 1, Math.floor(tb / res)); i++) if (w[i] > m) m = w[i];
-        const hh = Math.max(0.5, (m / pk) * (h - 2));
-        ctx.fillRect(x, y0 + h / 2 - hh / 2, 1, hh);
+      // the bars only change with the view or the sync: one cached path instead of a fillRect per pixel every frame
+      const wk = [x0, x1, U, y0, S.cur, timeAt(S, S.cur, 0), timeAt(S, S.cur, 1)].join(',');
+      if (!waveP || waveP.w !== w || waveP.k !== wk) {
+        let pk = 0; for (let i = 0; i < w.length; i++) if (w[i] > pk) pk = w[i];
+        pk = pk || 1;
+        const path = new Path2D();
+        for (let x = x0; x < x1; x++) {
+          const ta = timeAt(S, S.cur, x / U), tb = timeAt(S, S.cur, (x + 1) / U);
+          let m = 0;
+          for (let i = Math.max(0, Math.floor(ta / res)); i <= Math.min(w.length - 1, Math.floor(tb / res)); i++) if (w[i] > m) m = w[i];
+          const hh = Math.max(0.5, (m / pk) * (h - 2));
+          path.rect(x, y0 + h / 2 - hh / 2, 1, hh);
+        }
+        waveP = { w, k: wk, path };
       }
+      ctx.fill(waveP.path);
       // the song's beats (where the sync puts the track's beats): ticks, taller on bar lines
       const spb = md.spb(S);
       for (let b = 0; b <= tot; b += 4) {

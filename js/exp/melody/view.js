@@ -293,7 +293,7 @@
     };
     V.headerHit = (x, y) => V.hdrAt(x, y).kind;
     V.hdrHover = null;   // { kind, region, at } under the pointer (tools.js): drawn as a split "+" / a lit boundary grip
-    V.rrect = function (x, y, w, h, r) { ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x, y, w, h, r); else ctx.rect(x, y, w, h); };
+    V.rrect = (x, y, w, h, r) => rrectOn(ctx, x, y, w, h, r);
 
 
     // ---------- piano strip on the left edge (the time axis starts right of it, at X0) ----------
@@ -494,6 +494,59 @@
     if (M.cleanups) M.cleanups.push(() => document.removeEventListener('keydown', onKey));
     cv.addEventListener('pointerleave', () => { if (V.hoverMidi != null) { V.hoverMidi = null; M.requestRender(); } });
 
+    // The layer stack (line strokes + notes; active layer on top) drawn into c (content coords, clipped to the map).
+    const rrectOn = (c, x, y, w, h, r) => { c.beginPath(); if (c.roundRect) c.roundRect(x, y, w, h, r); else c.rect(x, y, w, h); };
+    function drawLayers(c, S, A, playing, pos, xa, xb, u) {
+      c.lineJoin = c.lineCap = 'round';
+      const nh = V.noteH(), order = S.layers.map((_, i) => i).filter((i) => i !== A).concat(A);
+      for (const L of order) {   // layers, active on top; silent (muted / not soloed) layers are faint
+        const lay = S.layers[L], isA = L === A, lu = u / 3, quiet = md.layerGain(S, L) === 0;
+        c.globalAlpha = (isA ? 1 : 0.55) * (quiet ? 0.4 : 1);
+        for (const st of md.strokes(lay)) {   // each line stroke (strokes may overlap)
+          const s = st.v;
+          c.beginPath();
+          let any = false;
+          for (let i = Math.max(0, Math.floor(xa / lu) - 1); i < Math.min(s.length, Math.ceil(xb / lu) + 1); i++) {
+            if (isNaN(s[i])) continue;
+            const x = (i + 0.5) * lu, y = V.yOf(s[i]); any = true;
+            if (i > 0 && !isNaN(s[i - 1])) c.lineTo(x, y); else { c.moveTo(x - 1, y); c.lineTo(x, y); }
+          }
+          if (any) {
+            c.strokeStyle = 'rgba(0,0,0,0.7)'; c.lineWidth = isA ? 6 : 5; c.stroke();
+            c.strokeStyle = lay.color; c.lineWidth = isA ? 3 : 2; c.stroke();
+          }
+        }
+        for (const n of lay.notes) {   // notes: rounded bars in the layer colour
+          const x = n.s * u + 1, w = Math.max(3, n.d * u - 2);
+          if (x > xb || x + w < xa) continue;
+          const on = playing && pos >= n.s && pos < n.s + n.d;
+          rrectOn(c, x, V.yOf(n.m) - nh / 2, w, nh, Math.min(5, nh / 2));
+          c.fillStyle = lay.color; c.fill();
+          c.strokeStyle = n.sel ? '#fff' : on ? '#fff' : 'rgba(0,0,0,0.75)'; c.lineWidth = on || n.sel ? 2 : 1.25; c.stroke();
+        }
+        c.globalAlpha = 1;
+      }
+    }
+    // Everything drawLayers depends on, as one string (the playback cache key): view geometry, layer looks, the visible
+    // line samples, the notes and which of them sound now.
+    const lc = document.createElement('canvas'), lx = lc.getContext('2d');
+    let lkKey = '';
+    function layersKey(S, A, playing, pos, xa, xb, u) {
+      const lu = u / 3;
+      let h = 0;
+      const mix = (v) => { h = (Math.imul(h, 31) + (v !== v ? -7 : Math.round(v * 1024))) | 0; };
+      const parts = [V.VW, V.TH, V.dpr, V.scrollX, V.pTop, V.span, u, xa, xb, A, V.noteH()];
+      S.layers.forEach((lay, L) => {
+        parts.push(lay.color, md.layerGain(S, L) === 0 ? 'q' : '');
+        for (const st of md.strokes(lay)) {
+          const v = st.v; mix(v.length);
+          for (let i = Math.max(0, Math.floor(xa / lu) - 1); i < Math.min(v.length, Math.ceil(xb / lu) + 1); i++) mix(v[i]);
+        }
+        for (const n of lay.notes) { mix(n.s); mix(n.d); mix(n.m); mix(n.sel ? 1 : 0); mix(playing && pos >= n.s && pos < n.s + n.d ? 1 : 0); }
+        mix(-99);
+      });
+      return parts.join(',') + ':' + h;
+    }
     V.draw = function () {
       const S = M.song, E = M.engine, A = M.active, names = namesOf(S), tot = md.tot16(S), u = V.U(), SPB = md.spb(S);
       const playing = E.playing, phase = E.phase, pos = phase * tot, { VW, TH, MH, BW, CW, scrollX, dpr, X0, GW } = V;
@@ -583,34 +636,17 @@
       }
       ctx.globalAlpha = 1;
       ctx.lineJoin = ctx.lineCap = 'round';
-      const nh = V.noteH(), order = S.layers.map((_, i) => i).filter((i) => i !== A).concat(A);
-      for (const L of order) {   // layers, active on top; silent (muted / not soloed) layers are faint
-        const lay = S.layers[L], isA = L === A, lu = u / 3, quiet = md.layerGain(S, L) === 0;
-        ctx.globalAlpha = (isA ? 1 : 0.55) * (quiet ? 0.4 : 1);
-        for (const st of md.strokes(lay)) {   // each line stroke (strokes may overlap)
-          const s = st.v;
-          ctx.beginPath();
-          let any = false;
-          for (let i = Math.max(0, Math.floor(xa / lu) - 1); i < Math.min(s.length, Math.ceil(xb / lu) + 1); i++) {
-            if (isNaN(s[i])) continue;
-            const x = (i + 0.5) * lu, y = V.yOf(s[i]); any = true;
-            if (i > 0 && !isNaN(s[i - 1])) ctx.lineTo(x, y); else { ctx.moveTo(x - 1, y); ctx.lineTo(x, y); }
-          }
-          if (any) {
-            ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = isA ? 6 : 5; ctx.stroke();
-            ctx.strokeStyle = lay.color; ctx.lineWidth = isA ? 3 : 2; ctx.stroke();
-          }
+      if (playing) {   // the layer stack rarely changes between playback frames: rasterize it once, blit it until it does
+        const key = layersKey(S, A, playing, pos, xa, xb, u);
+        if (key !== lkKey || lc.width !== cv.width || lc.height !== cv.height) {
+          if (lc.width !== cv.width || lc.height !== cv.height) { lc.width = cv.width; lc.height = cv.height; } else lx.clearRect(0, 0, lc.width, lc.height);
+          lx.setTransform(dpr, 0, 0, dpr, 0, 0); lx.translate(X0 - scrollX, 0);
+          lx.save(); lx.beginPath(); lx.rect(xa, HDR, GW, MH); lx.clip();
+          drawLayers(lx, S, A, playing, pos, xa, xb, u);
+          lx.restore(); lkKey = key;
         }
-        for (const n of lay.notes) {   // notes: rounded bars in the layer colour
-          const x = n.s * u + 1, w = Math.max(3, n.d * u - 2);
-          if (x > xb || x + w < xa) continue;
-          const on = playing && pos >= n.s && pos < n.s + n.d;
-          V.rrect(x, V.yOf(n.m) - nh / 2, w, nh, Math.min(5, nh / 2));
-          ctx.fillStyle = lay.color; ctx.fill();
-          ctx.strokeStyle = n.sel ? '#fff' : on ? '#fff' : 'rgba(0,0,0,0.75)'; ctx.lineWidth = on || n.sel ? 2 : 1.25; ctx.stroke();
-        }
-        ctx.globalAlpha = 1;
-      }
+        ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(lc, 0, 0); ctx.restore();
+      } else { lkKey = ''; drawLayers(ctx, S, A, playing, pos, xa, xb, u); }
       M.emit('draw', ctx, V);   // overlays (content coords, scroll + strip offset already applied, clipped to the map)
       const tool = M.tools && M.tools.current;
       if (tool && tool.draw) { try { tool.draw(ctx, V); } catch (err) { console.error('[melody] tool draw', err); } }

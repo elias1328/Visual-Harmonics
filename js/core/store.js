@@ -76,11 +76,76 @@
       t.oncomplete = () => res(req && req.result); t.onerror = () => rej(t.error);
     });
   }
-  const putBlob = (key, blob) => tx('readwrite', (s) => s.put(blob, key));
+  const fresh = new Set();   // blobs written in this session: never garbage-collected (their reference may not be saved yet)
+  const putBlob = (key, blob) => { fresh.add(key); return tx('readwrite', (s) => s.put(blob, key)); };
   const getBlob = (key) => tx('readonly', (s) => s.get(key));
   const delBlob = (key) => tx('readwrite', (s) => s.delete(key));
+  const blobKeys = () => tx('readonly', (s) => s.getAllKeys());
 
-  const api = { get, set, remove, encodeShare, decodeShare, putBlob, getBlob, delBlob };
+  // ---------- housekeeping (run once per start, while idle; see VH.app) ----------
+  // Every key this app stores under 'vh:'. A 'vh:' key in one of the experiment namespaces below that is NOT listed is a
+  // leftover from an older version and is removed by tidy(). test/store.test.js checks that every key the code uses is here.
+  const KEYS = ['sounds', 'store.gc',
+    'babel.view', 'babel.detector', 'babel.disc', 'babel.gems',
+    'melody.song', 'melody.sound', 'melody.bpm', 'melody.countIn', 'melody.inbox', 'melody.look', 'melody.playMode',
+    'melody.pureIntonation', 'melody.autofit', 'melody.showAuto', 'melody.showScale', 'melody.tones', 'melody.tutorial',
+    'melody.kits', 'melody.view', 'melody.gen.density', 'melody.gen.range',
+    'spiral.prefs', 'spiral.sound'];
+  const TIDY_NS = /^(babel|melody|spiral|lab)\./;   // other namespaces (ui.*, gallery.*) use dynamic keys: left alone
+  function tidy() {
+    const s = ls(), gone = [];
+    if (!s) return gone;
+    try {
+      for (let i = s.length - 1; i >= 0; i--) {
+        const k = s.key(i);
+        if (k && k.startsWith(PREFIX) && TIDY_NS.test(k.slice(PREFIX.length)) && !KEYS.includes(k.slice(PREFIX.length))) gone.push(k);
+      }
+      gone.forEach((k) => s.removeItem(k));
+    } catch (_) { /* storage blocked: nothing to tidy */ }
+    return gone;
+  }
+
+  // Blob garbage collection. A blob is referenced when its key (or, for 'x:an' analysis blobs, 'x') appears anywhere in a
+  // saved 'vh:' value (sounds, kits, autosaved song, inbox, ...) or in `live` (text of in-memory state such as the undo
+  // history). Plain substring search: over-keeping is fine, deleting something in use is not. Safety rules:
+  //  - no readable localStorage -> do nothing (the references may only live in memory);
+  //  - blobs written in this session are kept;
+  //  - an orphan is deleted only when it was already an orphan on an earlier run at least `graceMs` ago (pending marks are
+  //    kept in 'vh:store.gc'), so another open tab that has just stored audio and not yet saved its song is safe.
+  function planGc(keys, text, pending, now, graceMs, keep) {
+    const del = [], next = {};
+    for (const k of keys) {
+      if (typeof k !== 'string' || !k || (keep && keep.has(k))) continue;
+      const base = k.endsWith(':an') ? k.slice(0, -3) : k;
+      if (text.includes(k) || (base && text.includes(base))) continue;
+      const t = pending && typeof pending[k] === 'number' ? pending[k] : null;
+      if (t != null && t <= now && now - t >= graceMs) del.push(k); else next[k] = t != null && t <= now ? t : now;
+    }
+    return { del, pending: next };
+  }
+  function savedText() {
+    const s = ls();
+    if (!s) return null;
+    let text = '';
+    for (let i = 0; i < s.length; i++) {
+      const k = s.key(i);
+      if (k && k.startsWith(PREFIX) && k !== PREFIX + 'store.gc') text += '\n' + s.getItem(k);
+    }
+    return text;
+  }
+  async function gcBlobs(o) {
+    o = o || {};
+    let text;
+    try { text = savedText(); } catch (_) { return null; }
+    if (text == null) return null;
+    const keys = await blobKeys();
+    const plan = planGc(keys, text + '\n' + (o.live || ''), get('store.gc', {}), o.now || Date.now(), o.graceMs == null ? 864e5 : o.graceMs, fresh);
+    for (const k of plan.del) await delBlob(k);
+    set('store.gc', plan.pending);
+    return { deleted: plan.del, pending: Object.keys(plan.pending) };
+  }
+
+  const api = { get, set, remove, encodeShare, decodeShare, putBlob, getBlob, delBlob, blobKeys, tidy, gcBlobs, planGc, KEYS };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else (root.VH = root.VH || {}).store = api;
 })(this);

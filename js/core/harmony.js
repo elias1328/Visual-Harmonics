@@ -112,10 +112,11 @@
   const SCALE_BY = {}; SCALES.forEach((s) => { SCALE_BY[s.id] = s; });
   const scaleById = (id) => SCALE_BY[id] || SCALE_BY.major;
 
-  // Chord qualities (same set and order as Melody's model.QUALS).
+  // Chord qualities: the single source for Melody (model.QUALS), Spiral (chord names) and analyze.js (chord detection).
   const CHORD_IV = { maj: [0, 4, 7], min: [0, 3, 7], dim: [0, 3, 6], aug: [0, 4, 8], sus2: [0, 2, 7], sus4: [0, 5, 7],
     7: [0, 4, 7, 10], maj7: [0, 4, 7, 11], m7: [0, 3, 7, 10] };
   const CHORD_Q = ['maj', 'min', 'dim', 'aug', 'sus2', 'sus4', '7', 'maj7', 'm7'];
+  const CHORD_SUFFIX = { maj: '', min: 'm', dim: 'dim', aug: 'aug', sus2: 'sus2', sus4: 'sus4', 7: '7', maj7: 'maj7', m7: 'm7' };   // chord names: C, Cm, C7 ...
   const RN = ['I', 'bII', 'II', 'bIII', 'III', 'IV', '#IV', 'V', 'bVI', 'VI', 'bVII', 'VII'];
   // Roman numeral of a chord whose root is `deg` semitones above the key root (b5 is spelled bV when the scale has a 4th).
   function romanOf(deg, q, steps) {
@@ -231,9 +232,9 @@
   // 14-bit MIDI pitch-bend value for an offset in semitones with a bend range of ±range semitones (8192 = centre).
   const bendValue = (semis, range) => Math.max(0, Math.min(16383, Math.round(8192 + semis / (range || 12) * 8191)));
 
-  const api = { midiToHz, noteName, partials, pairDissonance, dissonance, dissonanceSpectra, reduceRatio,
+  const api = { NAMES, midiToHz, noteName, partials, pairDissonance, dissonance, dissonanceSpectra, reduceRatio,
     nearestRatio, tenneyHeight, octaveReduce, fordCircles,
-    SCALES, scaleById, scaleChords, romanOf, CHORD_IV, CHORD_Q, TUNINGS, tuningById, tuningCents, tuningSnap, tuningClass, tuningGrid,
+    SCALES, scaleById, scaleChords, romanOf, CHORD_IV, CHORD_Q, CHORD_SUFFIX, TUNINGS, tuningById, tuningCents, tuningSnap, tuningClass, tuningGrid,
     scaleClasses, tunedChord, JI_IV, sclText, bendValue };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else { root.Harmony = api; (root.VH = root.VH || {}).harmony = api; }

@@ -23,7 +23,6 @@
     let lineV = [], noteV = [], lastHit = [], droneV = [];
     const offBuses = new WeakMap();   // offline context -> its own bus set (layerBusFor)
     // Does the core honour opts.dest? (A2's core API adds withContext with it.) If not, mix with per-voice gain.
-    const routed = () => typeof VH.audio.withContext === 'function';
     const S = () => M.song;
     E.playOf = (s) => VH.ui.playOf(s);
     E.secPer16 = () => md.secPer16(S());
@@ -114,15 +113,8 @@
         setParam(buses.backing.gain, E.backingGain(), now);
         setParam(buses.master.gain, s.master, now);
       }
-      if (!routed()) {
-        lineV.forEach((mp, L) => { if (mp) mp.forEach((x) => x.v.setGain(gainFor(L, x.base))); });
-        noteV.forEach((x) => x.v.setGain(gainFor(x.L, x.base)));
-        droneV.forEach((x) => x.v.setGain(backGain(x.base)));
-      }
     }
     E.applyMix = () => applyMix(false);
-    const gainFor = (L, base) => (routed() ? base : base * layerGain(S(), L) * S().master);
-    const backGain = (base) => (routed() ? base : base * E.backingGain() * S().master);
 
     // ---------- hooks ----------
     // opts { midi, gain, when } through M.hooks.voiceOpts (may change all three); returns the final opts.
@@ -141,7 +133,7 @@
     function play(L, kind, sound, midi, base, when, ref, t) {
       const bus = E.layerBus(L), o = hookOpts(L, kind, midi, { gain: base, when });
       const cents = t ? pitchMod(L, kind, t, ref) : 0;
-      const v = VH.audio.voice(sound, H.midiToHz(o.midi + cents / 100), { gain: gainFor(L, o.gain), dest: bus || undefined, when: o.when });
+      const v = VH.audio.voice(sound, H.midiToHz(o.midi + cents / 100), { gain: o.gain, dest: bus || undefined, when: o.when });
       return { v, o, cents };
     }
     E.layerRemoved = (i) => {   // drop a layer's bus + voices (indices shift down); called by M.removeLayer
@@ -168,7 +160,7 @@
         const snd = M.backingSound(), bus = E.backingBus();
         droneV = midis.map((m) => {
           const o = hookOpts(-1, 'backing', m, { gain: G_BACK });
-          return { base: o.gain, m: o.midi, cents: 0, v: VH.audio.voice(snd, H.midiToHz(o.midi), { gain: backGain(o.gain), dest: bus || undefined, when: o.when }) };
+          return { base: o.gain, m: o.midi, cents: 0, v: VH.audio.voice(snd, H.midiToHz(o.midi), { gain: o.gain, dest: bus || undefined, when: o.when }) };
         });
       },
       stop(rel) { droneV.forEach((x) => x.v.stop(rel)); droneV = []; },
@@ -190,7 +182,7 @@
       const snd = M.backingSound(), bus = E.masterBus();
       const nw = performance.now(); chordMidis(ch, S()).forEach((m) => E.previews.push({ L: -1, m, until: nw + 600 }));
       M.requestRender();
-      chordMidis(ch, S()).forEach((m) => VH.audio.trigger(snd, H.midiToHz(m), 0.6, { gain: G_PREVIEW * (routed() ? 1 : S().master), dest: bus || undefined }));
+      chordMidis(ch, S()).forEach((m) => VH.audio.trigger(snd, H.midiToHz(m), 0.6, { gain: G_PREVIEW, dest: bus || undefined }));
     };
     E.previews = [];   // keys lit by gesture previews (view.js piano): { L (-1 = chord), m, until (performance.now ms) }
     E.previewNote = function (L, m, dur) {
@@ -198,7 +190,7 @@
       const nw = performance.now(); E.previews = E.previews.filter((p) => p.until > nw - 300);
       E.previews.push({ L, m, until: nw + (dur || 0.3) * 1000 }); M.requestRender();
       const snd = M.soundOf(L), bus = E.layerBus(L);
-      VH.audio.trigger(snd, H.midiToHz(m), dur || 0.3, { gain: routed() ? G_PNOTE : G_PNOTE * S().master, dest: bus || undefined });
+      VH.audio.trigger(snd, H.midiToHz(m), dur || 0.3, { gain: G_PNOTE, dest: bus || undefined });
     };
 
     // ---------- transport ----------

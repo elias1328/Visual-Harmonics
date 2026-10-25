@@ -49,7 +49,7 @@
   const expMap = (lo, hi, u) => lo * (hi / lo) ** u;
   const pick = (arr, u) => arr[Math.min(arr.length - 1, Math.max(0, Math.floor(u * arr.length)))];
   const midiHz = (m) => 440 * 2 ** ((m - 69) / 12);
-  const noteName = (f) => (VH.harmony && VH.harmony.noteName ? VH.harmony.noteName(Math.round(69 + 12 * Math.log2(f / 440))) : '');
+  const noteName = (f) => VH.harmony.noteName(Math.round(VH.audio.hzToMidi(f)));
 
   // ======================================================================================================
   // DSP toolkit (pure JS, mono Float32Array)
@@ -1192,16 +1192,6 @@
   }
   const renderAsync = (p, sr) => Promise.resolve(render(p, sr));
 
-  function wavBlob(d, sr) {
-    const n = d.length, ab = new ArrayBuffer(44 + n * 2), v = new DataView(ab);
-    const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-    str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVEfmt '); v.setUint32(16, 16, true);
-    v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, sr, true);
-    v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-    str(36, 'data'); v.setUint32(40, n * 2, true);
-    for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.round(clamp(d[i], -1, 1) * 32767), true);
-    return new Blob([ab], { type: 'audio/wav' });
-  }
   function theorySpectrum(p) {
     const e = p.eng;
     const sp = p.kind === 'gem' ? [[1, 1], [2, 0.4], [3, 0.2]] : e && e.spec ? e.spec(p.q) : [[1, 1], [2, 0.5], [3, 0.3], [4, 0.2], [5, 0.12]];
@@ -1227,7 +1217,7 @@
     try {
       if (!window.indexedDB) throw new Error('no IndexedDB');
       const id = 'babel-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-      await VH.store.putBlob(id, wavBlob(d, sr));
+      await VH.store.putBlob(id, ui.wavBlob(d, sr));
       Object.assign(sound, { id, sampler: { zones: [{ blobKey: id, rootMidi: Math.round((69 + 12 * Math.log2(root / 440)) * 1000) / 1000 }], release: 0.2 } });
       await withLoud(sound);
       return VH.sounds.save(sound);
@@ -1776,10 +1766,7 @@
           }],
           ...(s.babel && typeof s.babel.x === 'number' ? [['Go', 'Go there', () => goTo(s.babel.gem ? gemTarget(s.babel) : s.babel)]] : []),
           ['→ Melody', 'Use in Melody: ' + s.name, () => useInMelody(s.id)],
-          ['✕', 'Delete ' + s.name, () => {
-            VH.sounds.remove(s.id);
-            if (s.kind === 'sampler') s.sampler.zones.forEach((z) => z.blobKey && VH.store.delBlob(z.blobKey).catch(() => {}));
-          }],
+          ['✕', 'Delete ' + s.name, () => ui.deleteSound(s.id)],   // also frees its audio unless another sound shares it
         ]);
       }
       needDraw = true;

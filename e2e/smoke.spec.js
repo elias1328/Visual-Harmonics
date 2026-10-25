@@ -651,3 +651,29 @@ test.describe('12 backing track', () => {
     await expect(page.locator('.mel-sharebox .mel-share-note')).toContainText('stays on your device');
   });
 });
+
+test.describe('13 storage housekeeping', () => {
+  test('blob GC keeps referenced audio and drops orphans; tidy removes old keys', async ({ page }) => {
+    await open(page, '#spiral');
+    const r = await page.evaluate(async () => {
+      // blobs written "by an earlier session": straight into IndexedDB, not through VH.store.putBlob
+      const db = await new Promise((res, rej) => { const q = indexedDB.open('visual-harmonics', 1); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
+      const put = (k) => new Promise((res) => { const t = db.transaction('blobs', 'readwrite'); t.objectStore('blobs').put(new Blob(['x']), k); t.oncomplete = res; });
+      for (const k of ['imp-keep', 'track:keep', 'track:keep:an', 'babel-orphan', 'track:orphan', 'track:orphan:an']) await put(k);
+      const sounds = VH.store.get('sounds', []);
+      VH.store.set('sounds', sounds.concat([{ id: 'imp-keep', name: 'Kept', kind: 'sampler', source: 'import', sampler: { zones: [{ blobKey: 'imp-keep', rootMidi: 60 }] }, spectrum: [[1, 1]] }]));
+      VH.store.set('melody.song', Object.assign(VH.store.get('melody.song', {}) || {}, { track: { blobKey: 'track:keep' } }));
+      localStorage.setItem('vh:babel.rarity', '1'); localStorage.setItem('vh:babel.radar', 'true');
+      const gone = VH.store.tidy();
+      const first = await VH.store.gcBlobs({ graceMs: 0 });          // marks orphans only
+      const second = await VH.store.gcBlobs({ graceMs: 0 });         // now deletes them
+      VH.store.set('sounds', sounds);
+      return { gone, first: first.deleted, second: second.deleted.sort(), left: (await VH.store.blobKeys()).sort() };
+    });
+    expect(r.gone.sort()).toEqual(['vh:babel.radar', 'vh:babel.rarity']);
+    expect(r.first).toEqual([]);
+    expect(r.second).toEqual(['babel-orphan', 'track:orphan', 'track:orphan:an']);
+    for (const k of ['imp-keep', 'track:keep', 'track:keep:an']) expect(r.left).toContain(k);
+    for (const k of r.second) expect(r.left).not.toContain(k);
+  });
+});

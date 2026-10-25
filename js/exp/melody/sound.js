@@ -1,4 +1,4 @@
-// melody/sound.js - Wave B part B2 "Sound": per-channel insert FX + global send reverb/delay, Shimmer, a drum lane
+// melody/sound.js - part "Sound": per-channel insert FX + global send reverb/delay, Shimmer, a drum lane
 // (synthesized kit, step sequencer under the canvas), backing chord styles, and play-feel extras (harmony magnet,
 // humanize, band sparkle). Data lives in M.song.fx / M.song.drums / M.song.backing.style (plain JSON: autosave,
 // share and undo). See MELODY.md. Everything here is Web Audio only: no samples, no worklets.

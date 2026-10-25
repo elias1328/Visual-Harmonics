@@ -1,144 +1,78 @@
-# Visual Harmonics: build plan
+# Visual Harmonics: architecture & conventions
 
-A free, open "experiments" website (in the spirit of Chrome Music Lab and Google Experiments) about *seeing* harmony. Static files only, no build step, hosted on GitHub Pages.
+A static site (no build step, no framework, no CDN) hosted on GitHub Pages. Harmony is computed from each sound's own overtones (Plomp–Levelt / Sethares dissonance), never looked up in theory tables.
 
-The hook: harmony is **calculated from the actual sound's overtones**, not looked up from music-theory tables. So every instrument, found sound or sample has its own "what fits" map.
+## 1. Module map
 
-## 1. Structure (target)
 ```
-index.html             app shell: top bar + tabs (Melody · Babel · Spiral · Lab), hash routing (#melody …)
-css/app.css            design tokens + shared components
-js/core/harmony.js     (moved from /harmony.js) + new dissonanceSpectra()
-js/core/audio.js       audio engine
-js/core/sounds.js      shared Sound format + library
-js/core/analyze.js     pitch + spectrum from an AudioBuffer (FFT)
-js/core/store.js       localStorage + share links
-js/app.js              shell / router
-js/exp/melody.js, babel.js, spiral.js, lab.js
-assets/samples/<instrument>/*.mp3 + assets/samples/manifest.json
-prototypes/            the old pages, kept working (used by the Lab tab)
-test/                  node:test unit tests
-```
-- Use classic `<script>` tags and one global namespace `window.VH` (no ES modules), so the page works from file://.
-- Sample presets need HTTP (`python -m http.server`). On file://, show a small note instead of failing.
-
-## 2. Shared contracts (all builders must follow these exactly)
-
-**Experiment module:** `VH.registerExperiment({ id, title, icon, hint, mount(el), unmount() })`
-- `unmount()` MUST stop all audio, cancel requestAnimationFrame and remove window/document listeners.
-
-**Sound:**
-```js
-{ id, name, family, source: 'preset'|'babel'|'sample'|'import',
-  kind: 'synth' | 'sampler',
-  synth:   { partials: [[ratio, amp], ...], attack, decay, sustain, release, glide, noise, wobble },  // seconds; sustain 0..1; glide in semitones
-  sampler: { zones: [{ url | blobKey, rootMidi }], release },
-  spectrum: [[ratio, amp], ...] }   // <=16 entries, max amp 1. ALL harmony math uses this.
+index.html              shell markup, About dialog, script load order (classic <script> tags, one global window.VH)
+css/app.css             design tokens + shared components (dock, Settings panel, sheets, toasts, cards)
+css/<exp>.css           one stylesheet per experiment
+js/core/config.js       VH.config: public site config (Gallery URL + Supabase anon key)
+js/core/harmony.js      VH.harmony: pure math. Dissonance, note names, scales, chord qualities, tunings
+js/core/store.js        VH.store: localStorage (JSON), share codes, IndexedDB blobs, start-up housekeeping
+js/core/analyze.js      VH.analyze: FFT, pitch + spectrum, loop finding, import analysis, backing-track analysis
+js/core/synth.js        VH.synth: the "synth.v2" subtractive model (pure data)
+js/core/audio.js        VH.audio: Web Audio engine (voices, sampler, limiter, offline rendering)
+js/core/sounds.js       VH.sounds: the sound library (presets, samples, saved, imported, derived)
+js/core/fx.js           VH.fx: effect units (reverb, delay, chorus, drive, lofi, filter)
+js/app.js               VH.ui (shared widgets, sound picker, import, shortcut sheet) + router (VH.app)
+js/core/synthed.js      VH.synthEditor: the synth editor dialog (needs VH.ui, so it loads after app.js)
+js/exp/melody/          Melody, split into a core and parts. See js/exp/melody/MELODY.md
+js/exp/babel.js         Babel (endless sound map, Gems, Detector)
+js/exp/spiral.js        Spiral (pitch spiral, chords, latch, arpeggio, harmony meter)
+js/exp/gallery.js       Gallery tab + the Publish dialog (Supabase PostgREST over fetch)
+js/exp/lab.js           Archive tab (id/route `lab`): iframes of prototypes/
+js/vendor/lamejs/       MP3 encoder (LGPL), lazy-loaded on the first MP3 export
+assets/samples/         VSCO-2-CE samples + manifest.json (CC0). assets/samples-private/ is local-only and gitignored
+docs/gallery.sql        Gallery schema, row-level security and RPCs
+test/                   node:test unit tests (+ ntest.js / otest.js optional CDP browser checks)
+e2e/                    Playwright smoke suite (Chromium, Firefox, WebKit)
 ```
 
-**Core API:**
-- `VH.audio.ensure()`: only call it in gesture handlers. Master gain 0.3, with a limiter (DynamicsCompressor).
-- `VH.audio.voice(sound, freq)` returns `{ setFreq(f, glideSec), setGain(g), stop(releaseSec) }` for sustained notes.
-- `VH.audio.trigger(sound, freq, durSec)` plays a one-shot.
-- The sampler picks the nearest zone by rootMidi, uses `playbackRate = freq / rootFreq`, and glides via playbackRate.
-- `VH.harmony.dissonanceSpectra(freqs, spectrum)` sums pairDissonance over the spectrum partials of *different* notes.
-- `VH.sounds`: `list()`, `get(id)`, `save(sound)`, `remove(id)`, `onChange(cb)`, `ready` (a Promise that resolves once the sample manifest has loaded, or failed gracefully).
-  - Built-ins: ~8 synth presets (String, Sine, Clarinet, Bell, Organ, Pluck, Glass, Pad), plus sampler presets from the manifest.
-  - Saved and imported sounds persist via VH.store. Imported audio goes in IndexedDB keyed by blobKey.
-- `VH.analyze.fromBuffer(audioBuffer)` returns `{ rootHz, spectrum }`: pitch via autocorrelation or HPS, spectrum via FFT peak picking at harmonics and non-harmonic peaks.
-- `VH.store`:
-  - `get(k, def)` and `set(k, v)` with try/catch.
-  - `encodeShare(obj)` and `decodeShare(str)`: JSON → deflate with CompressionStream when available → base64url, placed in the URL hash as `#melody/s=...`.
+Load order (index.html): config, harmony, store, analyze, synth, audio, sounds, fx, app, synthed, melody parts (model → main), babel, spiral, gallery, lab, then `VH.app.start()`.
 
-## 3. Design brief (the supervisor owns this; keep to it)
-- Dark, calm, "museum exhibit" feel. The canvas is the hero, fills most of the viewport, and has minimal chrome.
-- Top bar: "Visual Harmonics" wordmark on the left, pill tabs in the center, a ⓘ about button on the right.
-- One floating **bottom dock** per experiment holds 3–6 primary controls (big, icon + label).
-- Everything else goes in a **"⚙ More" drawer** that slides in from the right. Basic stays simple.
-- A one-line hint per experiment appears on load and fades after the first interaction.
-- Tokens:
-  - bg `#0b0d12`, surface `#141824`, line `#262b3a`, text `#d8dce6`, muted `#7a8194`
-  - accent `#6fa3ff`, glow `#9ff`
-  - harmony palette: navy `#080a28` → violet `#611a8c` → cyan `#00bfdc` → white
-  - radius 10px, system-ui font, no external fonts or CDNs
-- Motion is subtle (150–250 ms ease). It must work at 400 px wide, with touch support. Show visible focus states.
+## 2. Core API (summary)
 
-## 4. Phases
-- **Phase 1A (Foundation):** structure, core modules, design system, shell, Lab tab (iframes of `prototypes/`), and ports of melody, babel and spiral into experiment modules. Behaviour stays the same but they use core audio, the core style and the sound picker.
-- **Phase 1B (Samples):** curate `C:\Users\elias\Documents\Dark Fantasy Samples` into `assets/samples` + `manifest.json` + `assets/samples/CURATION.md`. Runs in parallel with 1A.
-- **Phase 2 (parallel, after 1A + 1B):**
-  - **Melody upgrades:** chord preview on change, chord picker, more bars, per-layer instrument, note/rhythm mode, undo, share link.
-  - **Babel upgrades:** new sound ingredients, rarity score + "rare find" markers, save to library.
-  - **Spiral polish:** sound picker, sampler support.
-- **Phase 3:** supervisor review, cross-experiment polish, README, GitHub Pages check.
+- **Experiment:** `VH.registerExperiment({ id, title, icon, hint, mount(el), unmount() })`. `unmount()` must stop all audio, cancel rAF and remove window/document listeners. Routes are `#<id>`; `VH.app.sub` holds the rest of the hash (e.g. `#melody/s=<code>`).
+- **Sound:** `{ id, name, family, source: 'preset'|'sample'|'babel'|'import'|'custom', kind: 'synth'|'sampler', play: 'glide'|'hit', synth | sampler: { zones: [{ url | blobKey, rootMidi, loopStart?, loopEnd? }], release }, spectrum: [[ratio, amp]], tone?: { bright } }`. All harmony math uses `VH.sounds.spectrumOf(sound)` (tone applied).
+- **VH.audio:** `ensure()` (only in gesture handlers), `voice(sound, hz, { gain, dest, when, tone })` → `{ setFreq, setGain, stop }`, `trigger(sound, hz, dur, opts)` → `{ stop }`, `withContext(offlineCtx, fn)` for export, `midiToHz`, `hzToMidi`, `stats()`.
+- **VH.sounds:** `list`, `get`, `save`, `remove`, `onChange`, `ready`, `prepare(id)`, `spectrumOf`, `playOf`, `derive(baseId, { partials?, stretch?, roll?, tone? })`.
+- **VH.harmony:** `NAMES`, `midiToHz`, `noteName`, `dissonanceSpectra`, `SCALES`, `scaleChords`, `romanOf`, `CHORD_IV` / `CHORD_Q` / `CHORD_SUFFIX` (the one chord-quality table; Melody's `model.QUALS`, Spiral and analyze.js derive from it), `TUNINGS` and helpers.
+- **VH.store:** `get(k, def)` / `set(k, v)` / `remove(k)` (prefix `vh:`, memory fallback), `encodeShare` / `decodeShare` (JSON → deflate-raw → base64url, prefix `z` or `j`), `putBlob` / `getBlob` / `delBlob` / `blobKeys`, `tidy()`, `gcBlobs()`.
+- **VH.ui:** `h`, `esc`, `dockButton`, `dockSelect`, `soundPicker` (groups Synths / Instruments / Your sounds / Local; `{ mode: 'line' }` splits by "Glides well" / "Best for notes"), `select`, `slider`, `drawer(el, dock, o)` (the Settings side panel; a bottom sheet on phones), `importSounds`, `manageSounds`, `deleteSound(id)` (also frees unshared audio), `wavBlob`, `noteName`, `shortcuts.register(expId, [{ keys, label }])` for the `?` sheet.
 
-## 4b. Phase 3: user feedback round (2026-10-19)
+## 3. Conventions
 
-### Wave A (4 builders in parallel; file ownership is strict)
-- **A1 Melody restructure + global UI** (owns `js/exp/melody*`, `css/melody.css`, `js/app.js`, `css/app.css`, `index.html`).
-- **A2 Core audio** (owns `js/core/audio.js`, `sounds.js`, `analyze.js`, new `js/core/fx.js`, `test/`, and both `assets/*/manifest.json`).
-- **A3 Babel v3** (owns `js/exp/babel.js`, `css/babel.css`).
-- **A4 Spiral fixes** (owns `js/exp/spiral.js`, `css/spiral.css`).
+- **File ownership:** each experiment owns its `js/exp/<id>*` and `css/<id>.css`; the core (`js/core`, `js/app.js`, `css/app.css`) is shared and changes must stay backward compatible. Melody parts edit only their own file and extend Melody through `M` hooks (MELODY.md); do not wrap `M.*` or `VH.audio.*` functions or patch another part's DOM.
+- **Shared helpers live in core:** note names, Hz/MIDI conversion, chord tables, WAV encoding and option grouping come from `VH.harmony`, `VH.audio` and `VH.ui`. Small `clamp` one-liners stay local in files that must also load alone in Node (fx.js, model.js, export.js).
+- **Storage keys:** every `vh:` key used in the `babel.` / `melody.` / `spiral.` / `lab.` namespaces must be listed in `VH.store.KEYS` (a unit test scans the sources). On start, `tidy()` removes unlisted keys there, i.e. leftovers of older versions (`babel.rarity`, `babel.radar`, old melody keys). `ui.*` and `gallery.*` keys are dynamic and left alone.
+- **Shortcuts:** every key handler has a matching line in the experiment's `shortcuts.register` list, and tooltips name their key as `Name (Key): what it does`.
+- **Design:** dark "museum exhibit" look; the canvas is the hero; one bottom dock with 3–6 primary controls; everything else in Settings. Tokens in css/app.css (bg `#0b0d12`, accent `#6fa3ff`, glow `#9ff`, radius 10px, system-ui). Works at 400 px wide, with touch and visible focus.
+- **Performance:** rAF loops draw only when something changed (Spiral stops its loop when idle); Melody caches the harmony map and, during playback, the layer stack as bitmaps.
 
-### Wave B (after A1 + A2; parallel, on separate melody module files)
-- **B1 Editing tools:** select, move, eraser, straight-line pen, vibrato on the selection, and auto-fit when a chord changes.
-- **B2 Sound:** mixer + FX + drum lane + backing (drone) instrument and style.
-- **B3 Export + generators:** MIDI/WAV/MP3 export, random progression/melody, and "harmony includes other layers".
+## 4. Storage
 
-### Core API additions (A2 implements; everyone may code against them; all are backward compatible)
-**New Sound fields:**
-- `play: 'glide' | 'hit'`
-  - Synth presets and sustained families (strings, organ, flute, brass, tremolo, choir, pads) are `glide`.
-  - Plucked, struck and percussive instruments (piano, harp, pizz, marimba, xylophone, glockenspiel, celesta, kalimba, babel percussive) are `hit`.
-  - When the field is missing, derive it from `family`.
+- **localStorage** (`vh:` prefix): preferences, the autosaved Melody song (`melody.song`), saved sounds (`sounds`), kits, tones, the cross-experiment inbox (`melody.inbox`). Undo history is in memory only.
+- **IndexedDB** (`visual-harmonics` / `blobs`): imported audio, Babel sampler saves (`babel-…`), backing tracks (`track:…` and their analysis `track:…:an`).
+- **Garbage collection** (`VH.store.gcBlobs`, run once per start while idle from `app.js`): a blob is kept when its key (or, for `…:an`, its track key) appears anywhere in a saved `vh:` value or in the live Melody state (song + undo history). The rules err on keeping: nothing happens without readable localStorage; blobs written this session are kept; an orphan is deleted only if it was already an orphan on a run at least a day earlier (marks in `vh:store.gc`), so another open tab is safe.
 
-**Sampler zones** may carry `loopStart` and `loopEnd` (seconds).
-- A2 computes them offline for glide-family instruments and writes them into both manifests.
+## 5. Share and Gallery data flow
 
-**`voice(sound, freq, opts)` and `trigger(sound, freq, dur, opts)` options:**
-- `gain`
-- `dest`: an AudioNode to connect to; default is the master.
-- `when`: an absolute ctx time.
-- `tone`: `{ bright: -1..1 }`, a filter applied to any sound.
+1. **Share link:** Melody serializes the song (own editor synths travel in portable form via `VH.sounds.portable`; imported audio and the backing track do not) → `VH.store.encodeShare` → `#melody/s=<code>`. Opening the link decodes, installs missing synths and loads the song as one undo step.
+2. **Publish:** Melody's Publish dialog (`VH.gallery.openPublish`) sends `{ title, author, code, meta }` to Supabase `songs` (meta = a small, downsampled preview for the card). Row-level security and RPCs (`like_song`, `report_song`) are in `docs/gallery.sql`; the browser holds only the public anon key.
+3. **Browse and open:** the Gallery lists rows (`select=id,created_at,title,author,meta,likes`, new or top, search) and draws previews from `meta`. Opening a song fetches its `code`, pushes `{ type: 'song', code, title, author, from: 'gallery' }` to `vh:melody.inbox` and routes to `#melody`, which consumes the inbox.
+4. Likes, reports and "mine" are remembered locally (`gallery.liked` / `gallery.reported` / `gallery.mine`).
 
-**`trigger` returns** `{ stop(rel) }`, which can cut the note early.
+## 6. Testing
 
-**Sampler voices are legato:**
-- `setFreq` glides without retriggering.
-- The sustain loops between the zone's loop points when they exist.
-- The voice crossfades (~60 ms) to a better zone when it drifts more than 4 semitones from the current zone's root.
+- **Unit:** `node --test` (repo root). Pure modules (harmony, store, analyze, sounds, synth, melody model / export helpers, gallery helpers) load in Node via `module.exports`; `test/beatgen.js` makes synthetic beats for the backing-track analysis.
+- **E2E:** `cd e2e && npx playwright test --project=chromium --project=firefox`. Each test fails on uncaught errors and unexpected console errors / warnings. Assertions use observable behaviour: DOM, `VH.audio.stats()`, `VH.melody.song()`, real downloads and IndexedDB.
+- **Optional CDP checks:** `test/ntest.js` (synth editor) and `test/otest.js` (Gallery) against a headless Edge/Chrome; skipped under `node --test`.
+- Keep both suites green; a test may change only when the user-visible behaviour it checks is unchanged.
 
-**New functions:**
-- `VH.sounds.spectrumOf(sound, tone?)` returns the spectrum with the tone filter applied, so the harmony math stays truthful.
-- `VH.sounds.derive(baseId, { partials?, stretch?, roll?, tone? })` saves a user sound named "<base> (custom)" with `source: 'custom'`.
-  - Synths edit their partials.
-  - Samplers can only take `tone`.
-- `VH.audio.withContext(ctx, fn)` runs `fn` with `voice`/`trigger` targeting `ctx`, typically an OfflineAudioContext, for export rendering.
-- `VH.audio.midiToHz` and `VH.audio.hzToMidi`.
+## 7. Samples and licensing
 
-**`VH.fx` (in `js/core/fx.js`):**
-- `create(ctx, type, params)` returns `{ input, output, set(params), dispose() }`.
-- Types: `reverb` (generated impulse; size, mix), `delay` (time, feedback, mix), `chorus`, `drive`, `lofi` (bits, rate), `filter` (cutoff, q).
-- `chain(ctx, [fx...])` connects them in series.
-
-### UI changes (A1)
-- **Settings panel:** "⚙ More" becomes a "Settings" side panel that **pushes** the stage aside on desktop (≥ 900 px) instead of covering it. On phones it is a bottom sheet.
-- **About:** the top-right ⓘ becomes a small text button "About", so it can't be confused with Settings.
-- **Unified picker:** `VH.ui.soundPicker` groups sounds as Synths / Instruments / Your sounds / Local.
-  - With `{ mode: 'line' }` it splits each group into "Glides well" and "Best for notes" (hit sounds are still selectable).
-
-### Shared UI: shortcut sheet (E1, 2026-10-19)
-- **"?"** (Shift+/) anywhere opens a keyboard-shortcut overlay (`.vh-sheet`): the current experiment's shortcuts plus the global ones ("?", Esc, Tab). Esc, the ✕ or a click on the backdrop closes it; experiment keys stay quiet while it is open.
-- Experiments register their list once (at script load is fine):
-  ```js
-  const off = VH.ui.shortcuts.register('spiral', [{ keys: 'Space', label: 'Play / stop' }, { keys: 'Ctrl+Shift+Z / Ctrl+Y', label: 'Redo' }]);
-  ```
-  `keys`: `+` joins a combination, ` / ` separates alternatives. Registering again replaces the list; `off()` removes it.
-- Also: `VH.ui.shortcuts.list(expId)`, `.global`, `.open()`, `.close()`, `.toggle()`, `.isOpen`.
-- `VH.app.prev` is the id of the experiment mounted before the current one (e.g. to label inbox items).
-- The Lab tab is labelled "Archive" (id and route stay `lab`).
-- On file:// (sample library not loadable) a slim dismissible banner under the top bar says "Sampled instruments need a local server: double-click start.bat". Never on http(s).
-
-## 5. Samples & licensing
-- `assets/samples/`: the public **CC0 VSCO-2-CE** set. Credit "Versilian Studios / Sam Gossner & Ivy Audio / Simon Dalzell" in About and the README. Don't sell the samples directly.
-- `assets/samples-private/`: the Dark Fantasy pack. It has no redistribution rights, so it is **local only and gitignored**. VH.sounds loads it if it's present and marks its sounds `private: true`.
+- `assets/samples/`: CC0 VSCO-2-CE. Credit "Versilian Studios / Sam Gossner & Ivy Audio / Simon Dalzell" in About and the README; do not sell the samples directly.
+- `assets/samples-private/`: local-only pack without redistribution rights, gitignored; loaded when present, sounds marked `private: true` ("local").
+- Code: MIT. lamejs: LGPL, vendored unmodified.

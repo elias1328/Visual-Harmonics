@@ -99,9 +99,6 @@ a { color: var(--accent); }
 .vh-dock-select:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .vh-dock-select .lb { color: var(--text); }
 .vh-dock-select .lb::after { content: ' ▾'; color: var(--muted); }
-.vh-swatches { display: flex; gap: 5px; }
-.vh-swatches i { width: 12px; height: 12px; border-radius: 50%; opacity: 0.35; transition: opacity var(--ease), transform var(--ease); }
-.vh-swatches i.on { opacity: 1; transform: scale(1.25); }
 @media (max-width: 460px) {
   .vh-dock-btn { min-width: 50px; padding: 4px 5px; }
   .vh-dock-btn .lb { max-width: 76px; }

@@ -1,4 +1,4 @@
-// melody/generate.js - Wave B part (B3): "🎲 Progression", "🎲 Melody" (+ "🎲 again") and the M.hooks.bandExtras
+// melody/generate.js - part: "🎲 Progression", "🎲 Melody" (+ "🎲 again") and the M.hooks.bandExtras
 // implementation behind "Bands include other layers". See MELODY.md.
 (function () {
   'use strict';

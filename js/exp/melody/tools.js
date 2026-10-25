@@ -2,7 +2,7 @@
 // picker, empty space = seek, drag = loop region, ✕ = clear it (or places an incoming chord). Below it, the current tool
 // gets down/move/up/hover, and a readout near the pointer shows note + cents + fit %. Built-in tool: 'draw' (Line pen or
 // Notes, per the layer's mode).
-// Wave B adds tools with M.ui.addTool({ id, label, icon, ... }). See MELODY.md (Tools).
+// Parts add tools with M.ui.addTool({ id, label, icon, ... }). See MELODY.md (Tools).
 (function () {
   'use strict';
   const VH = window.VH, NS = VH.melody, md = NS.model;
@@ -113,7 +113,7 @@
     }
     T.noteAt = noteAt;
     T.add({
-      id: 'draw', label: 'Draw', icon: '✎', title: 'Draw: line pen or notes (per layer mode)',
+      id: 'draw', label: 'Draw', icon: '✎', title: 'Draw (P pen, N notes): line pen or notes, per layer mode',
       down(p) {
         const S = M.song, l = S.layers[M.active];
         if (l.mode === 'line') {
