@@ -16,9 +16,40 @@
   // The truthful spectrum of a sound, including its tone (bright) when it has one (core applies the sound's own tone).
   const spectrumOf = (s) => VH.sounds.spectrumOf(s || null);
 
+  // Chord hints: where a NEW note would sound most consonant with the tones sounding at one moment. tones: [{ hz, spec }]
+  // (spec = [[ratio, amp]] of that tone's sound); cspec = the candidate's spectrum. Candidates every `step` semitones in
+  // [lo, hi], scored by the same pairDissonance sum as the bands; the n best local minima (not on a sounding tone, >= sep
+  // semitones apart) come back as { m, d (raw), c (0..1 consonance across the range) }, best first.
+  const topPartials = (sp, k) => (sp.length > k ? sp.slice().sort((a, z) => z[1] - a[1]).slice(0, k) : sp);
+  NS.hintCandidates = function (tones, cspec, lo, hi, o) {
+    o = o || {};
+    const step = o.step || 0.5, n = o.n || 4, sep = o.sep || 1.5, own = o.own == null ? 0.75 : o.own, K = o.partials || 8;
+    const cs = topPartials(cspec, K), ts = tones.map((t) => ({ hz: t.hz, m: t.m, sp: topPartials(t.spec, K) }));
+    if (!ts.length) return [];
+    const N = Math.floor((hi - lo) / step + 1e-9) + 1, D = new Float64Array(N);
+    let mn = Infinity, mx = -Infinity;
+    for (let i = 0; i < N; i++) {
+      const f = H.midiToHz(lo + i * step);
+      let d = 0;
+      for (const t of ts) for (const [ri, ai] of cs) for (const [rj, aj] of t.sp) d += H.pairDissonance(f * ri, ai, t.hz * rj, aj);
+      D[i] = d; if (d < mn) mn = d; if (d > mx) mx = d;
+    }
+    const out = [];
+    for (let i = 0; i < N; i++) {
+      if ((i > 0 && D[i] > D[i - 1]) || (i < N - 1 && D[i] > D[i + 1])) continue;
+      const m = lo + i * step;
+      if (ts.some((t) => t.m != null && Math.abs(t.m - m) < own)) continue;
+      out.push({ m, d: D[i], c: 1 - (D[i] - mn) / ((mx - mn) || 1) });
+    }
+    out.sort((a, z) => a.d - z.d);
+    const pick = [];
+    for (const c of out) { if (pick.length >= n) break; if (pick.every((p) => Math.abs(p.m - c.m) >= sep)) pick.push(c); }
+    return pick;
+  };
+
   NS.Bands = function (M) {
     const cache = new Map(), off = document.createElement('canvas'), cols = [];
-    let specs = [], keys = [], bSpec = null, bKey = '', bgFor = '';
+    let specs = [], keys = [], bSpec = null, bKey = '', bgFor = '', bRev = 0;
     // Map look (view preference, VH.store 'melody.look'): applied at draw time to the cached columns, no recompute.
     let look = md.lookIn(VH.store.get('melody.look', null)), lookK = '';
     const isDef = () => JSON.stringify(look) === JSON.stringify(md.lookIn(null)) || (look.clarity === 0 && look.thick === 50 && look.glow === 50 && look.dark === 50 && look.theme === 'aurora');
@@ -28,7 +59,7 @@
 
     // Recompute layer + backing spectra; marks the background dirty when the active layer's map changed.
     api.refresh = function () {
-      const S = M.song;
+      const S = M.song; bRev++;
       specs = S.layers.map((_, L) => spectrumOf(M.soundOf(L)));
       keys = specs.map((s) => JSON.stringify(s));
       bSpec = spectrumOf(M.backingSound()); bKey = JSON.stringify(bSpec);
@@ -42,7 +73,7 @@
       return look;
     };
     api.resetLook = () => { VH.store.set('melody.look', null); return api.setLook(md.lookIn(null), false); };
-    api.invalidate = function () { cache.clear(); tcache.clear(); api.dirty = true; M.requestRender(); };
+    api.invalidate = function () { cache.clear(); tcache.clear(); secBg.clear(); api.dirty = true; M.requestRender(); };
     function extras(b, L) {
       const S = M.song;
       if (!S.bandsOthers || typeof M.hooks.bandExtras !== 'function') return null;
@@ -57,6 +88,14 @@
       if (ex) for (const e of ex) for (const [ri, ai] of PS) for (const [rj, aj] of (e.spectrum || BS)) d += H.pairDissonance(f * ri, ai, e.hz * rj, aj);
       return d;
     }
+    api.peaksOf = function (ch, L) {   // brightest local maxima (midi) of any chord for layer L (arpeggios of sections not shown)
+      if (!ch) return [];
+      if (!specs[L]) api.refresh();
+      const hz = chordMidis(ch, M.song).map(H.midiToHz), D = [], out = [];
+      for (let r = 0; r < R; r++) D[r] = cross(H.midiToHz(rowMidi(r)), hz, specs[L], bSpec, null);
+      for (let r = 1; r < R - 1; r++) if (D[r] <= D[r - 1] && D[r] <= D[r + 1]) out.push([rowMidi(r), D[r]]);
+      return out.sort((a, z) => a[1] - z[1]).map((p) => p[0]);
+    };
     api.cross = function (f, b, L) {
       const ch = md.regionChord(M.song, b);
       if (!ch) return 0;
@@ -188,13 +227,14 @@
 
     // Column for bar b scored with layer L's spectrum: { D, V, px, chord } (cached). With a backing track's bands on,
     // the mean of the track columns over the region.
-    api.column = function (b, L) {
-      const S = M.song, ch = md.regionChord(S, b);
+    // SS / bsp (Song view): another section as a standalone song and its backing { spec, key }; no extras or track bands there.
+    api.column = function (b, L, SS, bsp) {
+      const S = SS || M.song, ch = md.regionChord(S, b), bS = bsp ? bsp.spec : bSpec, bK = bsp ? bsp.key : bKey;
       if (!specs[L]) api.refresh();
       if (!specs[L]) L = 0;
-      if (trackHook()) { const tc = trackRegion(b, L); if (tc) return tc; }
-      const ex = ch ? extras(b, L) : null;
-      const tn = md.tuningOf(S), key = keys[L] + '|' + bKey + '|' + (ch ? ch.join('') + (tn !== '12tet' ? '|' + tn + (ch.kp != null ? ch.kp : S.key) : '') : '-') + (ex ? '|' + JSON.stringify(ex) : '');
+      if (!SS && trackHook()) { const tc = trackRegion(b, L); if (tc) return tc; }
+      const ex = ch && !SS ? extras(b, L) : null;
+      const tn = md.tuningOf(S), key = keys[L] + '|' + bK + '|' + (ch ? ch.join('') + (tn !== '12tet' ? '|' + tn + (ch.kp != null ? ch.kp : S.key) : '') : '-') + (ex ? '|' + JSON.stringify(ex) : '');
       let c = cache.get(key);
       if (c) return c;
       if (cache.size > 160) cache.clear();
@@ -205,7 +245,7 @@
         for (let r = 0; r < R; r++) px.set([k[0] * 255, k[1] * 255, k[2] * 255, 255], r * 4);
       } else {
         const hz = chordMidis(ch, S).map(H.midiToHz), w = Math.round(7 * RPS), PS = specs[L];
-        for (let r = 0; r < R; r++) D[r] = cross(H.midiToHz(rowMidi(r)), hz, PS, bSpec, ex);
+        for (let r = 0; r < R; r++) D[r] = cross(H.midiToHz(rowMidi(r)), hz, PS, bS, ex);
         // Compare each row with its ±7-semitone neighbourhood so bands read evenly, then normalise.
         for (let r = 0; r < R; r++) {
           let lo = Infinity, hi = -Infinity;
@@ -243,6 +283,30 @@
       api.dirty = false;
     };
 
+    // Song view: the background image of section k (not the shown one), cached per section until its chords, key, tuning,
+    // tension, look, backing or the active layer's sound change. Same format as `off` (1 px per sixteenth x R rows).
+    const secBg = new Map(), bspOf = new WeakMap();
+    api.sectionBg = function (k) {
+      const S = M.song, SS = md.sectionSong(S, k), A = M.active, id = S.sections[k].id, W = md.tot16(SS), T = SS.tension || 0;
+      if (!keys.length) api.refresh();
+      const bk = M.backingSoundOf(k);
+      let bsp = bspOf.get(bk);
+      if (!bsp || bsp.rev !== bRev) { const spec = spectrumOf(bk); bsp = { spec, key: JSON.stringify(spec), rev: bRev }; bspOf.set(bk, bsp); }
+      const key = [keys[A], bsp.key, T, lookK, md.tuningOf(S), SS.key, SS.mode, W, JSON.stringify(SS.chords)].join('|');
+      let e = secBg.get(id);
+      if (e && e.key === key) return e.c;
+      if (!e) { if (secBg.size > 24) secBg.clear(); e = { key: '', c: document.createElement('canvas') }; secBg.set(id, e); }
+      const c = e.c, octx = c.getContext('2d');
+      c.width = W; c.height = R;
+      const img = octx.createImageData(W, R);
+      SS.chords.forEach((ev, i) => {
+        const px = api.pixels(api.column(i, A, SS, bsp), T), z = md.regionEnd(SS, i);
+        for (let x = ev.at; x < z; x++) for (let r = 0; r < R; r++) img.data.set(px.subarray(r * 4, r * 4 + 4), ((R - 1 - r) * W + x) * 4);
+      });
+      octx.putImageData(img, 0, 0);
+      e.key = key;
+      return c;
+    };
     // 0..1 consonance of midi m in bar b for layer L (NaN without a chord).
     api.consonance = function (m, b, L) {
       L = L == null ? M.active : L;

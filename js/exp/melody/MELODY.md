@@ -13,7 +13,7 @@ Melody is split into classic scripts. They share `window.VH.melody` (no ES modul
 | `tools-edit.js` | part: Line / Select / Eraser tools, copy & paste, vibrato, auto-fit, pure intonation |
 | `sound.js` | part: mixer rows, effects, drum lane + kits, backing (drone) instrument and style, play feel |
 | `export.js` | part: MIDI / WAV / MP3 export, automation lanes |
-| `generate.js` | part: random progression / melody, "harmony includes other layers" |
+| `generate.js` | part: random progression / melody, Randomize panel (seeded), layer arpeggio settings + hint ticks, "harmony includes other layers" |
 | `track.js` | part: backing track (import a beat, tempo / beats / chords / key, synced playback, bands from the audio; see Backing track) |
 | `onboard.js` | part: first-visit demo song, ghost path, 5-step tutorial, Settings > Song > "Start here" (see Onboarding) |
 | `main.js` | builds `M`, history, autosave, share, keys, frame loop; starts the parts; registers the experiment |
@@ -58,7 +58,7 @@ VH.melody.parts.push((M) => {
   fx: {}, drums: {}, ext: {},     // free-form JSON for parts: sound.js owns fx + drums; others use ext.<partName>
   loopRegion?: [a, b] | null,     // loop only bars a..b-1 (whole bars). Serialized only when set; part of undo, autosave, share
   auto: [{ id, target, points: [[t16, v 0..1, smooth?]] }],   // automation lanes of the shown SECTION (see Automation lanes)
-  grid: 8|16, loop, snap }        // view prefs: autosaved and shared, but NOT part of undo
+  grid: 8|16|32|12|24, loop, snap }   // time grid (1/8, 1/16, 1/32, 1/8 triplet, 1/16 triplet; md.GRIDS, md.gridStep) + view prefs: autosaved and shared, but NOT part of undo
 ```
 
 - **Line strokes.** A layer's line is a list of strokes that may overlap in time (polyphonic within the layer); a stroke
@@ -71,7 +71,7 @@ VH.melody.parts.push((M) => {
 - **Layer ids** are stable. They are unique within the song and kept by undo/redo, autosave and share links. `M.addLayer` takes `max + 1`.
   - Songs saved before ids existed get `l1..lN` in layer order when parsed (`S.migratedIds` > 0 then). An old autosave is saved back in the new format.
   - Part data may be keyed by id, or by index and kept aligned with `'layerRemoved'`. tools-edit.js's `ext.edit.vib` and sound.js's `fx.layers` are index-keyed and shift there.
-- Pitch range: `model.LO` = 48 (C3) to `model.HI` = 84 (C6). Time unit: the **sixteenth**; line samples: 3 per sixteenth.
+- Pitch range: `model.LO` = 36 (C2) to `model.HI` = 96 (C7), `SPAN` = 60 (the view shows C3..C6 by default and scrolls / zooms over the rest; see Pitch zoom). Time unit: the **sixteenth**; line samples: 3 per sixteenth.
   The bar length follows the section's time signature: use `md.spb(S)` (sixteenths per bar), `md.lpb(S)` (line samples
   per bar), `md.tot16(S)` (section length), `md.barAt(S, t16)`, `md.barsOf(S)`, `md.beatGrid(S, half)`, `md.tsOf(S)`
   (`{ n, d, spb, beats, half, compound }`; 6/8 + 12/8 beat in dotted quarters, 7/8 is 2+2+3). `model.SPB` = 16 /
@@ -97,6 +97,41 @@ VH.melody.parts.push((M) => {
 - `backing.styleOpts` holds each backing style's own sub-settings (sound.js: `NS.sound.styleOptsOf(S, style)` validates and fills defaults; missing = the original fixed patterns). It is serialized only when set, so older songs serialize unchanged. Live playback, the WAV render (`NS.sound.offline`) and the MIDI export (`NS.sound.barEvents`) all read it.
 - Notes may carry extra runtime fields such as `sel: true` (tools-edit.js selection; the view draws it with a white outline). Those fields are **not** serialized.
 - Model helpers (`M.model`): `nextLayerId(layers)`, `assignIds(layers)`, `chordMidis(ch)`, `chordName(ch, names)`, `namesOf(S)`, `scaleOf(S)`, `diatonic(S)`, `secPerBar(S)`, `secPer16(S)`, `layerGain(S, i)` (0 when muted or not soloed), `serialize(S, full)`, `parse(obj)`, `newLayer(i, opts, bars)`, `COLORS`, `MAX_LAYERS` = 8, `QUALS`.
+
+## Randomize (generate.js)
+
+- **Progressions** (`NS.gen.plan / progression`): per section a *plan* `{ A: chord at each bar start, B: the chord a split bar turns to, pre }`.
+  Major / minor: 20 templates (degrees of the key) or, with Adventure, a random walk over usual degree moves; then per bar a borrowed
+  chord (bVI bVII iv bIII bII v ii° in major; IV V V7 bII vii° in minor), a secondary dominant (V7 of the next chord) or a colour
+  (7th / sus2 / sus4 as far as the scale allows). Other scales: the modal templates (`MODAL`) + colour. Adventure (`spice`, 0..1,
+  default 0.4) scales every one of those probabilities. Inversions are not in the model (a chord is `[root, quality]`), so none.
+- **Seeds**: `NS.gen.mulberry32(hashSeed(seed + '|' + part + '|' + sectionIndex))`. Each part draws from its own generator, so a part's result
+  does not depend on what else is ticked. Same seed + ticks on the same starting song = same song.
+- **`NS.gen.randomizeSong(S, md, { seed, spice, parts, scope }, ctx)`** is pure (Node-tested); `ctx` supplies the song-touching bits
+  (`setBars, show(k), setSound, setDrums, melody(rnd), sync, sounds, backSounds, styles, drums`). Parts: key (root + scale; one choice for
+  all sections in "Whole song"), chords, lens (chord lengths: whole / half / late / every beat, or two bars per chord), bars (2..16),
+  tempo (skipped with a backing track), melody (active layer, each section), backInst, backStyle (song-wide, or the shown section's
+  `section.back` when the scope is the section of a multi-section song), drums (a preset, or off), sounds (built-in presets per layer).
+  Left out: time signature, effects, mixer levels, drum kit rows, tuning. Unticked parts are never touched; Chords without Chord lengths keep the section's chord splits, Chord lengths without Chords keep its chords.
+- **Panel**: Settings > Song > Generate: "🎲 Randomize everything" (all parts, saved scope + Adventure, new seed) and "🎲 Randomize…"
+  (`.mel-rnd` dialog: a checkbox + one-line description per part, Adventure slider, Scope, Seed field + 🎲, "Last seed used", Randomize / Randomize everything).
+  The choices are remembered in VH.store `melody.gen.rand` `{ parts, scope, spice }`. An empty seed field = a new seed per run (shown in the dialog and the toast).
+- `generatePart.randomize({ seed?, parts, scope, spice? })` is one undo step ('Randomize', chords `source: 'generate'` so auto-fit may run); `M.resizeBars(n)` is the commit-less core of `M.setBars`.
+
+## Layer arpeggio
+
+- `layer.arp = { pat: 'up'|'down'|'updown'|'random', rate: '1/8'|'1/16'|'1/16t'|'1/32', oct: 1|2, from: 'chord'|'bands' }`, absent = Off (model.js
+  `arpIn`; serialized only when set, so old songs and links are unchanged; `flatten` and `sliceSong` keep it). UI: Settings > Sound > Arpeggio (active layer).
+- `md.arpEvents(S, L, t0, t1, peaksAt?)` -> `[{ t, d, m, L }]` (steps starting in [t0, t1) sixteenths, gate 0.92 of a step). A note steps from its own start
+  through its length: the pool is its pitch plus the pitches above it up to `oct` octaves, from the chord tones of the region at that step
+  (tuned, `md.arpPool`) or from the brightest 4 band peaks above it (`peaksAt(t)` = midis brightest first, called once per chord region). A line
+  stroke steps on the global grid at its *current* pitch (so the arp follows the line) and restarts its pattern with every run. Random is a hash
+  of layer + time, so live, WAV and MIDI agree. The held note / line of an arp layer is replaced by the steps.
+- Live: engine.js `scheduleNotes` plays the steps like notes (kind `'note'`, no vibrato), line voices are skipped. WAV: export.js plays them as voices.
+  MIDI: `arpLayer(song, i, peaksFor)` turns the layer into plain notes before the usual note events. Bands mode uses `M.bandsAt` for the shown
+  section and `M.bands.peaksOf(chord, L)` (brightest local maxima of any chord, ignoring tension and other-layer extras) for other sections of an exported
+  arrangement; `generatePart.arpPeaks(src, L)` maps the exported song's time to either.
+- Hint ticks: generate.js draws a 1 px tick under every note step / along the line at each step (`'draw'` event only; view.js untouched).
 
 ## Scales, modes + tunings
 
@@ -168,6 +203,37 @@ VH.melody.parts.push((M) => {
 - UI (ui.js): the **arrangement strip** is a top lane above the chord header (`view.addLane(el, { top: true })`): Section /
   Song, one block per section (click = show; click the shown one = menu: name, color, repeat, duplicate, delete; drag =
   reorder), "+" (new / duplicate). One 28 px row that scrolls sideways.
+- **Song view** (`M.view.song`, key **O**, the "◫ Song view" button in the arrangement strip; a UI preference, VH.store `melody.songView`,
+  not in the song, not shared, not an undo step): every pass of the arrangement side by side on one graph (`md.arrangement`; a section used
+  twice is drawn twice, the second marked "repeat" and slightly dimmed, and both show the same data: an edit in one occurrence is an edit of
+  the section). `M.view.setSong(on, restoreMode?)`; emits `'songview'`. While on, Song play mode is forced (restored when it is left; VH.store
+  `melody.preSongMode`) and the drum + automation lanes are hidden (they follow one section).
+  - Geometry: content x = song position; `V.U()` is one constant px per sixteenth for the whole song (`V.sU`), so a bar is as wide as its meter
+    (`V.BW` = the shown section's bar). `V.items()` -> `[{ k, r, a, n, bar0 }]` (section, repeat, start sixteenth, length, bars before it);
+    `V.itemIdx(items, x)`, `V.liveItem()` = the occurrence the live fields stand for (the playing pass, else the one last pressed, `V.focus`, else
+    the first), `V.origin` = its x (0 outside Song view), `V.playX()` = the playhead's x, `V.rulerLabels` = the labels of the last frame (bar
+    numbers run on across sections; a section's first bar carries its name chip in its colour). `V.sx` and the `'draw'` overlays include `V.origin`;
+    overlays that cull with the scroll position use `V.scrollX - V.origin`.
+  - Drawing: `V.draw` draws each visible item from its own section (`md.sectionSong`): bands (`M.bands.sectionBg(k)`, one cached canvas per
+    section, rebuilt only when its chords / key / tuning / tension / look / sounds change; the shown section keeps `M.bands.off`, which also has
+    track bands and other-layer extras), ruler, chord strip, grid, strokes and notes. Overlays (`'draw'`, the tool's `draw`) and the cue belong
+    to the shown section only; vibrato waves of other sections are not drawn.
+  - Editing: a press belongs to the section under it, which becomes the shown section first (`M.selectSection`; while playing, a press in
+    another section is refused with a toast). `V.xy(e)` and the tools' `p.x / t16 / bar / region` are then **relative to that section**
+    (`V.lock` = the item a drag began in, so a drag stays in it: notes, Select, Eraser and chord edits work inside one section; moving a
+    selection across a boundary is not supported). `p.gt` = song position, `p.item` = the item, `p.foreign` = hovering a section that is not the
+    shown one (no tool hover / readout there until a press shows it). Hover/tools never switch the section by themselves.
+  - **Strokes over a boundary** (Pen, Line): tools.js splits the drag at the section edge. The piece so far is ended at the boundary pitch
+    (interpolated along the path), a new stroke starts in the next section with exactly that pitch as its first sample (`p.exact` for the Line
+    tool) and the same stroke id when it is free there, so the engine keeps one voice and the join is glide-continuous. Every piece commits
+    silently (`M.holding`, `M.heldLabel`: `M.commit` returns false and records nothing) and the release records ONE undo step ("... across
+    sections"); `T.lastStroke` is the stroke a press began / fixes. Dragging back over a boundary hops back the same way.
+  - Playback: Play runs Song mode from the occurrence last pointed at (`engine.play` takes `V.focus` when it is an occurrence of the shown
+    section); the ruler seeks along the whole arrangement (`M.seekSong(g)`: shows the section at song position g, sets `E.pass` and seeks or
+    sets the cue). The playhead is `V.playX()`; `'pass'` / `'section'` fire at each boundary as in Song mode, and the view scrolls to keep it
+    visible. Leaving Song view keeps the shown section (the last one edited or playing) and scrolls to the start.
+  - Cost: only visible items are drawn; a 10-section song (all visible, strokes + notes) draws in about 4 ms per frame static and about 2 ms
+    while playing (the layer stack is a cached bitmap keyed by every visible item).
 - Serialized (schema `v: 4`): top-level content = the shown section; `sections: [{ id, name, color, rep, ...content of
   the others }]`, `cur`; chords `[[at, root, q] | [at]]`. Older songs and share links migrate to one section "A"
   (`S.migratedSections`; the autosave is written back as v4).
@@ -206,7 +272,7 @@ Sounds:
 - `M.el` is the experiment's root element.
 
 - **Sharing + loading** (main.js): `M.shareCode()` returns a Promise of the share-link code (`VH.store.encodeShare(serialize(S, true))`; own sounds
-  add `ext.snd`). View preferences (Map look, scale tint) are never part of it. `M.share()` copies `<url>#melody/s=<code>` (local hosts use the public URL).
+  add `ext.snd`). View preferences (Map look, scale tint) are never part of it. `M.share()` copies a short link `<url>#melody/l=<id>` (RPC `create_share`; opening one calls `get_share`) and falls back to `<url>#melody/s=<code>` (local hosts use the public URL); the toast offers "Copy long link".
   `M.loadSong(code, { undoable = true, label, toast, failToast, keepHash })` returns Promise<boolean>: it decodes + parses a code (the sender's view is ignored: it opens on section 1 at time 0, every loop region cleared, Song mode when there are several sections), replaces the song (one undo
   step unless `undoable: false`), resolves missing sounds as links do, and toasts; false (with `failToast`) when unreadable.
   `M.publish()` opens the Gallery's publish dialog for this song (`VH.gallery.openPublish(M)`), or returns null when the gallery is not loaded.
@@ -229,6 +295,7 @@ Sounds:
 | `'seek'` | `(t16)` | `engine.seek`: playhead moved (playing) or the cue was set (stopped) |
 | `'section'` | `(k)` | the section shown changed, or sections were added / removed / reordered / renamed |
 | `'pass'` | `(p)` | Song playback moved to arrangement item p |
+| `'songview'` | `(on)` | Song view switched on / off |
 | `'timeSig'` | `(ts)` | `M.setTimeSig`, before its commit (adapt part data in the same undo step) |
 | `'unmount'` | none | before parts' `destroy` |
 
@@ -330,6 +397,17 @@ Vibrato store (tools-edit.js): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, 
 
 `M.hooks.voiceOpts(...)` and `M.hooks.pitchMod(...)` are the dispatchers the engine calls. `M.hooks.bandExtras` and `M.hooks.bandTrack` are single slots (below).
 
+## Harmony hints (tools.js, bands.js `NS.hintCandidates`)
+
+"What goes under this line": with the pen, notes or line tool, hovering or dragging marks the pitches that sound best with **everything sounding at the pointer's time**: every audible layer (the active one and the dragged note/stroke included) plus the backing chord. Up to 4 white/cyan dashes on a thin vertical strip at the pointer's x (brightness = consonance across the visible range); rings show the sounding tones; with Map look "Note labels" on, the best one is labelled ("G3 · P5", interval to the nearest sounding tone).
+
+- Score: the bands' own sum `H.pairDissonance` over partial pairs, each tone with its sound's spectrum (`M.bands.spectrumOf`), candidates every 0.5 semitone in the visible range, local minima not on a sounding tone, >= 1.5 semitones apart. Pure function `VH.melody.hintCandidates(tones [{hz, m, spec}], candSpec, lo, hi, {n, step, sep, partials})` -> `[{m, d, c}]`.
+- Cost: top 8 partials per sound; memoized on (sounding pitch set + sounds + range) in tools.js, so a still pointer or a repeated column is a map lookup. Measured 0.3-1.7 ms a cold computation (6 tones x 120 candidates ~2 ms in node); `M.hints.stats` = { runs, last, max, total, hits } in ms.
+- Song view: the section under the pointer is used (`md.sectionSong` for a section that is not the shown one).
+- Pref: `M.view.hintsOn` (VH.store `melody.hints`, default on; a view preference, not in the song, undo or share). Key **H**, the ✦ chip left of the 🎨 chip, or Map look > "Harmony hints". `M.view.setHints(v)`.
+- Test hook: `M.hints.cur` = `{ k, t16, cands, tones }` of the last drawn frame (null when off / no hint tool / pointer away), `M.hints.at(pos)`, `M.hints.toggle()`.
+- Related, older: the song setting "Bands include other layers" (Settings > Harmony, and now also in Map look) recolours the *whole map* per bar with the other layers' notes (generate.js `bandExtras`). It is bar-level and weighted; the hints are exact to the pointer's moment and independent of it.
+
 ## Harmony bands
 
 `M.bandsAt(t16, layerIdx?)` returns the map for the bar at t16, scored for that layer (default: the active layer):
@@ -411,12 +489,12 @@ Vibrato store (tools-edit.js): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, 
 
 ## View: `M.view`
 
-- `cv`, `ctx`, `HDR` (chord header height, 40), `VW`, `TH`, `MH` (map height), `BW` (bar width), `CW` (content width), `scrollX`.
+- `cv`, `ctx`, `RL` (ruler, 14 px: bar numbers, seek only), `CH` (chord strip, 40 px), `HDR` = `RL` + `CH` = 54 (the whole header), `Y0` = `HDR` + 10 (top of the map; `PT` / `PB` are silent margins above / below it), `VW`, `TH`, `MH` (map height), `BW` (bar width), `CW` (content width), `scrollX`.
 - **Piano strip:** `X0` (= `KW()`, 22 px; 14 px at <= 600 px) is the strip's width. The time axis starts right of it: content
   x 0 (bar 1) is canvas x `X0`, and `GW` = `VW - X0` is the visible graph width (bar widths and time scroll use it).
   `sx(x)` turns a content x into a canvas x (`x - scrollX + X0`); DOM placed over the canvas (pickers, coach marks, the
   drum lane's `translateX(X0 - scrollX)`) uses it.
-- **Pitch zoom:** `span` visible semitones (36 .. `Z_MIN` 12) with `pTop` the top pitch. `yOf` / `midiOf` / `keyOf` follow
+- **Pitch zoom:** `span` visible semitones (`SPAN` 60 .. `Z_MIN` 12; default 36) with `pTop` the top pitch. `yOf` / `midiOf` / `keyOf` follow
   it, as do `PPS()` (px per semitone) and `noteH()` (note bar height). `setPitchView(span, top)`, `zoomAt(f, canvasY)`,
   `scrollPitch(dm)`, `zoomed()`. Ctrl/Cmd + wheel zooms around the cursor, a plain wheel scrolls pitch while zoomed
   (Shift / horizontal wheel = time), + / − keys and buttons (top-right), a two-finger pinch, a one-finger drag on the piano
@@ -445,8 +523,8 @@ Vibrato store (tools-edit.js): `S.ext.edit.vib[L] = { s: { <stroke id>: [[from, 
 
   | tab | sections (order) |
   |---|---|
-  | Song | Song: key, bars + time signature (shown section), tempo, loop, count-in (10) · Generate (45) · How to read it (90, collapsed) |
-  | Sound | Instrument tone (22) · Backing (25) · Backing style + its sub-settings (26) · Effects (35) · Play feel (45, collapsed) · samples note (85) |
+  | Song | Song: key, bars + time signature (shown section), tempo, loop, count-in (10) · Generate: 🎲 Progression / Melody / Randomize everything / Randomize… (45) · How to read it (90, collapsed) |
+  | Sound | Instrument tone (22) · Arpeggio of the active layer (24) · Backing (25) · Backing style + its sub-settings (26) · Effects (35) · Play feel (45, collapsed) · samples note (85) |
   | Mix | Mixer (10): layer rows, backing, part rows (`mixer.addRow`), master · Automation (40) |
   | Edit | Grid & snap (10) · Editing (30) · Undo & clear (50) · Harmony map (60) |
   | Export | Share (10) · Export (70) |

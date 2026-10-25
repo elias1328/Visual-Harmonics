@@ -259,7 +259,7 @@
       const [a, , reg, tot] = range(), st = E.cue != null ? Math.max(0, Math.min(tot - 1e-6, E.cue)) : reg ? a : 0;
       E.phase = st / tot; prevPos = st; cont = 0; seekCont = 0; ahead = 0; seekId++; backingBar = -1; lastBar = -1; E.playing = true;
       lastCt = -1; lag = 0; stall = 0; armK = S().cur;
-      E.pass = songMode() ? md.arrangement(S()).findIndex((it) => it.k === S().cur) : -1;
+      E.pass = songMode() ? (() => { const its = md.arrangement(S()), f = M.view && M.view.song ? M.view.focus : -1; return its[f] && its[f].k === S().cur ? f : its.findIndex((it) => it.k === S().cur); })() : -1;   // Song view: start at the occurrence last pointed at
       countIn = 0;
       if (VH.store.get('melody.countIn', false) === true) startCountIn();
       M.emit('play');
@@ -317,8 +317,22 @@
       const now = actx.currentTime, segs = E.segments(c0, c1);
       if (!segs.length) return;
       s.layers.forEach((l, L) => {
-        if (!layerGain(s, L) || !l.notes.length) return;
+        if (!layerGain(s, L)) return;
         const snd = M.soundOf(L);
+        if (l.arp) {   // arpeggio layer: its notes / lines play as steps (md.arpEvents), not as held voices
+          const peaksAt = (t) => { const at = M.bandsAt(t, L); return at ? (at.matchPeaks ? at.matchPeaks() : at.peaks()).map((m) => md.gridSnap(s, m)) : []; };
+          for (const g of segs) {
+            for (const e of md.arpEvents(s, L, g.s, g.s + g.n, l.arp.from === 'bands' ? peaksAt : null)) {
+              const when = now + (g.c + (e.t - g.s) - cont) * sec16, dur = e.d * sec16, n = { s: e.t, d: e.d, m: e.m };
+              const p = play(L, 'note', snd, e.m, G_NOTE, Math.max(now, when), n, null);
+              const t0 = p.v.t0 != null ? p.v.t0 : Math.max(now, p.o.when != null ? p.o.when : when);
+              p.v.stop(undefined, t0 + dur);
+              noteV.push({ L, n, v: p.v, base: p.o.gain, m: p.o.midi, cents: 0, t0, t1: t0 + dur, arp: true });
+            }
+          }
+          return;
+        }
+        if (!l.notes.length) return;
         for (const g of segs) {
           for (const n of l.notes) {
             if (n.s < g.s - 1e-6 || n.s >= g.s + g.n - 1e-6) continue;
@@ -360,6 +374,7 @@
         noteV = noteV.filter((x) => {
           if (ct >= x.t1) return false;
           if (ct < x.t0) return true;
+          if (x.arp) return true;
           const c = pitchMod(x.L, 'note', info, x.n);   // vibrato etc. on started notes
           if (c !== x.cents) { x.v.setFreq(H.midiToHz(x.m + c / 100), 0.02); x.cents = c; }
           return true;
@@ -370,7 +385,7 @@
         });
         s.layers.forEach((l, L) => {
           // one voice per stroke: glide sounds play legato within a stroke's run; hit sounds re-trigger per stroke
-          const audible = layerGain(s, L) > 0, snd = M.soundOf(L), hit = E.playOf(snd) === 'hit';
+          const audible = layerGain(s, L) > 0 && !l.arp, snd = M.soundOf(L), hit = E.playOf(snd) === 'hit';
           const mp = lineV[L] || (lineV[L] = new Map()), hits = lastHit[L] || (lastHit[L] = new Map()), seen = new Set();
           if (audible) for (const st of md.strokes(l)) {
             const m = st.v[i];

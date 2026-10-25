@@ -87,11 +87,11 @@
   // leftover from an older version and is removed by tidy(). test/store.test.js checks that every key the code uses is here.
   const KEYS = ['sounds', 'store.gc',
     'babel.view', 'babel.detector', 'babel.disc', 'babel.gems',
-    'melody.song', 'melody.sound', 'melody.bpm', 'melody.countIn', 'melody.inbox', 'melody.look', 'melody.playMode',
-    'melody.pureIntonation', 'melody.autofit', 'melody.showAuto', 'melody.showScale', 'melody.tones', 'melody.tutorial',
-    'melody.kits', 'melody.view', 'melody.gen.density', 'melody.gen.range',
+    'melody.song', 'melody.sound', 'melody.bpm', 'melody.countIn', 'melody.inbox', 'melody.look', 'melody.playMode', 'melody.songView', 'melody.preSongMode',
+    'melody.pureIntonation', 'melody.autofit', 'melody.showAuto', 'melody.showScale', 'melody.hints', 'melody.tones', 'melody.tutorial',
+    'melody.kits', 'melody.view', 'melody.gen.density', 'melody.gen.range', 'melody.gen.rand',
     'spiral.prefs', 'spiral.sound',
-    'ui.phoneNotice'];   // (ui.* is never tidied; listed so the dismissal is a known key)
+    'ui.phoneNotice', 'gallery.keys'];   // (ui.* / gallery.* are never tidied; listed so these known keys are never mistaken for leftovers: gallery.keys = owner secrets of published songs)
   const TIDY_NS = /^(babel|melody|spiral|lab)\./;   // other namespaces (ui.*, gallery.*) use dynamic keys: left alone
   function tidy() {
     const s = ls(), gone = [];

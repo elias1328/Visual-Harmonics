@@ -64,7 +64,7 @@
 
   function newLayer(i, o, bars, ts) {
     o = o || {};
-    return withLegacyLine({
+    const lay = withLegacyLine({
       id: validId(o.id) ? o.id : null,   // null until assignIds / M.addLayer gives it one
       name: typeof o.name === 'string' && o.name.trim() ? o.name.trim().slice(0, 24) : 'Layer ' + (i + 1),
       color: typeof o.color === 'string' && /^#[0-9a-f]{6}$/i.test(o.color) ? o.color : COLORS[i % COLORS.length],
@@ -73,6 +73,70 @@
       vol: num(o.vol, 0, VOL_MAX, 0.8), mute: !!o.mute, solo: !!o.solo,
       lines: [], notes: [],
     }, bars * ((TS[ts] || TS['4/4']).spb * 3));
+    const ar = arpIn(o.arp); if (ar) lay.arp = ar;   // per-layer arpeggio, only when not Off
+    return lay;
+  }
+
+  // ---------- layer arpeggio ----------
+  // layer.arp = { pat: 'up'|'down'|'updown'|'random', rate: '1/8'|'1/16'|'1/16t'|'1/32', oct: 1|2, from: 'chord'|'bands' }; absent = Off.
+  const ARP_PATS = ['up', 'down', 'updown', 'random'], ARP_RATE = { '1/8': 2, '1/16': 1, '1/16t': 2 / 3, '1/32': 0.5 };
+  function arpIn(a) {
+    if (!a || typeof a !== 'object' || !ARP_PATS.includes(a.pat)) return null;
+    return { pat: a.pat, rate: ARP_RATE[a.rate] ? a.rate : '1/16', oct: a.oct === 2 ? 2 : 1, from: a.from === 'bands' ? 'bands' : 'chord' };
+  }
+  const arpOut = (l) => { const a = arpIn(l.arp); return a ? { arp: a } : {}; };
+  const arpHash = (a, b) => { let h = (Math.imul(a | 0, 374761393) ^ Math.imul(b | 0, 668265263)) >>> 0; h = Math.imul(h ^ (h >>> 13), 1274126177) >>> 0; return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
+  // Ascending pitch pool for a step: the base pitch, then the chord tones (or the brightest band peaks) above it within
+  // `oct` octaves. peaks = midis, brightest first (bands mode); without it chord tones are used.
+  function arpPool(S, t, base, a, peaks) {
+    const hi = base + 12 * a.oct + 1e-6, out = [base];
+    if (a.from === 'bands' && peaks && peaks.length) {
+      peaks.filter((m) => m > base + 0.5 && m <= hi).slice(0, 4).forEach((m) => out.push(m));
+    } else {
+      const ch = chordAt(S, t);
+      if (ch) chordMidis(ch, S).forEach((m) => { for (let x = m + 12 * Math.ceil((base - m + 1e-6) / 12); x <= hi; x += 12) out.push(x); });
+    }
+    return out.sort((x, y) => x - y).filter((m, i, r) => !i || m - r[i - 1] > 0.01);
+  }
+  function arpPick(pool, pat, k, L, t) {
+    const n = pool.length;
+    if (n < 2) return pool[0];
+    if (pat === 'down') return pool[n - 1 - (k % n)];
+    if (pat === 'updown') { const c = 2 * n - 2, j = k % c; return pool[j < n ? j : c - j]; }
+    if (pat === 'random') return pool[Math.floor(arpHash(L * 977 + 13, Math.round(t * 96)) * n)];
+    return pool[k % n];
+  }
+  // Arp steps of layer L starting in [t0, t1) (sixteenths): [{ t, d, m, L }]. Notes step from their own start through
+  // their length from their pitch; each line stroke steps on the global grid from the line's pitch at that moment (the
+  // pattern restarts with every run). peaksAt(t) -> midis brightest first (bands mode), called once per chord region.
+  function arpEvents(S, L, t0, t1, peaksAt) {
+    const l = S.layers[L], a = l && arpIn(l.arp), out = [];
+    if (!a) return out;
+    const r = ARP_RATE[a.rate], d = r * 0.92, memo = new Map();
+    const pk = (t) => { if (!peaksAt) return null; const g = regionAt(S, t); if (!memo.has(g)) memo.set(g, peaksAt(t)); return memo.get(g); };
+    const step = (t, base, k) => { const m = arpPick(arpPool(S, t, base, a, pk(t)), a.pat, k, L, t); out.push({ t, d, m, L }); };
+    for (const n of l.notes) {
+      if (n.s >= t1 || n.s + n.d <= t0) continue;
+      for (let k = Math.max(0, Math.ceil((t0 - n.s) / r - 1e-9)); ; k++) {
+        const t = n.s + k * r;
+        if (t >= t1 - 1e-9 || t >= n.s + n.d - 1e-6) break;
+        step(t, n.m, k);
+      }
+    }
+    for (const st of strokes(l)) {
+      const v = st.v;
+      for (let j = Math.ceil(t0 / r - 1e-9); ; j++) {
+        const t = j * r;
+        if (t >= t1 - 1e-9) break;
+        const i = Math.floor(t * 3 + 1e-6);
+        if (i >= v.length) break;
+        const m = v[i];
+        if (isNaN(m)) continue;
+        let i0 = i; while (i0 > 0 && !isNaN(v[i0 - 1])) i0--;
+        step(t, m, Math.max(0, Math.round((t - Math.ceil(i0 / 3 / r - 1e-9) * r) / r)));
+      }
+    }
+    return out.sort((x, y) => x.t - y.t || x.m - y.m);
   }
 
   // ---------- line strokes ----------
@@ -402,7 +466,7 @@
   function serialize(S, full) {
     const o = { v: 5, key: S.key, mode: S.mode, bars: S.bars, ts: S.ts || '4/4', bpm: S.bpm, chords: serChords(S.chords),
       layers: S.layers.map((l) => Object.assign({ id: l.id, name: l.name, color: l.color, sound: l.sound, mode: l.mode, vol: r3(l.vol), mute: l.mute, solo: l.solo },
-        serLayerContent(l))),
+        arpOut(l), serLayerContent(l))),
       backing: backingOut(S.backing),
       master: r3(S.master), bandsOthers: S.bandsOthers, fx: plain(S.fx), drums: plain(S.drums), ext: plain(S.ext) };
     const lr = regionOf(S);
@@ -712,7 +776,7 @@
     return l.vol;
   };
 
-  NS.model = { LOOK_DEFAULTS, LOOK_THEMES, lookIn, lookCurve, lookStops, tensionH, tensionName, tensionTint, TENSION_W, LO, HI, SPAN, CBASE, GRIDS, GRID_LABEL, gridStep, gridFloor, gridRound, gridCeil, r5, LPB, SPB, MAX_LAYERS, BPM_MIN, BPM_MAX, SHARP, FLAT, QUALS, QI, SCALE, NATURAL, COLORS,
+  NS.model = { ARP_PATS, ARP_RATE, arpIn, arpPool, arpEvents, LOOK_DEFAULTS, LOOK_THEMES, lookIn, lookCurve, lookStops, tensionH, tensionName, tensionTint, TENSION_W, LO, HI, SPAN, CBASE, GRIDS, GRID_LABEL, gridStep, gridFloor, gridRound, gridCeil, r5, LPB, SPB, MAX_LAYERS, BPM_MIN, BPM_MAX, SHARP, FLAT, QUALS, QI, SCALE, NATURAL, COLORS,
     GAIN, VOL_MAX, MAX_STROKES, strokes, nextStrokeId, addStroke, strokeEmpty, pruneStrokes, lineAt, hasLine, lineRuns, withLegacyLine, volDb, volLabel, clamp, r2, regionOf, newLayer, nextLayerId, assignIds, defaultSong, segs, serialize, parse, chordMidis, scaleOf, namesOf, chordName, diatonic,
     scaleChords, scaleLabel, SCALE_GROUPS, TUNINGS, tuningOf, gridOf, gridSnap, modeIn,
     secPerBar, secPer16, layerGain,

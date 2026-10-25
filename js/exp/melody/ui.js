@@ -705,12 +705,16 @@
     const modeBox = ui.h('div', 'mel-arr-mode');
     const modeBtns = [['section', 'Section', 'Play loops the section shown (and its loop region)'], ['song', 'Song', 'Play runs the whole arrangement and follows it']].map(([v, label, title]) => {
       const b = ui.h('button', 'mel-arr-m', label); b.type = 'button'; b.dataset.v = v; b.title = title;
-      b.addEventListener('click', () => M.setPlayMode(v));
+      b.addEventListener('click', () => { if (M.view.song && v === 'section') M.view.setSong(false, 'section'); else M.setPlayMode(v); });   // Song view always plays the song
       modeBox.append(b); return b;
     });
+    // Song view: every section side by side on one graph (key O)
+    const viewBtn = ui.h('button', 'mel-arr-view', '◫ Song view'); viewBtn.type = 'button';
+    viewBtn.title = 'Song view (O): all sections side by side on one graph, to line up the transitions'; viewBtn.setAttribute('aria-pressed', 'false');
+    viewBtn.addEventListener('click', () => M.view.setSong(!M.view.song));
     const blocks = ui.h('div', 'mel-arr-blocks');
     const addBtn = ui.h('button', 'mel-arr-add', '+'); addBtn.type = 'button'; addBtn.title = 'Add a section'; addBtn.setAttribute('aria-label', 'Add a section');
-    arr.append(modeBox, blocks, addBtn);
+    arr.append(modeBox, viewBtn, blocks, addBtn);
     M.view.addLane(arr, { top: true, height: 28 });
     const smenu = ui.h('div', 'mel-secmenu mel-float'); smenu.hidden = true; smenu.setAttribute('role', 'dialog');
     el.append(smenu);
@@ -773,6 +777,7 @@
     let secDrag = null;
     function renderArr() {
       const S = M.song, E = M.engine, items = md.arrangement(S), it = E.playing && M.playMode === 'song' ? items[E.pass] : null;
+      viewBtn.classList.toggle('on', !!M.view.song); viewBtn.setAttribute('aria-pressed', String(!!M.view.song));
       modeBtns.forEach((b) => { const on = b.dataset.v === M.playMode; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); });
       blocks.innerHTML = '';
       S.sections.forEach((x, k) => {

@@ -9,7 +9,7 @@
   let inst = null;
 
   function create(el) {
-    const saved = parse(VH.store.get('melody.song', null)), shareSub = /^s=/.test(VH.app.sub || ''), inbox0 = VH.store.get('melody.inbox', null);
+    const saved = parse(VH.store.get('melody.song', null)), shareSub = /^[sl]=/.test(VH.app.sub || ''), inbox0 = VH.store.get('melody.inbox', null);
     let alive = true, S = saved || parse(md.defaultSong()), active = 0, soundsReady = false, dirty = true;
     // First visit (demo song + tutorial, see onboard.js): no autosave, no share link, nothing in the inbox, tutorial not
     // done, and the first Melody mount of this page session. Never overrides an autosave or a share link.
@@ -162,6 +162,7 @@
     // 'beforeCommit' hooks run first with { label, chords, source, song, info }; they may mutate the song (same undo
     // step) and change label / info. The final context is M.lastCommit.
     M.commit = function (label, opts) {
+      if (M.holding) { S.layers.forEach(md.pruneStrokes); if (!M.heldLabel) M.heldLabel = label || 'Edit'; M.requestRender(); return false; }   // Song view: one undo step for a gesture over several sections (tools.js)
       const o = opts === true ? { keepHash: true } : opts && typeof opts === 'object' ? opts : {};
       const cx = { label: label || 'Edit', chords: Array.isArray(o.chords) ? o.chords : [], source: o.source || '', song: S, info: null };
       for (const f of hookFns.beforeCommit) { try { f(cx); } catch (err) { console.error('[melody] beforeCommit hook', err); } }
@@ -235,10 +236,10 @@
       M.commit('Merge chords', { chords: [r - 1], source: 'chord' });
       return true;
     };
-    M.setBars = (n) => {
-      if (n === S.bars) return;
+    M.resizeBars = (n) => {   // no undo step (the caller commits); false when nothing changed
+      if (n === S.bars) return false;
       n = clamp(n | 0, 1, md.MAX_BARS);
-      if (n === S.bars) return;
+      if (n === S.bars) return false;
       const old = S.bars, spb = md.spb(S), tot = n * spb;
       // new bars repeat the chords (and splits) of the bars before them
       const ev = [];
@@ -262,8 +263,9 @@
       S.loopRegion = md.regionOf(S);
       M.engine.cue = null;
       M.engine.restartBacking();
-      M.commit('Bars');
+      return true;
     };
+    M.setBars = (n) => { if (M.resizeBars(n)) M.commit('Bars'); };
     M.addLayer = (o) => {
       if (S.layers.length >= MAX_LAYERS) { M.toast('Up to ' + MAX_LAYERS + ' layers'); return -1; }
       const i = S.layers.length, used = new Set(S.layers.map((l) => l.color)), names = new Set(S.layers.map((l) => l.name));
@@ -372,6 +374,7 @@
     // Click on an arrangement block: edit that section (while playing: it plays from its start).
     M.selectSection = (k) => {
       if (k === S.cur || !S.sections[k]) return false;
+      M.view.focus = -1;
       const playing = M.engine.playing;
       if (playing) M.engine.stopAll();
       showSection(k);
@@ -387,6 +390,20 @@
       if (items[p].k !== S.cur) showSection(items[p].k);
       M.emit('pass', p);
       return true;
+    };
+    // Song view: move the playhead to song position g (sixteenths from the start of the arrangement). The pass under it
+    // becomes the shown section (playing: playback continues from there; stopped: it is the cue).
+    M.seekSong = (g) => {
+      const items = md.arrangement(S), last = items[items.length - 1], E = M.engine, playing = E.playing;
+      g = clamp(+g || 0, 0, last.a + last.n - 1e-6);
+      let p = items.findIndex((it) => g < it.a + it.n);
+      if (p < 0) p = items.length - 1;
+      const it = items[p];
+      if (it.k !== S.cur) { if (playing) E.stopAll(); showSection(it.k); }
+      M.view.focus = p;
+      if (playing && M.playMode === 'song') E.pass = p;
+      E.seek(g - it.a);
+      return p;
     };
     function nameFor(base) {
       const names = new Set(S.sections.map((x) => x.name));
@@ -545,15 +562,26 @@
       // Links made while running locally (localhost / file://) point at the public site so they work for anyone.
       const local = location.protocol === 'file:' || /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
       const base = local ? PUBLIC_URL : location.href.split('#')[0];
-      const url = base + '#melody/s=' + code;
-      try { history.replaceState(null, '', '#melody/s=' + code); } catch (_) { /* ignore */ }
+      const longUrl = base + '#melody/s=' + code;
+      // Short link (#melody/l=<id>) via the gallery backend; any failure (offline, busy, SQL migration not run) = the long link.
+      let id = null;
+      try { if (VH.gallery && VH.gallery.api && VH.gallery.api.createShare) id = await Promise.race([VH.gallery.api.createShare(code), new Promise((r) => setTimeout(() => r(null), 6000))]); } catch (_) { id = null; }
+      if (!alive) return;
+      const url = id ? base + '#melody/l=' + id : longUrl;
+      try { history.replaceState(null, '', id ? '#melody/l=' + id : '#melody/s=' + code); } catch (_) { /* ignore */ }
       let ok = false;
       try { if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(url); ok = true; } } catch (_) { ok = false; }
       if (!alive) return;
       const notes = (S.track ? [M.TRACK_NOTE] : []).concat(unshared.length ? [M.SHARE_NOTE] : []);
       const note = notes.length ? ' · ' + notes.join(' ') : '';
       M.ui.showShareNote(notes.join(' '));
-      if (ok) { M.ui.toast('Link copied' + note, publishAct()); return; }
+      const copyLong = async () => {
+        let c2 = false;
+        try { await navigator.clipboard.writeText(longUrl); c2 = true; } catch (_) { c2 = false; }
+        if (c2) M.toast('Long link copied (works offline)'); else { M.ui.showShareBox(longUrl); M.toast('Copy the link below'); }
+      };
+      const longAct = id ? { action: { label: 'Copy long link (works offline)', run: copyLong } } : publishAct();
+      if (ok) { M.ui.toast((id ? 'Short link copied' : 'Link copied · short link unavailable') + note, longAct); return; }
       M.ui.showShareBox(url);
       M.toast('Copy the link below' + note);
     };
@@ -584,8 +612,13 @@
       });
     };
     function loadShare(sub) {
-      const m = /^s=(.+)$/.exec(sub || '');
+      const m = /^s=(.+)$/.exec(sub || ''), l = /^l=([0-9A-Za-z]{8})$/.exec(sub || '');
       if (m) M.loadSong(m[1], { keepHash: true });
+      else if (l) {   // short link: fetch the code (get_share), then load it exactly like an s= link
+        const fail = () => { if (alive) M.toast('That short link couldn’t be loaded'); };
+        if (!(VH.gallery && VH.gallery.api && VH.gallery.api.getShare)) { fail(); return; }
+        VH.gallery.api.getShare(l[1]).then((code) => (alive ? M.loadSong(code, { keepHash: true }) : false), fail);
+      }
     }
 
     // ---------- build ----------
@@ -599,6 +632,7 @@
     resolveSounds(); M.bands.refresh();
     cleanups.push(M.view.fit());
     M.bands.computeBg(); M.ui.sync();
+    if (VH.store.get('melody.songView', false) === true) M.view.setSong(true);   // Song view is a UI preference
 
     // Parts (separate files): VH.melody.parts.push((M) => ({ destroy() {} }))
     for (const factory of NS.parts) {
@@ -619,6 +653,9 @@
       if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.repeat && !editable && (e.key === 's' || e.key === 'S')) {
         e.preventDefault(); M.ui.toggleSnap(); return;
       }
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.repeat && !editable && (e.key === 'o' || e.key === 'O')) {
+        e.preventDefault(); M.view.setSong(!M.view.song); return;
+      }
       if (e.code !== 'Space' || e.repeat || typing || (tag !== 'SELECT' && t && t.closest && t.closest('.mel-pop, .mel-float'))) return;
       e.preventDefault();
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
@@ -629,7 +666,7 @@
 
     // ---------- frame loop ----------
     let raf = 0, lastT = performance.now();
-    M.on('play', () => M.view.setScroll(M.engine.phase * M.view.CW - M.view.VW * 0.2));
+    M.on('play', () => M.view.setScroll(M.view.playX() - M.view.VW * 0.2));
     function frame(now) {
       raf = requestAnimationFrame(frame);
       const dt = Math.max(0, Math.min(0.1, (now - lastT) / 1000)); lastT = now;
@@ -712,6 +749,7 @@
       { keys: 'V', label: 'Select: click or drag a box (Shift adds), drag to move' },
       { keys: 'E', label: 'Eraser' },
       { keys: 'S', label: 'Snap to bright bands on / off' },
+      { keys: 'O', label: 'Song view on / off: all sections side by side on one graph' },
       { keys: '= / −', label: 'Zoom the pitch range in / out (the + key works too)' },
       { keys: 'Wheel', label: 'Scroll the pitch up / down (at the full range: scroll time)' },
       { keys: 'Shift+Wheel / swipe sideways', label: 'Scroll time' },

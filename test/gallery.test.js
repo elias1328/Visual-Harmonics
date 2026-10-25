@@ -120,3 +120,16 @@ test('buildMeta ignores junk input', () => {
   assert.deepStrictEqual(m.preview.l[1].n, []);
   assert.deepStrictEqual(G.buildMeta(undefined).preview, { v: 2, c: 0, r: [], l: [] });
 });
+
+test('owner secret + hash: 32 hex secret, 64 hex SHA-256 of it (known vector), keys cleaned', async () => {
+  const s = G.newSecret();
+  assert.match(s, /^[0-9a-f]{32}$/);
+  assert.notStrictEqual(s, G.newSecret());
+  assert.strictEqual(await G.sha256Hex('abc'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+  assert.match(await G.sha256Hex(s), /^[0-9a-f]{64}$/);
+  const id = '1b4e28ba-2fa1-11d2-883f-0016d3cca427';
+  const ks = G.cleanKeys([{ id, secret: s, title: 'T', date: 5 }, { id: 'bad', secret: s }, { id, secret: 'short' }, null, { id, secret: s, title: 'T2' }]);
+  assert.deepStrictEqual(ks, [{ id, secret: s, title: 'T2', date: 0 }]);
+  assert.deepStrictEqual(G.cleanKeys('x'), []);
+  assert.strictEqual(G.idsPath([id, 'x']), '/rest/v1/songs?select=id,created_at,title,author,meta,likes&id=in.(' + id + ')&order=created_at.desc&limit=100');
+});

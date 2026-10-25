@@ -30,7 +30,7 @@
   function sliceSong(S, a, b) {
     const N = spbOf(S), n = b - a, o = Object.assign({}, S), l0 = a * N * 3, l1 = b * N * 3, s0 = a * N, s1 = b * N;
     const copy = (x) => (x && typeof x === 'object' ? JSON.parse(JSON.stringify(x)) : {});
-    o.bars = n; o.loopRegion = null; delete o.flat;
+    o.bars = n; o.loopRegion = null; delete o.flat; o.arpOff = s0;
     o.chords = chordRegions(S).filter((e) => e.at >= s0 && e.at < s1).map((e) => ({ at: e.at - s0, chord: e.chord ? e.chord.slice() : null }));
     o.layers = S.layers.map((l) => Object.assign({}, l, {
       lines: strokesOf(l).map((st) => ({ id: st.id, v: st.v.slice(l0, l1) })).filter((st) => st.v.some((v) => !isNaN(v))),
@@ -294,6 +294,14 @@
   // Returns Uint8Array. Mixed = format 0 (one track, one channel per part), Separate = format 1 (conductor + a track per
   // layer / backing / drums). A layer whose line strokes overlap gets one channel per simultaneous voice (channel 10 is
   // skipped), each with its own pitch bends; in Separate mode those channels share the layer's track.
+  // Arpeggio layers (layer.arp, model.js arpEvents) play as separate short notes in place of their held notes / lines.
+  const mdl = () => (typeof window !== 'undefined' && window.VH && window.VH.melody && window.VH.melody.model) || null;
+  function arpLayer(song, i, peaksFor) {
+    const l = song.layers[i], md = mdl();
+    if (!l || !l.arp || !md || !md.arpEvents) return l;
+    const ev = md.arpEvents(song, i, 0, totOf(song), l.arp.from === 'bands' && peaksFor ? peaksFor(i) : null);
+    return Object.assign({}, l, { lines: [], notes: ev.map((e) => ({ s: e.t, d: e.d, m: e.m })) });
+  }
   function songToMidi(song, opts) {
     const o = opts || {}, loops = Math.max(1, o.loops | 0 || 1), bars = song.bars, tot = totOf(song);
     const secPer16 = 15 / song.bpm, cm = o.chordMidis || chordMidisLocal, tuned = !!o.tuned;   // tuned: per-voice channels with bends
@@ -304,7 +312,7 @@
     const takeCh = (pref) => (free.length ? free.shift() : pref);
     const vel = 100;
     for (const i of chosen) {
-      const l = song.layers[i], snd = soundOf(i) || {}, label = l.name + ' – ' + (snd.name || l.sound);
+      const l = arpLayer(song, i, o.arpPeaks), snd = soundOf(i) || {}, label = l.name + ' – ' + (snd.name || l.sound);
       const voices = lineVoices(l), hasLine = voices.length > 0, hasNotes = l.notes && l.notes.length > 0;
       if (!hasLine && !hasNotes) continue;
       const vr = vibReader(song, i), prog = gmProgram(snd), vol = l.vol ?? 0.8;
@@ -624,7 +632,7 @@
     return { KINDS, CUT_LO, CUT_HI, RE, parseTarget, real, norm, fmt, ease, valueAt, pieces, targets, chanKinds, hasMaster, ramp, ccPoints, ccOf, ccValue, slice };
   })();
 
-  const X = { auto: AUTO, packVoices, bendOf, songToMidi, sliceSong, chordRegions, encodeWav, drumHits, drumNote, gmProgram, vibReader, strokesOf, lineVoices, vlq, PPQ, T16, TBEND, TLINE, TSI };
+  const X = { auto: AUTO, packVoices, bendOf, songToMidi, sliceSong, chordRegions, encodeWav, drumHits, drumNote, gmProgram, arpLayer, vibReader, strokesOf, lineVoices, vlq, PPQ, T16, TBEND, TLINE, TSI };
   if (typeof module !== 'undefined' && module.exports) module.exports = X;
   const VH = root && root.VH;
   if (!VH || !VH.melody || !root.document) return;
@@ -735,6 +743,7 @@
     const st = { fmt: 'midi', midiMode: 'mixed', scope: 'song', loops: 1, pick: null, backing: true, drums: true, track: true, region: false, section: false, normalize: true };
     // The song to export: the whole arrangement (every section and repeat, md.flatten), one pass of the current section
     // ("Current section only"), or that section's loop region ("Export loop region only").
+    const arpPeaksOf = (src, L) => { const g = VH.melody.generatePart; return g && g.arpPeaks ? g.arpPeaks(src, L) : null; };
     const songOf = () => {
       const S = M.song, r = md.regionOf(S);
       if (st.region && r) return sliceSong(S, r[0], r[1]);
@@ -859,7 +868,7 @@
           const src = songOf();
           const bytes = songToMidi(src, { mode: st.midiMode, layers: sel.layers, backing: sel.backing, drums: sel.drums, loops: st.loops,
             soundOf: (i) => M.soundOf(i), backingSound: M.backingSound(), backingSoundOf: (k) => M.backingSoundOf(k), chordMidis: (ch) => md.chordMidis(ch, src), drumHits: sel.drums ? drumList() : null,
-            tuned: md.tuningOf(src) !== '12tet',
+            tuned: md.tuningOf(src) !== '12tet', arpPeaks: (L) => arpPeaksOf(src, L),
             backingEvents: NS.sound && NS.sound.regionEvents ? (r) => NS.sound.regionEvents(src, r) : null });
           download(new Blob([bytes], { type: 'audio/midi' }), name + '.mid');
           progress(1, 'Saved ' + name + '.mid (' + (st.midiMode === 'mixed' ? 'one track' : 'one track per part') + ').' + (M.song.track ? ' The backing track audio is not in MIDI.' : ''));
@@ -1003,6 +1012,13 @@
           const off = r * tot * sec16;
           for (const L of sel.layers) {
             const l = S.layers[L], snd = sounds[L], bus = layerIn(L), vr = vibReader(S, L);
+            if (l.arp) {   // arpeggio layer: short steps instead of held notes / lines
+              for (const e of arpLayer(S, L, (q) => arpPeaksOf(S, q)).notes) {
+                const t0 = off + e.s * sec16, v = VH.audio.voice(snd, hz(e.m), { gain: G_NOTE, dest: bus, when: t0 });
+                v.stop(undefined, t0 + e.d * sec16);
+              }
+              continue;
+            }
             for (const n of l.notes) {
               const t0 = off + n.s * sec16, t1 = t0 + n.d * sec16, v = VH.audio.voice(snd, hz(n.m), { gain: G_NOTE, dest: bus, when: t0 });
               v.stop(undefined, t1);

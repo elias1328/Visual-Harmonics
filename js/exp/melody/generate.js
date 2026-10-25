@@ -3,18 +3,49 @@
 (function () {
   'use strict';
   const VH = window.VH, NS = VH.melody;
-  if (!NS || !NS.parts) return;
+  if (!NS) return;
 
-  // Templates as scale degrees (1-based) of the current mode. home = the mode they are idiomatic in.
+  // ---------- seeded randomness (Randomize panel) ----------
+  function hashSeed(s) { let h = 2166136261; s = String(s); for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+  function mulberry32(a) {
+    return function () { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  }
+  const DEF_SPICE = 0.4;   // "Adventure": 0 = plain diatonic triads, 1 = sevenths, sus, secondary dominants, borrowed chords everywhere
+
+  // Progression templates as scale degrees (1-based) of the current mode. home = the mode they are idiomatic in.
   const TEMPLATES = [
     { deg: [1, 5, 6, 4], home: 'major', w: 4 },   // I–V–vi–IV
     { deg: [6, 4, 1, 5], home: 'major', w: 3 },   // vi–IV–I–V
     { deg: [1, 6, 2, 5], home: 'major', w: 3 },   // I–vi–ii–V
     { deg: [2, 5, 1, 1], home: 'major', w: 2 },   // ii–V–I–I
     { deg: [1, 4, 5, 4], home: 'major', w: 3 },   // I–IV–V–IV
+    { deg: [1, 3, 4, 5], home: 'major', w: 2 },   // I–iii–IV–V
+    { deg: [1, 4, 6, 5], home: 'major', w: 2 },   // I–IV–vi–V
+    { deg: [1, 6, 4, 5], home: 'major', w: 3 },   // I–vi–IV–V (50s)
+    { deg: [6, 2, 5, 1], home: 'major', w: 2 },   // vi–ii–V–I
+    { deg: [4, 5, 3, 6], home: 'major', w: 1 },   // IV–V–iii–vi (royal road)
+    { deg: [1, 3, 6, 4], home: 'major', w: 2 },   // I–iii–vi–IV
+    { deg: [1, 4, 1, 5], home: 'major', w: 2 },   // I–IV–I–V
+    { deg: [2, 5, 3, 6], home: 'major', w: 1 },   // ii–V–iii–vi
     { deg: [1, 6, 3, 7], home: 'minor', w: 4 },   // i–VI–III–VII
     { deg: [1, 4, 5, 1], home: 'minor', w: 3 },   // i–iv–v–i
+    { deg: [1, 7, 6, 7], home: 'minor', w: 3 },   // i–VII–VI–VII
+    { deg: [1, 4, 7, 3], home: 'minor', w: 2 },   // i–iv–VII–III
+    { deg: [1, 7, 6, 5], home: 'minor', w: 3 },   // i–VII–VI–v (Andalusian-ish)
+    { deg: [1, 6, 7, 1], home: 'minor', w: 2 },   // i–VI–VII–i
+    { deg: [6, 7, 1, 1], home: 'minor', w: 2 },   // VI–VII–i–i
   ];
+  // Random-walk progressions: from each degree, the degrees that usually follow it (weights).
+  const WALK = { 1: [[4, 3], [5, 3], [6, 3], [2, 2], [3, 1.5]], 2: [[5, 5], [4, 1], [7, 0.4]], 3: [[6, 3], [4, 3], [2, 1]], 4: [[5, 4], [1, 3], [2, 2], [6, 1.5]],
+    5: [[1, 5], [6, 3], [4, 1.5], [3, 0.7]], 6: [[4, 3], [2, 3], [5, 2], [3, 1]], 7: [[1, 4], [3, 2]] };
+  function walk(rnd) {
+    const t = [rnd() < 0.75 ? 1 : 6];
+    while (t.length < 4) t.push(t.length === 3 && rnd() < 0.7 ? wpick([[5, 4], [1, 2], [4, 2]], rnd) : wpick(WALK[t[t.length - 1]], rnd));
+    return t;
+  }
+  // Chords from outside the scale, as [semitones above the key root, quality, weight].
+  const BORROW_MAJ = [[8, 'maj', 3], [10, 'maj', 3], [5, 'min', 3], [3, 'maj', 1.5], [1, 'maj', 1], [7, 'min', 1], [2, 'dim', 0.6]];   // bVI bVII iv bIII bII v ii°
+  const BORROW_MIN = [[5, 'maj', 3], [7, 'maj', 3], [7, '7', 1.5], [1, 'maj', 1], [11, 'dim', 1]];                                    // IV V V7 bII vii°
   // Modal templates (scales other than major / minor): chord roots as semitones above the key root; each chord takes its
   // quality from the scale (md.scaleChords). cad = the mode's characteristic chord, used to turn a phrase's last bar.
   const MODAL = {
@@ -28,9 +59,11 @@
     phrygianDominant: { t: [[[0, 1, 0, 1], 4], [[0, 1, 5, 0], 3], [[0, 10, 1, 0], 2]], cad: 1 },                    // I–bII, I–bII–iv–I
   };
   const QW = { maj: 3, min: 3, sus2: 2, sus4: 2, dim: 1, aug: 1 };
-  // Progression of a scale other than major / minor: a modal template when the scale has one (and its chords exist),
-  // else a generic one from the chords that fit the scale (tonic, two others, home or another at a phrase end).
-  function modalProgression(S, md, rnd) {
+  const same = (a, b) => !!a && !!b && a[0] === b[0] && a[1] === b[1];
+
+  // A plan is the chords of a section, bar by bar: { A: [chord at the bar start], B: [the chord a split bar changes to],
+  // pre: chord to play before B = V in a phrase's last bar }. layout* turn a plan into chord events (see below).
+  function modalPlan(S, md, rnd) {
     const cs = md.scaleChords(S), triads = cs.filter((c) => QW[c.q]), pool = triads.length ? triads : cs;
     const onDeg = (d) => { const c = pool.find((x) => x.deg === d) || cs.find((x) => x.deg === d); return c ? [c.r, c.q] : null; };
     const tonic = pool.find((c) => c.deg === 0 && (c.q === 'maj' || c.q === 'min')) || pool.find((c) => c.deg === 0) || pool[0];
@@ -50,17 +83,97 @@
       out.push(...phrase(t, n > 1 && p === n - 1));
     }
     out.length = S.bars;
-    // now and then the mode's characteristic chord turns a phrase's last bar (on its second half)
-    const nb = md.spb(S), half = md.tsOf(S).beats[Math.floor(md.tsOf(S).beats.length / 2)] || nb / 2, ev = [];
     const cad = mt ? onDeg(mt.cad) : null;
-    out.forEach((c, b) => {
-      ev.push({ at: b * nb, chord: c });
+    return { A: out, B: out.map((c, b) => (cad && (b % 4 === 3 || b === S.bars - 1) ? cad.slice() : (out[b + 1] || c).slice())), pre: null, p: 0.45 };
+  }
+  // Major / minor: templates (or a random walk when adventurous), now and then a borrowed chord, a secondary dominant.
+  function diaPlan(S, md, rnd, spice) {
+    const dia = md.diatonic(S), minor = S.mode === 'minor', K = S.key, n = Math.ceil(S.bars / 4), len = S.bars;
+    const chordOf = (d) => { const c = dia[(d - 1) % 7]; return [c[0], c[1]]; };
+    const usable = TEMPLATES.filter((t) => !(t.home === 'minor' && !minor && t.deg.includes(7))).map((t) => [t, t.home === S.mode ? t.w : t.w * 0.2]);
+    const pickT = () => (rnd() < Math.min(0.6, spice * 0.9) ? walk(rnd) : wpick(usable, rnd).deg);
+    const tA = pickT(), tB = pickT(), borrowed = (minor ? BORROW_MIN : BORROW_MAJ).map(([o, q, w]) => [[(K + o) % 12, q], w]);
+    const base = [], lastOf = (b) => b % 4 === 3 || b === len - 1;
+    for (let p = 0; p < n; p++) {
+      // 4 bars: A. 8 bars: A A' or A B. 16 bars: A A B A. (Other lengths: phrases of 4, cut at the end.)
+      const t = n === 2 ? (p === 0 || rnd() < 0.5 ? tA : tB) : n === 4 ? (p === 2 ? tB : tA) : tA, last = n > 1 && p === n - 1;
+      t.forEach((d, k) => {
+        if (minor && d === 5 && k === t.length - 1 && rnd() < 0.35) base.push([(K + 7) % 12, 'maj']);   // dominant V in minor
+        else if (last && k === t.length - 1 && d !== 1 && rnd() < 0.4) base.push(chordOf(1));           // end home
+        else base.push(chordOf(d));
+      });
+    }
+    base.length = len;
+    const set = new Set(md.scaleOf(S).steps.map((s) => (K + s) % 12));
+    const A = base.map((c, b) => {
+      const next = base[b + 1];
+      if (b > 0 && rnd() < 0.3 * spice) return wpick(borrowed, rnd).slice();
+      if (next && !lastOf(b) && next[1] !== 'dim' && rnd() < 0.45 * spice && (next[0] + 7) % 12 !== c[0]) return [(next[0] + 7) % 12, '7'];   // V7 of the next chord
+      return colorize(md, set, c, rnd, spice);
+    });
+    const V5 = chordOf(5), pre = chordOf(minor ? 4 : 2);
+    if (rnd() < spice * 0.5) V5[1] = minor ? V5[1] : '7';
+    return { A, B: A.map((c, b) => (lastOf(b) ? V5.slice() : (A[b + 1] || c).slice())), pre, p: 0.55 };
+  }
+  // A triad takes a 7th or a sus (as far as the scale allows), more often the more adventurous.
+  function colorize(md, set, c, rnd, spice) {
+    if ((c[1] !== 'maj' && c[1] !== 'min') || rnd() >= 0.1 + 0.8 * spice) return c;
+    const iv = (q) => md.QUALS[md.QI[q]][2];
+    const opts = (c[1] === 'maj' ? [['maj7', 4], ['7', 4], ['sus2', 1.5], ['sus4', 2]] : [['m7', 5], ['sus2', 1], ['sus4', 1.5]])
+      .filter(([q]) => iv(q).every((i) => set.has((c[0] + i) % 12)));
+    return opts.length ? [c[0], wpick(opts, rnd)] : c;
+  }
+  function plan(S, md, rnd, spice) {
+    if (S.mode === 'major' || S.mode === 'minor') return diaPlan(S, md, rnd, spice);
+    const p = modalPlan(S, md, rnd), set = new Set(md.scaleOf(S).steps.map((s) => (S.key + s) % 12));
+    p.A = p.A.map((c) => colorize(md, set, c, rnd, spice));
+    return p;
+  }
+  // Layouts: chord events from a plan. 'phrase': one chord per bar, and now and then a turn at the second half of a phrase's
+  // last bar. 'random': bars split at their beats in different ways (chord lengths). 'keep': the chords go into the regions
+  // the section already has.
+  function layoutPhrase(S, md, rnd, pl) {
+    const nb = md.spb(S), T = md.tsOf(S), half = T.beats[Math.floor(T.beats.length / 2)] || nb / 2, ev = [];
+    pl.A.forEach((c, b) => {
       const last = b % 4 === 3 || b === S.bars - 1;
-      if (cad && last && half > 0 && S.bars > 1 && !(c[0] === cad[0] && c[1] === cad[1]) && rnd() < 0.45) ev.push({ at: b * nb + half, chord: cad.slice() });
+      if (last && half > 0 && S.bars > 1 && rnd() < pl.p) {
+        ev.push({ at: b * nb, chord: (same(c, pl.B[b]) && pl.pre ? pl.pre : c).slice() }); ev.push({ at: b * nb + half, chord: pl.B[b].slice() });
+      } else ev.push({ at: b * nb, chord: c.slice() });
     });
     return ev;
   }
-  const BORROW_P = 0.12;
+  function layoutRandom(S, md, rnd, pl, spice) {
+    const nb = md.spb(S), bt = md.tsOf(S).beats, nB = bt.length, ev = [];
+    pl.A.forEach((c, b) => {
+      const kind = wpick([['whole', 6 - 3 * spice], ['half', nB > 1 ? 2 + 2 * spice : 0], ['late', nB > 2 ? 0.8 + spice : 0], ['all', nB > 2 && nB <= 4 ? 0.2 + spice * 0.8 : 0]], rnd);
+      const alt = pl.B[b], alt2 = (pl.A[b + 1] || alt);
+      const at = kind === 'half' ? [bt[Math.floor(nB / 2)]] : kind === 'late' ? [bt[nB - 1]] : kind === 'all' ? bt.slice(1) : [];
+      ev.push({ at: b * nb, chord: c.slice() });
+      at.forEach((x, j) => ev.push({ at: b * nb + x, chord: (j % 2 ? alt2 : alt).slice() }));
+    });
+    return ev;
+  }
+  function layoutKeep(S, md, pl) {
+    const nb = md.spb(S);
+    let seen = -1, j = 0;
+    return S.chords.map((e) => {
+      const b = Math.min(pl.A.length - 1, Math.floor(e.at / nb));
+      j = b === seen ? j + 1 : 0; seen = b;
+      return { at: e.at, chord: (j === 0 ? pl.A[b] : pl.B[b]).slice() };
+    });
+  }
+  // The plan a section already holds (Chord lengths without Chords): the chord at each bar start, and the bar's last chord.
+  function planOf(S, md) {
+    const nb = md.spb(S), tonic = [S.key, S.mode === 'minor' ? 'min' : 'maj'];
+    const A = Array.from({ length: S.bars }, (_, b) => (md.chordAt(S, b * nb) || tonic).slice());
+    return { A, B: A.map((c, b) => { const r = md.regionAt(S, (b + 1) * nb - 1); return (S.chords[r].at > b * nb && S.chords[r].chord ? S.chords[r].chord : A[b + 1] || c).slice(); }), pre: null, p: 0 };
+  }
+  // Progression as chord events (the 🎲 Progression button).
+  function progression(S, md, rnd, spice) {
+    const pl = plan(S, md, rnd, spice == null ? DEF_SPICE : spice);
+    return layoutPhrase(S, md, rnd, pl);
+  }
+
   const DENS = {   // durations in sixteenths with weights, rest probability, phrase-end length
     sparse: { d: [[8, 3], [4, 3], [12, 1], [16, 1], [6, 1]], rest: 0.22, end: 12 },
     medium: { d: [[4, 5], [2, 3], [8, 2], [6, 1], [3, 1]], rest: 0.12, end: 8 },
@@ -75,41 +188,6 @@
     return items[items.length - 1][0];
   }
 
-  // ---------- progression ----------
-  function progression(S, md, rnd) {
-    if (S.mode !== 'major' && S.mode !== 'minor') return modalProgression(S, md, rnd);
-    const dia = md.diatonic(S), minor = S.mode === 'minor';
-    const chordOf = (d) => { const c = dia[(d - 1) % 7]; return [c[0], c[1]]; };
-    const usable = TEMPLATES.filter((t) => !(t.home === 'minor' && !minor && t.deg.includes(7))).map((t) => [t, t.home === S.mode ? t.w : t.w * 0.2]);
-    const borrowed = minor ? [[(S.key + 5) % 12, 'maj'], [(S.key + 7) % 12, 'maj']]                    // IV, V (from major / harmonic minor)
-      : [[(S.key + 8) % 12, 'maj'], [(S.key + 10) % 12, 'maj'], [(S.key + 5) % 12, 'min']];       // bVI, bVII, iv
-    const phrase = (t, last) => t.deg.map((d, k) => {
-      if (k > 0 && rnd() < BORROW_P) return borrowed[Math.floor(rnd() * borrowed.length)].slice();
-      if (minor && d === 5 && k === t.deg.length - 1 && rnd() < 0.35) return [(S.key + 7) % 12, 'maj'];   // dominant V in minor
-      if (last && k === t.deg.length - 1 && d !== 1 && rnd() < 0.4) return chordOf(1);                    // end home
-      return chordOf(d);
-    });
-    const A = wpick(usable, rnd), n = Math.ceil(S.bars / 4), out = [];
-    let B = wpick(usable, rnd);
-    for (let p = 0; p < n; p++) {
-      // 4 bars: A. 8 bars: A A' or A B. 16 bars: A A B A. (Other lengths: phrases of 4, cut at the end.)
-      const t = n === 2 ? (p === 0 || rnd() < 0.5 ? A : B) : n === 4 ? (p === 2 ? B : A) : A;
-      out.push(...phrase(t, n > 1 && p === n - 1));
-    }
-    out.length = S.bars;
-    // chord events: one chord per bar, and now and then two in a phrase's last bar (a turn towards the next phrase:
-    // V on the bar's second half, or IV / ii then V when the bar already holds V)
-    const nb = md.spb(S), half = md.tsOf(S).beats[Math.floor(md.tsOf(S).beats.length / 2)] || nb / 2, ev = [];
-    const V5 = chordOf(5), pre = chordOf(minor ? 4 : 2), same = (a, b) => a && b && a[0] === b[0] && a[1] === b[1];
-    out.forEach((c, b) => {
-      ev.push({ at: b * nb, chord: c });
-      const last = b % 4 === 3 || b === S.bars - 1;
-      if (last && half > 0 && S.bars > 1 && rnd() < 0.55) {
-        if (same(c, V5)) { ev[ev.length - 1].chord = pre; ev.push({ at: b * nb + half, chord: V5.slice() }); } else ev.push({ at: b * nb + half, chord: V5.slice() });
-      }
-    });
-    return ev;
-  }
 
   // ---------- melody ----------
   // Band maxima (consonant peaks) for a bar within [lo, hi]; falls back to scale tones without a chord.
@@ -192,6 +270,85 @@
     return res;
   }
 
+  // ---------- Randomize ----------
+  // What can be randomized (id, label, one-line description). Left out: time signature, effects, mixer levels, drum kit rows.
+  const RAND_PARTS = [
+    ['key', 'Key', 'The root note and the scale (major, minor, modes...) of the section.'],
+    ['chords', 'Chords', 'The chord progression, using sevenths, sus and borrowed chords as far as Adventure allows.'],
+    ['lens', 'Chord lengths', 'How long each chord lasts: a whole bar, half a bar, or quicker changes.'],
+    ['bars', 'Bars', 'How many bars long the section is.'],
+    ['tempo', 'Tempo', 'The speed of the song (BPM).'],
+    ['melody', 'Melody', 'A new melody on the active layer, on the bright bands of the new chords.'],
+    ['backInst', 'Backing instrument', 'The sound that plays the chords.'],
+    ['backStyle', 'Backing style', 'How the chords are played: held, strummed, arpeggio, pulse or broken.'],
+    ['drums', 'Drums pattern', 'A drum groove (or no drums).'],
+    ['sounds', 'Sounds of layers', 'A new instrument for every melody layer.'],
+  ];
+  const RAND_DEFAULT = { key: true, chords: true, lens: false, bars: false, tempo: false, melody: false, backInst: false, backStyle: false, drums: false, sounds: false };
+  const SCALE_W = { major: 6, minor: 6, dorian: 2, mixolydian: 2, lydian: 1.2, harmonicMinor: 1.2, melodicMinor: 0.8, majPent: 1.5, minPent: 1.5, blues: 1, phrygian: 0.6 };
+  const BARS_W = [[2, 0.4], [4, 3], [6, 0.6], [8, 4], [12, 1], [16, 2]];
+  const STYLE_W = { drone: 1, strum: 1.5, arp: 2, pulse: 1, broken: 1.5 };
+
+  // The pure part of Randomize: edits song S (the shown section; every section with scope 'song') for the checked parts.
+  // Each part draws from its own generator (seed + part + section), so a part's result does not depend on the other
+  // checkboxes: the same seed gives the same Key / Chords / ... whatever else is checked.
+  // o = { seed, spice 0..1, parts: { id: bool }, scope: 'section' | 'song' }
+  // ctx = { setBars(n), show(k), setSound(L, id), setDrums(id), melody(rnd), sounds: [ids], backSounds: [ids], styles: [ids], drums: [preset ids] }
+  // Returns the names of the parts that ran.
+  function randomizeSong(S, md, o, ctx) {
+    const seed = String(o.seed), spice = o.spice == null ? DEF_SPICE : o.spice, P = o.parts || {}, done = [];
+    const R = (part, k) => mulberry32(hashSeed(seed + '|' + part + '|' + (k || 0)));
+    const cur = S.cur, all = S.sections.map((_, k) => k), ks = o.scope === 'song' ? [cur].concat(all.filter((k) => k !== cur)) : [cur];
+    const multi = S.sections.length > 1, wide = o.scope === 'song' || !multi;   // wide: song-wide settings, else the shown section's override
+    if (P.tempo && !S.track) { const r = R('tempo'); S.bpm = Math.round(clampN(60 + (r() + r()) / 2 * 100, md.BPM_MIN, md.BPM_MAX)); done.push('tempo'); }
+    if (P.sounds && ctx.sounds.length) {
+      const r = R('sounds');
+      S.layers.forEach((_, L) => ctx.setSound(L, ctx.sounds[Math.floor(r() * ctx.sounds.length)]));
+      done.push('sounds');
+    }
+    const backing = (patch) => {
+      if (wide) { Object.assign(S.backing, patch); S.sections.forEach((x) => { if (x.back) { Object.keys(patch).forEach((q) => delete x.back[q]); if (!Object.keys(x.back).length) delete x.back; } }); }
+      else { const x = S.sections[cur]; x.back = Object.assign({}, x.back, patch); }
+    };
+    if (P.backInst && ctx.backSounds.length) { const r = R('backInst'); backing({ sound: ctx.backSounds[Math.floor(r() * ctx.backSounds.length)] }); done.push('backInst'); }
+    if (P.backStyle && ctx.styles.length) { const r = R('backStyle'); backing({ style: wpick(ctx.styles.map((s) => [s, STYLE_W[s] || 1]), r) }); done.push('backStyle'); }
+    if ((P.backInst || P.backStyle) && ctx.sync) ctx.sync();   // the bands follow the new backing instrument
+    const dr = P.drums && ctx.drums ? wpick(ctx.drums.map((d) => [d, d === 'off' ? 0.7 : 1]), R('drums')) : null;
+    let root = 0, mode = 'major';
+    if (P.key) {
+      const r = R('key');
+      root = Math.floor(r() * 12); mode = wpick(Object.keys(md.SCALE).map((id) => [id, SCALE_W[id] || 0.25]), r);
+      done.push('key');
+    }
+    ks.forEach((k) => {
+      if (k !== S.cur) ctx.show(k);
+      if (P.key) { S.key = root; S.mode = mode; }
+      if (P.bars) { const n = wpick(BARS_W, R('bars', k)); ctx.setBars(n); }
+      if (P.chords || P.lens) {
+        const rc = R('chords', k), rl = R('lens', k);
+        let pl;
+        if (P.chords) {
+          pl = plan(S, md, rc, spice);
+          if (P.lens && rl() < 0.3) pl.A = pl.A.map((c, b) => (b % 2 ? pl.A[b - 1] : c));   // slow changes: two bars each
+        } else pl = planOf(S, md);
+        S.chords = P.lens ? layoutRandom(S, md, rl, pl, spice) : layoutKeep(S, md, pl);
+        md.normChords(S);
+      }
+      if (dr) ctx.setDrums(dr);
+      if (P.melody) ctx.melody(R('melody', k));
+    });
+    if (S.cur !== cur) ctx.show(cur);
+    ['chords', 'lens', 'bars', 'melody'].forEach((q) => { if (P[q]) done.push(q); });
+    if (dr) done.push('drums');
+    return done;
+  }
+  const clampN = (v, a, b) => Math.max(a, Math.min(b, v));
+  const WORDS = ['amber', 'birch', 'cedar', 'dune', 'ember', 'fjord', 'glade', 'harbor', 'iris', 'juniper', 'kelp', 'lumen', 'maple', 'nectar', 'opal', 'pine', 'quartz', 'reed', 'sage', 'tide', 'umber', 'violet', 'willow', 'yarrow', 'zephyr'];
+  const newSeed = () => WORDS[Math.floor(Math.random() * WORDS.length)] + '-' + Math.floor(Math.random() * 900 + 100);
+  NS.gen = { hashSeed, mulberry32, plan, progression, randomizeSong, RAND_PARTS, RAND_DEFAULT, DEF_SPICE, newSeed };
+
+  if (!NS.parts) return;
+
   NS.parts.push((M) => {
     const ui = VH.ui, md = M.model;
     let alive = true;
@@ -218,7 +375,7 @@
       options: [{ value: 'low', label: 'Low C3–E4' }, { value: 'mid', label: 'Mid G3–D5' }, { value: 'high', label: 'High E4–C6' }, { value: 'full', label: 'Full C3–C6' }],
       onChange: (v) => { opts.range = v; VH.store.set('melody.gen.range', v); } });
     dSel.el.classList.add('gx-density'); rSel.el.classList.add('gx-range');
-    sec.append(ui.h('div', 'vh-desc', 'Progressions fit the key and its scale (modes get their own moves, e.g. Dorian i–IV, Phrygian i–bII; now and then a borrowed chord). Melodies walk the bright bands of the active layer and end phrases on chord tones; Line or Notes follows the layer’s mode.'));
+    sec.append(ui.h('div', 'vh-desc', 'Progressions fit the key and its scale (modes get their own moves, e.g. Dorian i–IV, Phrygian i–bII; sevenths, sus, secondary dominants and a borrowed chord now and then). Randomize… lets you pick what the dice change, with a seed to repeat a result. Melodies walk the bright bands of the active layer and end phrases on chord tones; Line or Notes follows the layer’s mode.'));
 
     const snapOf = () => JSON.stringify(md.serialize(M.song, false));
     function syncAgain() { againBtn.disabled = !(lastGen && lastGen.snap === snapOf()); }
@@ -254,6 +411,162 @@
       M.toast((asNotes ? notes.length + ' notes' : 'A line through ' + notes.length + ' targets') + (S.tension > 0 ? ' on the highlighted notes' : ' on the bright bands') + ' · Ctrl+Z undoes');
     }
     M.on('song', syncAgain);
+
+    // ---------- Randomize ----------
+    const G = NS.gen;
+    const prefs = (() => {
+      const p = VH.store.get('melody.gen.rand', null) || {};
+      const parts = Object.assign({}, G.RAND_DEFAULT);
+      G.RAND_PARTS.forEach(([id]) => { if (p.parts && typeof p.parts[id] === 'boolean') parts[id] = p.parts[id]; });
+      return { parts, scope: p.scope === 'song' ? 'song' : 'section', spice: typeof p.spice === 'number' ? Math.max(0, Math.min(1, p.spice)) : G.DEF_SPICE };
+    })();
+    const savePrefs = () => VH.store.set('melody.gen.rand', { parts: prefs.parts, scope: prefs.scope, spice: prefs.spice });
+    let lastSeed = '';
+    function fillMelody(r) {   // the melody part of Randomize: the active layer of the shown section
+      const S = M.song, L = M.active, l = S.layers[L], asNotes = l.mode === 'notes';
+      const density = wpick([['sparse', 1.5], ['medium', 3], ['busy', 1.5]], r);
+      const notes = melody(M, L, { density, range: opts.range, notes: asNotes }, r);
+      l.lines = []; l.notes = [];
+      if (asNotes) l.notes = notes.map((n) => ({ s: n.s, d: n.d, m: Math.round(n.m * 100) / 100 }));
+      else l.lines = [{ id: 's1', v: toLine(notes, md.tot16(S) * 3, 3, 1) }];
+    }
+    // One undo step. o = { seed?, parts, scope, spice }; an empty seed gets a new one. Returns { seed, done }.
+    function randomize(o) {
+      const S = M.song, seed = o && o.seed != null && String(o.seed).trim() ? String(o.seed).trim() : G.newSeed();
+      const parts = Object.assign({}, o.parts), spice = typeof o.spice === 'number' ? o.spice : prefs.spice, sx = NS.sound;
+      const pre = VH.sounds.list().filter((s) => s.source === 'preset' && !s.drum).map((s) => s.id);
+      const ctx = {
+        setBars: (n) => M.resizeBars(n), show: (k) => M.selectSection(k), setSound: (L, id) => M.setLayerSound(L, id, true), sync: () => M.soundsChanged(),
+        setDrums: (id) => {
+          const d = S.drums || (S.drums = {}), p = sx && sx.DRUM_PRESETS.find((x) => x[0] === id);
+          if (!p) return;
+          d.preset = id;
+          if (!p[2]) d.on = false; else { const q = sx.presetPat(id, S.ts); d.on = true; d.kit = q.kit || p[2].kit; d.pat = q; d.bars = {}; }
+        },
+        melody: fillMelody, sounds: pre, backSounds: pre,
+        styles: sx ? sx.STYLES.map((s) => s[0]) : [], drums: sx ? sx.DRUM_PRESETS.map((x) => x[0]) : null,
+      };
+      const done = G.randomizeSong(S, md, { seed, spice, parts, scope: o.scope === 'song' ? 'song' : 'section' }, ctx);
+      const chords = parts.chords || parts.lens ? M.song.chords.map((_, i) => i) : [];
+      M.engine.restartBacking();
+      M.commit('Randomize', { chords, source: 'generate' });
+      if (chords.length) M.engine.previewChord(0);
+      lastSeed = seed; api.lastSeed = seed;
+      const names = G.RAND_PARTS.filter(([id]) => done.includes(id)).map((p) => p[1].toLowerCase());
+      M.toast('Randomized ' + (names.join(', ') || 'nothing') + ' · seed ' + seed, { action: { label: 'Undo', run: () => M.undo() } });
+      return { seed, done };
+    }
+    const quick = ui.button(r1, { label: '🎲 Randomize everything', onClick: () => randomize({ parts: Object.fromEntries(G.RAND_PARTS.map(([id]) => [id, true])), scope: prefs.scope, spice: prefs.spice }) });
+    quick.title = 'Randomize every part of the song (key, chords, lengths, bars, tempo, melody, sounds, drums); one undo step'; quick.classList.add('gx-all');
+    const dlgBtn = ui.button(r1, { label: '🎲 Randomize…', onClick: () => openRandom() });
+    dlgBtn.title = 'Choose what to randomize, with a seed to come back to a result'; dlgBtn.classList.add('gx-rand');
+    let dlg = null;
+    function openRandom() {
+      if (dlg) return;
+      const D = dlg = ui.modal('mel-rnd', 'Randomize');
+      D.onClose = () => { dlg = null; };
+      const B = D.body, cks = {};
+      B.append(ui.h('div', 'vh-desc', 'Tick what the dice may change; everything else stays as it is. The same seed with the same ticks gives the same result.'));
+      G.RAND_PARTS.forEach(([id, label, desc]) => {
+        const row = ui.h('label', 'mel-rnd-ck'), cb = ui.h('input'), tx = ui.h('span', 'mel-rnd-tx');
+        cb.type = 'checkbox'; cb.checked = !!prefs.parts[id]; cb.dataset.part = id; cks[id] = cb;
+        tx.append(ui.h('b', null, label), ui.h('span', 'mel-rnd-ds', desc));
+        cb.addEventListener('change', () => { prefs.parts[id] = cb.checked; savePrefs(); go.disabled = !anyOn(); });
+        row.append(cb, tx); B.append(row);
+      });
+      const anyOn = () => G.RAND_PARTS.some(([id]) => cks[id].checked);
+      const sl = ui.slider(B, { label: 'Adventure', min: 0, max: 1, step: 0.05, value: prefs.spice, fmt: (v) => Math.round(v * 100) + '%', onInput: (v) => { prefs.spice = v; savePrefs(); },
+        desc: 'Low: plain chords of the key. High: sevenths, sus chords, secondary dominants and chords borrowed from other keys.' });
+      sl.input.classList.add('mel-rnd-spice');
+      const r2 = ui.h('div', 'vh-row'); B.append(r2);
+      r2.append(ui.h('span', 'mel-lbl', 'Scope'));
+      const scope = ui.select(r2, { label: 'Scope', value: prefs.scope, options: [{ value: 'section', label: 'Current section' }, { value: 'song', label: 'Whole song (all sections)' }],
+        onChange: (v) => { prefs.scope = v; savePrefs(); } });
+      scope.el.classList.add('mel-rnd-scope');
+      const r3 = ui.h('div', 'vh-row'); B.append(r3);
+      r3.append(ui.h('span', 'mel-lbl', 'Seed'));
+      const seed = ui.h('input', 'mel-rnd-seed'); seed.type = 'text'; seed.maxLength = 24; seed.placeholder = 'new every time'; seed.setAttribute('aria-label', 'Seed');
+      r3.append(seed);
+      const dice = ui.button(r3, { label: '🎲', title: 'Pick a new seed', onClick: () => { seed.value = G.newSeed(); } });
+      dice.classList.add('mel-rnd-dice'); dice.setAttribute('aria-label', 'New seed');
+      const used = ui.h('div', 'vh-desc mel-rnd-used'); B.append(used);
+      const showUsed = () => { used.textContent = lastSeed ? 'Last seed used: ' + lastSeed + ' (type it in the Seed field to get that result again)' : 'Leave the seed empty for a new result each time; type one to repeat a result.'; };
+      showUsed();
+      const run = (all) => {
+        if (all) G.RAND_PARTS.forEach(([id]) => { cks[id].checked = true; prefs.parts[id] = true; });
+        savePrefs();
+        randomize({ seed: seed.value, parts: Object.assign({}, prefs.parts), scope: prefs.scope, spice: prefs.spice });
+        showUsed();
+      };
+      const every = ui.button(D.foot, { label: 'Randomize everything', onClick: () => run(true) }); every.classList.add('mel-rnd-all');
+      const go = ui.button(D.foot, { label: 'Randomize', onClick: () => run(false) }); go.classList.add('mel-rnd-go', 'primary');
+      go.disabled = !anyOn();
+    }
+    M.cleanups.push(() => { if (dlg) dlg.close(); });
+
+    // ---------- layer arpeggio (Settings > Sound) ----------
+    const asec = M.ui.addPanelSection('Arpeggio', 24, { group: 'sound' });
+    asec.append(ui.h('div', 'vh-desc', 'Plays the active layer as an arpeggio: a placed note steps through the notes above it while it sounds; a line steps from wherever the line is.'));
+    const ar = {};
+    const arpSel = (key, label, options, cls) => {
+      const row = ui.h('div', 'vh-row'); asec.append(row); row.append(ui.h('span', 'mel-lbl', label));
+      const s = ui.select(row, { label, value: options[0].value, options, onChange: () => setArp() });
+      s.el.classList.add(cls); ar[key] = s; return s;
+    };
+    arpSel('pat', 'Pattern', [{ value: 'off', label: 'Off' }, { value: 'up', label: 'Up' }, { value: 'down', label: 'Down' }, { value: 'updown', label: 'Up-down' }, { value: 'random', label: 'Random' }], 'gx-arp-pat');
+    arpSel('rate', 'Rate', [{ value: '1/8', label: '1/8' }, { value: '1/16', label: '1/16' }, { value: '1/16t', label: '1/16 triplet' }, { value: '1/32', label: '1/32' }], 'gx-arp-rate');
+    arpSel('oct', 'Range', [{ value: '1', label: '1 octave' }, { value: '2', label: '2 octaves' }], 'gx-arp-oct');
+    arpSel('from', 'Notes from', [{ value: 'chord', label: 'Chord tones' }, { value: 'bands', label: 'Bright bands' }], 'gx-arp-from');
+    function syncArp() {
+      const l = M.song.layers[M.active], a = l && md.arpIn(l.arp);
+      ar.pat.value = a ? a.pat : 'off'; ar.rate.value = a ? a.rate : '1/16'; ar.oct.value = String(a ? a.oct : 1); ar.from.value = a ? a.from : 'chord';
+      ['rate', 'oct', 'from'].forEach((k) => { ar[k].el.disabled = !a; });
+    }
+    function setArp() {
+      const l = M.song.layers[M.active];
+      if (!l) return;
+      if (ar.pat.value === 'off') delete l.arp;
+      else l.arp = md.arpIn({ pat: ar.pat.value, rate: ar.rate.value, oct: +ar.oct.value, from: ar.from.value });
+      M.engine.stopLayer(M.active);
+      M.commit(l.arp ? 'Arpeggio' : 'Arpeggio off');
+    }
+    syncArp(); M.on('song', syncArp); M.on('layer', syncArp);
+
+    // Arp steps are shown as small ticks under the notes / along the lines of arpeggio layers.
+    M.on('draw', (c, view) => {
+      const S = M.song;
+      if (!S.layers.some((l) => l.arp)) return;
+      const t0 = Math.max(0, view.t16Of(view.scrollX) - 1), t1 = Math.min(md.tot16(S), view.t16Of(view.scrollX + view.GW) + 1), h = Math.max(2, Math.min(5, view.noteH() * 0.4));
+      S.layers.forEach((l, L) => {
+        const a = md.arpIn(l.arp);
+        if (!a) return;
+        const r = md.ARP_RATE[a.rate];
+        c.fillStyle = l.color; c.globalAlpha = 0.7;
+        const tick = (t, m, off) => c.fillRect(Math.round(view.xOf(t)), Math.round(view.yOf(m) + off), 1, h);
+        for (const n of l.notes) {
+          if (n.s >= t1 || n.s + n.d <= t0) continue;
+          for (let t = n.s + Math.max(0, Math.floor((t0 - n.s) / r)) * r; t < Math.min(n.s + n.d, t1); t += r) tick(t, n.m, view.noteH() / 2 + 1);
+        }
+        for (const st of md.strokes(l)) {
+          for (let j = Math.ceil(t0 / r); j * r < t1; j++) { const m = st.v[Math.floor(j * r * 3 + 1e-6)]; if (m === m) tick(j * r, m, 3); }
+        }
+        c.globalAlpha = 1;
+      });
+    });
+    // Pitch sets for arps in bands mode of a song being exported (flat song / loop slice): see MELODY.md.
+    const arpPeaks = (src, L) => (t) => {
+      let k = M.song.cur, loc = t + (src.arpOff || 0);
+      if (src.flat) {
+        const its = src.flat.items;
+        let it = its[its.length - 1];
+        for (const x of its) if (t >= x.a - 1e-9 && t < x.a + x.n - 1e-9) { it = x; break; }
+        k = it.k; loc = t - it.a;
+      }
+      let pk;
+      if (k === M.song.cur) { const at = M.bandsAt(loc, L); pk = at ? (at.matchPeaks ? at.matchPeaks() : at.peaks()) : []; }
+      else pk = M.bands.peaksOf ? M.bands.peaksOf(md.chordAt(src, t), L) : [];
+      return pk.map((m) => md.gridSnap(M.song, m));
+    };
 
     // ---------- bandExtras ----------
     let ver = 0, doneVer = -1, perLayer = [], assembled = new Map(), timer = 0, dirtyAt = 0;
@@ -312,7 +625,7 @@
     M.on('song', schedule);
     M.on('sounds', schedule);
 
-    const api = { progression: (S) => progression(S || M.song, md, rnd), genProgression, genMelody, stats, last: null, opts,
+    const api = { progression: (S) => progression(S || M.song, md, rnd), genProgression, genMelody, randomize, arpPeaks, prefs, stats, last: null, lastSeed: '', opts,
       extras: (b, L) => M.hooks.bandExtras(b, L), get pending() { return !!timer; } };
     NS.generatePart = api;
     return {

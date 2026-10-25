@@ -20,19 +20,53 @@
     // X0 = the piano strip's width: the time axis starts right of it (content x 0 = bar 1 = canvas x X0). GW = graph width.
     // Pitch zoom: `span` semitones are visible (SPAN .. Z_MIN), the top row is `pTop`. Persisted in VH.store 'melody.view'.
     const V = { cv, ctx, wrap, hbar, hthumb, HDR, RL, CH, Y0, PT, PB, PL, PR, tz: 1, VW: 800, TH: 540, MH: 500, BW: 200, CW: 800, scrollX: 0, dpr: 1, highlightBar: -1, regionPreview: null,
-      X0: 22, GW: 778, span: DEF_SPAN, pTop: DEF_TOP, Z_MIN, showScale: VH.store.get('melody.showScale', true) !== false };
+      X0: 22, GW: 778, span: DEF_SPAN, pTop: DEF_TOP, Z_MIN, showScale: VH.store.get('melody.showScale', true) !== false, hintsOn: VH.store.get('melody.hints', true) !== false };
+    // Song view (V.song): every section of the arrangement side by side on one graph. Content x is then the song position;
+    // V.xy / tools work in the coords of the section under the pointer (V.lock = the item a drag started in), and V.origin
+    // is where the live section (M.song) starts, so DOM placed with V.sx and 'draw' overlays still land on it.
+    V.song = false; V.sU = 4; V.focus = -1; V.lock = -1;
+    Object.defineProperty(V, 'origin', { get: () => (V.song ? (V.liveItem().a * V.U()) : 0) });
     let boxW = 800, boxH = 600;
     const lanes = [];   // { el, h, fixed, ro } added with V.addLane, stacked under the canvas (and its scroll bar)
     V.U = () => V.BW / md.spb(M.song);                        // px per sixteenth (the bar length follows the time signature)
     V.xOf = (t16) => t16 * V.U();
     V.t16Of = (x) => x / V.U();
-    V.sx = (x) => x - V.scrollX + V.X0;                       // content x -> canvas x
+    V.sx = (x) => x + V.origin - V.scrollX + V.X0;            // content x (of the live section) -> canvas x
     V.PPS = () => V.MH / V.span;                              // px per semitone (zoom)
     V.noteH = () => clamp(V.PPS() * 0.8, 6, 20);              // note bar height
     V.yOf = (m) => Y0 + (V.pTop - m) / V.span * V.MH;
     V.midiOf = (y) => clamp(V.pTop - (y - Y0) / V.MH * V.span, LO, HI);
     // Pointer event -> content coords [x, y] (scroll and the piano strip included).
-    V.xy = (e) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * V.VW / r.width + V.scrollX - V.X0, (e.clientY - r.top) * V.TH / r.height]; };
+    V.gxy = (e) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * V.VW / r.width + V.scrollX - V.X0, (e.clientY - r.top) * V.TH / r.height]; };
+    // Song view: arrangement items { k, r, a, n, bar0 } (a = start sixteenth in the song, bar0 = bars before it)
+    V.items = function () {
+      const S = M.song;
+      let b = 0;
+      return md.arrangement(S).map((it) => {
+        const o = Object.assign({ bar0: b }, it), x = S.sections[it.k];
+        b += it.k === S.cur ? S.bars : x.data.bars;
+        return o;
+      });
+    };
+    V.itemIdx = (items, gx) => { const u = V.U(); let i = 0; while (i < items.length - 1 && gx >= (items[i].a + items[i].n) * u) i++; return i; };
+    V.liveOf = function (items) {   // the occurrence of the shown section the live fields stand for
+      const S = M.song, E = M.engine;
+      if (E.playing && E.pass >= 0 && items[E.pass] && items[E.pass].k === S.cur) return items[E.pass];
+      const f = items[V.focus];
+      if (f && f.k === S.cur) return f;
+      return items.find((it) => it.k === S.cur) || items[0];
+    };
+    V.liveItem = () => V.liveOf(V.items());
+    // Pointer event -> content coords [x, y] (scroll and the piano strip included). In Song view x is relative to the
+    // section under the pointer (or the one a drag started in), which is what tools work with.
+    V.xy = (e) => {
+      const g = V.gxy(e);
+      if (!V.song) return g;
+      const items = V.items(), it = items[V.lock >= 0 && items[V.lock] ? V.lock : V.itemIdx(items, g[0])];
+      return [g[0] - it.a * V.U(), g[1]];
+    };
+    // the playhead's x in content coords (Song view: along the whole arrangement)
+    V.playX = () => { const E = M.engine; return V.song ? (V.liveItem().a + E.phase * md.tot16(M.song)) * V.U() : E.phase * V.CW; };
     // canvas px of a pointer event (no scroll / strip offset)
     const cxy = (e) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * V.VW / r.width, (e.clientY - r.top) * V.TH / r.height]; };
 
@@ -115,11 +149,21 @@
     document.addEventListener('pointerdown', tenClose); document.addEventListener('keydown', tenClose);
     if (M.cleanups) M.cleanups.push(() => { document.removeEventListener('pointerdown', tenClose); document.removeEventListener('keydown', tenClose); });
     // Map look: a 🎨 chip left of the ◐ chip opens the same controls as Settings > Edit > Map look (V.buildLook).
+    const syncs = [];
     const lookChip = ui.h('button', 'mel-tens-chip mel-look-chip', '🎨'); lookChip.type = 'button';
     lookChip.title = 'Map look: colours, clarity, glow, grid'; lookChip.setAttribute('aria-label', 'Map look'); lookChip.setAttribute('aria-haspopup', 'true'); lookChip.setAttribute('aria-expanded', 'false');
     const lookPop = ui.h('div', 'mel-tens-pop mel-look-pop'); lookPop.hidden = true; lookPop.setAttribute('role', 'group'); lookPop.setAttribute('aria-label', 'Map look');
     wrap.append(lookChip, lookPop);
-    const syncs = [];
+    // Harmony hints chip (key H): dashes at the pitches that sound best with everything sounding where the pointer is (tools.js).
+    const hintChip = ui.h('button', 'mel-hint-chip', '✦'); hintChip.type = 'button';
+    hintChip.setAttribute('aria-label', 'Harmony hints'); hintChip.setAttribute('aria-pressed', 'true');
+    wrap.append(hintChip);
+    const syncHint = () => {
+      hintChip.classList.toggle('on', V.hintsOn); hintChip.setAttribute('aria-pressed', String(V.hintsOn));
+      hintChip.title = 'Harmony hints (H): ' + (V.hintsOn ? 'on' : 'off') + '. While you hover or draw, dashes mark the pitches that sound best with every note sounding at that moment';
+    };
+    V.setHints = (v) => { V.hintsOn = !!v; try { VH.store.set('melody.hints', V.hintsOn); } catch (_) { /* ignore */ } syncHint(); syncs.forEach((f) => f()); M.requestRender(); };
+    hintChip.addEventListener('click', () => V.setHints(!V.hintsOn)); syncHint();
     // Builds the Map look controls into host (view preferences: VH.store 'melody.look' + 'melody.showScale'; not in the song).
     V.buildLook = function (host) {
       const B = M.bands, L = () => B.look(), set = (p) => B.setLook(p);
@@ -143,7 +187,10 @@
       tog('regions', 'Chord tints', () => L().regions, (v) => set({ regions: v }));
       tog('piano', 'Piano strip', () => L().piano, (v) => set({ piano: v }));
       tog('labels', 'Note labels', () => L().labels, (v) => set({ labels: v }));
+      tog('hints', 'Harmony hints (H)', () => V.hintsOn, (v) => V.setHints(v));
+      tog('others', 'Bands include other layers', () => !!M.song.bandsOthers, (v) => { M.song.bandsOthers = !!v; M.bands.invalidate(); M.commit('Bands include other layers'); });
       host.append(tr);
+      host.append(ui.h('div', 'vh-desc', 'Hints: while drawing, dashes show what fits with every note sounding at the pointer. Bands include other layers: the map itself (per bar) counts the other layers too.'));
       const rr = ui.h('div', 'vh-row'), rb = ui.button(rr, { label: 'Reset look', onClick: () => { B.resetLook(); V.relayout(); } }); rb.classList.add('mel-look-reset'); host.append(rr);
       host.append(ui.h('div', 'vh-desc', 'A view preference for this device: not saved in the song, not shared, not part of undo.'));
       const sync = () => {
@@ -155,6 +202,7 @@
       return { sync };
     };
     V.setShowScale = (v) => { V.showScale = !!v; VH.store.set('melody.showScale', V.showScale); syncs.forEach((f) => f()); if (V.onScale) V.onScale(); M.requestRender(); };
+    M.on('song', () => { if (lookBuilt) syncs.forEach((f) => f()); });
     M.on('look', () => { syncs.forEach((f) => f()); if (V.X0 !== V.KW() + PL) V.relayout(); });
     let lookBuilt = false;
     lookChip.addEventListener('click', () => {
@@ -173,15 +221,16 @@
       const small = V.VW <= 600, inBar = V.topH > 0, zw = small && !inBar ? 30 : 26, m = inBar ? 2 : (small ? 12 : 16);
       const top = inBar ? Math.max(0, Math.round((V.topH - LANE_GAP - zw) / 2)) : V.topH + Y0 + 6;
       zoomEl.classList.toggle('inbar', inBar); wrap.classList.toggle('mel-chips-inbar', inBar);
-      const zoomW = inBar ? 4 * zw + 12 : zw, tw = tenChip.offsetWidth || 70, lw = lookChip.offsetWidth || 34;
+      const zoomW = inBar ? 4 * zw + 12 : zw, tw = tenChip.offsetWidth || 70, lw = lookChip.offsetWidth || 34, hw = hintChip.offsetWidth || 32;
       const R = (px) => 'calc(50% - ' + (V.VW / 2 - px) + 'px)';
-      zoomEl.style.top = tenChip.style.top = lookChip.style.top = top + 'px';
+      zoomEl.style.top = tenChip.style.top = lookChip.style.top = hintChip.style.top = top + 'px';
       zoomEl.style.right = R(m);
       tenChip.style.right = R(m + zoomW + 6);
       lookChip.style.right = R(m + zoomW + 6 + tw + 6);
+      hintChip.style.right = R(m + zoomW + 6 + tw + 6 + lw + 6);
       tenPop.style.top = lookPop.style.top = (inBar ? V.topH + 2 : V.topH + Y0 + 36) + 'px';
       tenPop.style.right = lookPop.style.right = R(m);
-      wrap.style.setProperty('--mel-bar-reserve', inBar ? (m + zoomW + 6 + tw + 6 + lw + 8) + 'px' : '0px');
+      wrap.style.setProperty('--mel-bar-reserve', inBar ? (m + zoomW + 6 + tw + 6 + lw + 6 + hw + 8) + 'px' : '0px');
     }
     const placeLookChip = placeBar;
     V.placeLookChip = placeBar;
@@ -196,10 +245,12 @@
       const S = M.song;
       V.VW = Math.max(240, Math.min(1600, boxW));
       V.X0 = V.KW() + PL; V.GW = Math.max(60, V.VW - V.X0 - PR);
-      V.BW = clamp(Math.max(V.GW / S.bars, Math.min(120, V.GW / 4)) * V.tz, 24, 1600); V.CW = V.BW * S.bars;
+      if (V.song) { V.sU = clamp(Math.min(72, V.GW / 5) * V.tz, 12, 1600) / 16; V.BW = V.sU * md.spb(S); V.CW = md.songTot(S) * V.sU; }
+      else { V.BW = clamp(Math.max(V.GW / S.bars, Math.min(120, V.GW / 4)) * V.tz, 24, 1600); V.CW = V.BW * S.bars; }
       const scrolls = V.CW > V.GW + 0.5;
       hbar.hidden = !scrolls;
-      const laneH = lanes.reduce((a, l) => a + (l.el.hidden ? 0 : l.h + LANE_GAP), 0);
+      lanes.forEach((l) => { if (!l.top) l.el.style.display = V.song ? 'none' : ''; });   // the drum + automation lanes follow one section: hidden in Song view
+      const laneH = lanes.reduce((a, l) => a + (l.el.hidden || (V.song && !l.top) ? 0 : l.h + LANE_GAP), 0);
       V.topH = lanes.reduce((a, l) => a + (l.top && !l.el.hidden ? l.h + LANE_GAP : 0), 0);   // lanes above the canvas
       V.TH = Math.max(200, boxH - (scrolls ? 18 : 0) - laneH); V.MH = V.TH - Y0 - PB; V.dpr = ui.dpr();
       lanes.forEach((l) => { l.el.style.width = V.VW + 'px'; });
@@ -251,7 +302,7 @@
       if (lane.top) wrap.prepend(el); else wrap.append(el);   // o.top: above the canvas (the arrangement strip)
       lanes.push(lane);
       const measure = () => {
-        if (lane.fixed || !el.isConnected) return;
+        if (lane.fixed || !el.isConnected || (V.song && !lane.top)) return;
         const h = Math.ceil(el.offsetHeight);
         if (h !== lane.h) { lane.h = h; V.relayout(); }
       };
@@ -299,9 +350,9 @@
       ['gesturestart', 'gesturechange', 'gestureend'].forEach((t) => cv.addEventListener(t, gest));
     }
     // Keep the playhead in view while playing.
-    V.follow = function (phase) {
+    V.follow = function () {
       if (V.CW <= V.GW + 0.5) return;
-      const px = phase * V.CW;
+      const px = V.playX();
       if (px < V.scrollX + V.GW * 0.08 || px > V.scrollX + V.GW * 0.8) V.setScroll(px - V.GW * 0.2);
     };
 
@@ -535,7 +586,7 @@
       if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented || !cv.isConnected) return;
       const t = e.target, tag = t && t.tagName;
       if (tag === 'TEXTAREA' || (tag === 'INPUT' && !/^(range|checkbox|radio|button)$/.test(t.type)) || (t && t.isContentEditable)) return;   // a <select> is no text field
-      if (e.key === '+' || e.key === '=') { e.preventDefault(); V.zoomAt(1 / 1.4); } else if (e.key === '-' || e.key === '_') { e.preventDefault(); V.zoomAt(1.4); }
+      if ((e.key === 'h' || e.key === 'H') && !e.shiftKey && !e.repeat) { e.preventDefault(); V.setHints(!V.hintsOn); } else if (e.key === '+' || e.key === '=') { e.preventDefault(); V.zoomAt(1 / 1.4); } else if (e.key === '-' || e.key === '_') { e.preventDefault(); V.zoomAt(1.4); }
     };
     document.addEventListener('keydown', onKey);
     if (M.cleanups) M.cleanups.push(() => document.removeEventListener('keydown', onKey));
@@ -594,150 +645,236 @@
       });
       return parts.join(',') + ':' + h;
     }
+    // Song view on / off (a UI preference: VH.store 'melody.songView'; not in the song, not shared, not undo). Playing in
+    // Song view always runs the arrangement, so Song play mode is forced while it is on and restored when it is left.
+    V.setSong = function (on, restore) {
+      on = !!on;
+      if (on === V.song) return;
+      V.song = on; V.lock = -1;
+      VH.store.set('melody.songView', on);
+      if (on) { VH.store.set('melody.preSongMode', M.playMode); if (M.playMode !== 'song') M.setPlayMode('song'); }
+      else { const m = restore || (VH.store.get('melody.preSongMode', 'section') === 'song' ? 'song' : 'section'); V.focus = -1; if (m !== M.playMode) M.setPlayMode(m); }
+      V.relayout();
+      V.setScroll(on ? V.liveItem().a * V.U() - V.GW * 0.05 : 0);
+      M.emit('songview', on);
+      if (M.ui && M.ui.sync) M.ui.sync();
+      M.requestRender();
+    };
+    M.on('section', () => {   // Song view: bring the shown section into view when something else switched to it
+      if (!V.song) return;
+      const it = V.liveItem(), u = V.U(), a = it.a * u, z = (it.a + it.n) * u;
+      if (z < V.scrollX || a > V.scrollX + V.GW) V.setScroll(a - V.GW * 0.05); else M.requestRender();
+    });
+    // Draws every visible arrangement item (Song view) or just the shown section: each item is drawn from its own section
+    // (a standalone copy for the sections that are not shown), translated to its place on the song's time axis.
     V.draw = function () {
-      const S = M.song, E = M.engine, A = M.active, names = namesOf(S), tot = md.tot16(S), u = V.U(), SPB = md.spb(S);
-      const playing = E.playing, phase = E.phase, pos = phase * tot, { VW, TH, MH, BW, CW, scrollX, dpr, X0, GW } = V;
+      const S = M.song, E = M.engine, A = M.active, u = V.U(), song = V.song, playing = E.playing, phase = E.phase;
+      const { VW, TH, MH, CW, scrollX, dpr, X0, GW } = V;
+      const all = song ? V.items() : [{ k: S.cur, r: 0, a: 0, n: md.tot16(S), bar0: 0 }];
+      const live = song ? V.liveOf(all) : all[0], xa0 = scrollX, xb0 = scrollX + GW;
+      const vis = all.filter((it) => (it.a + it.n) * u > xa0 - 1 && it.a * u < xb0 + 1);
+      vis.forEach((it) => {
+        it.S = !song || it.k === S.cur ? S : md.sectionSong(S, it.k);
+        it.ox = song ? it.a * u : 0; it.isLive = it === live; it.play = playing && it.isLive;
+        it.xa = song ? Math.max(0, xa0 - it.ox) : xa0; it.xb = song ? Math.min(it.n * u, xb0 - it.ox) : xb0;
+      });
+      const lk0 = lk(), pos = phase * live.n;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.fillStyle = '#0d1019'; ctx.fillRect(0, 0, VW, TH);   // also the silent margins
       ctx.imageSmoothingEnabled = false;
-      // the cached band image (1 px per sixteenth x R rows, top row = HI) cropped to the visible pitch range
+      // the cached band images (1 px per sixteenth x R rows, top row = HI) cropped to the visible pitch range
       const RPS = M.bands.R / SPAN;
-      if (M.bands.off.width === tot) { ctx.save(); ctx.beginPath(); ctx.rect(X0, Y0, GW, MH); ctx.clip(); ctx.drawImage(M.bands.off, 0, (HI - V.pTop) * RPS, tot, V.span * RPS, X0 - scrollX, Y0, CW, MH); ctx.restore(); }
-      ctx.translate(X0 - scrollX, 0);
-      const b0 = Math.max(0, Math.floor(scrollX / BW)), b1 = Math.min(S.bars - 1, Math.floor((scrollX + GW) / BW));
-      const curReg = playing ? md.regionAt(S, pos) : -1, xa = scrollX, xb = scrollX + GW, hb = V.highlightBar, hv = V.hdrHover;
-      ctx.fillStyle = '#0f1320'; ctx.fillRect(xa, 0, GW, RL);   // ruler: bar numbers + beat ticks; click / drag only seeks
-      ctx.fillStyle = '#262b3a'; ctx.fillRect(xa, RL - 1, GW, 1);
-      {
-        const bt = md.tsOf(S).beats, showB = BW >= 56;
-        ctx.font = '10px system-ui, sans-serif'; ctx.textAlign = 'left';
-        for (let b = b0; b <= b1; b++) {
-          const x = Math.round(b * BW) + 0.5;
-          ctx.fillStyle = '#4a5270'; ctx.fillRect(x - 0.5, 0, 1, RL);
-          ctx.fillStyle = '#8b94ad'; ctx.fillText(String(b + 1), x + 4, 10.5);
-          if (showB) { ctx.fillStyle = '#343b55'; for (const q of bt) if (q) ctx.fillRect(Math.round(b * BW + q * u), RL - 4, 1, 4); }
-        }
-      }
-      ctx.save(); ctx.translate(0, RL);
-      for (const R of md.regions(S)) {   // chord header strip: one block per chord region (its width = its duration)
-        const x = R.a * u, w = (R.z - R.a) * u, ch = R.chord, b = R.i, inner = R.a % SPB !== 0;
-        if (x > xb || x + w < xa) continue;
-        const tints = lk().regions;
-        ctx.fillStyle = tints && b === hb ? '#24345a' : tints && b === curReg ? '#22345e' : tints && hv && hv.kind === 'name' && hv.region === b ? '#1a2133' : '#141824'; ctx.fillRect(x, 0, w, CH);
-        ctx.strokeStyle = tints && b === hb ? '#6fa3ff' : '#262b3a'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, 0.5, w - 1, CH - 1);
-        ctx.save(); ctx.beginPath(); ctx.rect(x + 2, 0, w - 4, CH); ctx.clip();
-        ctx.textAlign = 'center';
-        ctx.fillStyle = ch ? '#fff' : '#7a8194'; ctx.font = '600 ' + hdrFont(w) + 'px system-ui, sans-serif';
-        ctx.fillText(ch ? chordName(ch, names) : '—', x + w / 2, 18);
-        if (w >= 44) {
-          ctx.fillStyle = '#7a8194'; ctx.font = (w < 70 ? 9 : 10.5) + 'px system-ui, sans-serif';
-          ctx.fillText(ch ? chordMidis(ch).map((m) => names[m % 12]).join(' ') : 'no chord', x + w / 2, 33);
-        }
-        ctx.restore();
-        if (inner) {   // a chord change inside the bar: a grip to drag the boundary
-          const on = (hv && hv.kind === 'edge' && hv.region === b) || V.edgeDrag === b;
-          ctx.fillStyle = on ? '#6fa3ff' : 'rgba(207,213,230,0.5)'; V.rrect(x - 1.5, 9, 3, CH - 18, 1.5); ctx.fill();
-        }
-      }
-      if (hv && hv.kind === 'plus') {   // split here
-        const x = hv.at * u, y = CH - 9;
-        ctx.fillStyle = '#6fa3ff'; ctx.beginPath(); ctx.arc(x, y, 6.5, 0, 2 * Math.PI); ctx.fill();
-        ctx.strokeStyle = '#07101f'; ctx.lineWidth = 1.6;
-        ctx.beginPath(); ctx.moveTo(x - 3.5, y); ctx.lineTo(x + 3.5, y); ctx.moveTo(x, y - 3.5); ctx.lineTo(x, y + 3.5); ctx.stroke();
+      ctx.save(); ctx.beginPath(); ctx.rect(X0, Y0, GW, MH); ctx.clip();
+      for (const it of vis) {
+        const img = it.k === S.cur ? (M.bands.off.width === it.n ? M.bands.off : null) : M.bands.sectionBg(it.k);
+        if (!img) continue;
+        if (!song) { ctx.drawImage(img, 0, (HI - V.pTop) * RPS, it.n, V.span * RPS, X0 - scrollX, Y0, CW, MH); continue; }
+        const x0 = Math.floor(X0 - scrollX + it.ox), x1 = Math.ceil(X0 - scrollX + it.ox + it.n * u);
+        ctx.drawImage(img, 0, (HI - V.pTop) * RPS, it.n, V.span * RPS, x0, Y0, x1 - x0, MH);
       }
       ctx.restore();
-      const reg = V.regionPreview || md.regionOf(S);
-      if (reg) {   // loop region: map outside it dimmed, a bright rule over its header bars
-        const x0 = reg[0] * BW, x1 = reg[1] * BW;
-        ctx.fillStyle = 'rgba(5,6,12,0.42)';
-        if (x0 > xa) ctx.fillRect(xa, Y0, Math.min(x0, xb) - xa, MH);
-        if (x1 < xb) ctx.fillRect(Math.max(x1, xa), Y0, xb - Math.max(x1, xa), MH);
-        ctx.fillStyle = 'rgba(111,163,255,0.16)'; ctx.fillRect(x0, 0, x1 - x0, HDR);
-        ctx.fillStyle = '#6fa3ff'; ctx.fillRect(x0, 0, x1 - x0, 3);
-        ctx.strokeStyle = 'rgba(111,163,255,0.55)'; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, Y0 + MH); ctx.moveTo(x1 - 0.5, 0); ctx.lineTo(x1 - 0.5, Y0 + MH); ctx.stroke();
+      ctx.translate(X0 - scrollX, 0);
+      const hb = V.highlightBar, hv = V.hdrHover;
+      V.rulerLabels = [];
+      for (const it of vis) {   // header: ruler (bar numbers + beat ticks; click / drag only seeks) + chord strip + loop region
+        const SS = it.S, SPB = md.spb(SS), BW = SPB * u, xa = it.xa, xb = it.xb, names = namesOf(SS), curReg = it.play ? md.regionAt(SS, pos) : -1;
+        const b0 = Math.max(0, Math.floor(xa / BW)), b1 = Math.min(SS.bars - 1, Math.floor(xb / BW)), live1 = it.isLive;
+        ctx.save(); ctx.translate(it.ox, 0);
+        if (song) { ctx.beginPath(); ctx.rect(0, 0, it.n * u, TH); ctx.clip(); }
+        ctx.fillStyle = '#0f1320'; ctx.fillRect(xa, 0, xb - xa, RL);
+        ctx.fillStyle = '#262b3a'; ctx.fillRect(xa, RL - 1, xb - xa, 1);
+        {
+          const bt = md.tsOf(SS).beats, showB = BW >= 56;
+          ctx.font = '10px system-ui, sans-serif'; ctx.textAlign = 'left';
+          let chipEnd = 0;   // the section chip covers the bar numbers under it
+          for (let b = b0; b <= b1; b++) {
+            const x = Math.round(b * BW) + 0.5, no = String(it.bar0 + b + 1);
+            ctx.fillStyle = '#4a5270'; ctx.fillRect(x - 0.5, 0, 1, RL);
+            if (song && b === 0) {   // the section's name chip in its colour (repeats dimmed: "repeat")
+              const sx = S.sections[it.k], nm = no + '  ' + sx.name + (it.r > 0 ? ' · repeat' : ''), cw = Math.max(8, Math.min(it.n * u - 4, ctx.measureText(nm).width + 10));
+              ctx.save(); ctx.globalAlpha = it.r > 0 ? 0.5 : 0.95; ctx.fillStyle = sx.color; V.rrect(x + 1.5, 1, cw, RL - 2, 3); ctx.fill();
+              ctx.beginPath(); ctx.rect(x + 1.5, 0, cw, RL); ctx.clip();
+              ctx.globalAlpha = 1; ctx.fillStyle = '#0b0d12'; ctx.fillText(nm, x + 6, 10.5); ctx.restore();
+              V.rulerLabels.push({ x: it.ox + x, bar: it.bar0 + 1, text: nm, k: it.k, r: it.r });
+              chipEnd = x + 1.5 + cw;
+              continue;
+            }
+            if (x + 4 < chipEnd) { V.rulerLabels.push({ x: it.ox + x, bar: it.bar0 + b + 1, text: no, k: it.k, r: it.r, hidden: true }); continue; }
+            ctx.fillStyle = '#8b94ad'; ctx.fillText(no, x + 4, 10.5);
+            V.rulerLabels.push({ x: it.ox + x, bar: it.bar0 + b + 1, text: no, k: it.k, r: it.r });
+            if (showB) { ctx.fillStyle = '#343b55'; for (const q of bt) if (q) ctx.fillRect(Math.round(b * BW + q * u), RL - 4, 1, 4); }
+          }
+        }
+        ctx.save(); ctx.translate(0, RL);
+        for (const R of md.regions(SS)) {   // chord header strip: one block per chord region (its width = its duration)
+          const x = R.a * u, w = (R.z - R.a) * u, ch = R.chord, b = R.i, inner = R.a % SPB !== 0;
+          if (x > xb || x + w < xa) continue;
+          const tints = lk0.regions, hl = live1 && b === hb;
+          ctx.fillStyle = tints && hl ? '#24345a' : tints && b === curReg ? '#22345e' : tints && live1 && hv && hv.kind === 'name' && hv.region === b ? '#1a2133' : '#141824'; ctx.fillRect(x, 0, w, CH);
+          ctx.strokeStyle = tints && hl ? '#6fa3ff' : '#262b3a'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, 0.5, w - 1, CH - 1);
+          ctx.save(); ctx.beginPath(); ctx.rect(x + 2, 0, w - 4, CH); ctx.clip();
+          ctx.textAlign = 'center';
+          ctx.fillStyle = ch ? '#fff' : '#7a8194'; ctx.font = '600 ' + hdrFont(w) + 'px system-ui, sans-serif';
+          ctx.fillText(ch ? chordName(ch, names) : '—', x + w / 2, 18);
+          if (w >= 44) {
+            ctx.fillStyle = '#7a8194'; ctx.font = (w < 70 ? 9 : 10.5) + 'px system-ui, sans-serif';
+            ctx.fillText(ch ? chordMidis(ch).map((m) => names[m % 12]).join(' ') : 'no chord', x + w / 2, 33);
+          }
+          ctx.restore();
+          if (inner) {   // a chord change inside the bar: a grip to drag the boundary
+            const on = live1 && ((hv && hv.kind === 'edge' && hv.region === b) || V.edgeDrag === b);
+            ctx.fillStyle = on ? '#6fa3ff' : 'rgba(207,213,230,0.5)'; V.rrect(x - 1.5, 9, 3, CH - 18, 1.5); ctx.fill();
+          }
+        }
+        if (live1 && hv && hv.kind === 'plus') {   // split here
+          const x = hv.at * u, y = CH - 9;
+          ctx.fillStyle = '#6fa3ff'; ctx.beginPath(); ctx.arc(x, y, 6.5, 0, 2 * Math.PI); ctx.fill();
+          ctx.strokeStyle = '#07101f'; ctx.lineWidth = 1.6;
+          ctx.beginPath(); ctx.moveTo(x - 3.5, y); ctx.lineTo(x + 3.5, y); ctx.moveTo(x, y - 3.5); ctx.lineTo(x, y + 3.5); ctx.stroke();
+        }
+        ctx.restore();
+        const reg = (live1 && V.regionPreview) || md.regionOf(SS);
+        if (reg) {   // loop region: map outside it dimmed, a bright rule over its header bars
+          const x0 = reg[0] * BW, x1 = reg[1] * BW;
+          ctx.fillStyle = 'rgba(5,6,12,0.42)';
+          if (x0 > xa) ctx.fillRect(xa, Y0, Math.min(x0, xb) - xa, MH);
+          if (x1 < xb) ctx.fillRect(Math.max(x1, xa), Y0, xb - Math.max(x1, xa), MH);
+          ctx.fillStyle = 'rgba(111,163,255,0.16)'; ctx.fillRect(x0, 0, x1 - x0, HDR);
+          ctx.fillStyle = '#6fa3ff'; ctx.fillRect(x0, 0, x1 - x0, 3);
+          ctx.strokeStyle = 'rgba(111,163,255,0.55)'; ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, Y0 + MH); ctx.moveTo(x1 - 0.5, 0); ctx.lineTo(x1 - 0.5, Y0 + MH); ctx.stroke();
+        }
+        if (song && it.r > 0) { ctx.fillStyle = 'rgba(5,6,12,0.16)'; ctx.fillRect(xa, Y0, xb - xa, MH); }   // a repeat of a section shown earlier: slightly dimmed
+        ctx.restore();
       }
       ctx.save();   // graph area: everything below is clipped to the visible map (zoom / scroll)
-      ctx.beginPath(); ctx.rect(xa, HDR, GW, MH + PT + PB); ctx.clip();
+      ctx.beginPath(); ctx.rect(xa0, HDR, GW, MH + PT + PB); ctx.clip();
       const mLo = Math.max(LO, Math.floor(V.pTop - V.span)), mHi = Math.min(HI, Math.ceil(V.pTop));
-      const G = md.gridOf(S);
-      if (V.showScale) {   // scale tint: a faint band on the rows of the section's scale (tuning steps outside 12-TET)
-        const P = G.pts, rh = V.PPS();
-        ctx.fillStyle = 'rgba(150,180,255,0.055)';
-        for (let k = 0; k < P.length; k++) {
-          if (!G.scaleCls.has(G.cls[k]) || P[k] < mLo - 1 || P[k] > mHi + 1) continue;
-          const hgt = G.et12 ? rh * 0.8 : Math.min(rh * 0.8, Math.max(2, (k + 1 < P.length ? P[k + 1] - P[k] : 1) * rh * 0.8));
-          ctx.fillRect(xa, V.yOf(P[k]) - hgt / 2, xb - xa, hgt);
+      for (const it of vis) {   // scale tint, pitch grid, bar / beat / grid lines of each section (its own key, tuning, meter)
+        const SS = it.S, SPB = md.spb(SS), BW = SPB * u, xa = it.xa, xb = it.xb, G = md.gridOf(SS);
+        const b0 = Math.max(0, Math.floor(xa / BW)), b1 = Math.min(SS.bars - 1, Math.floor(xb / BW));
+        ctx.save(); ctx.translate(it.ox, 0);
+        if (song) { ctx.beginPath(); ctx.rect(0, HDR, it.n * u, MH + PT + PB); ctx.clip(); }
+        if (V.showScale) {   // scale tint: a faint band on the rows of the section's scale (tuning steps outside 12-TET)
+          const P = G.pts, rh = V.PPS();
+          ctx.fillStyle = 'rgba(150,180,255,0.055)';
+          for (let k = 0; k < P.length; k++) {
+            if (!G.scaleCls.has(G.cls[k]) || P[k] < mLo - 1 || P[k] > mHi + 1) continue;
+            const hgt = G.et12 ? rh * 0.8 : Math.min(rh * 0.8, Math.max(2, (k + 1 < P.length ? P[k + 1] - P[k] : 1) * rh * 0.8));
+            ctx.fillRect(xa, V.yOf(P[k]) - hgt / 2, xb - xa, hgt);
+          }
         }
-      }
-      ctx.globalAlpha = lk().grid / 100;   // Map look: grid visibility (semitone, bar and beat lines)
-      if (G.et12) {
-        for (let m = mLo; m <= mHi; m++) {   // pitch grid
-          const pc = m % 12, y = Math.round(V.yOf(m)) + 0.5;
-          ctx.strokeStyle = pc === 0 ? 'rgba(255,255,255,0.32)' : NATURAL[pc] ? 'rgba(255,255,255,0.13)' : 'rgba(255,255,255,0.05)';
-          ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(xb, y); ctx.stroke();
+        ctx.globalAlpha = lk0.grid / 100;   // Map look: grid visibility (semitone, bar and beat lines)
+        if (G.et12) {
+          for (let m = mLo; m <= mHi; m++) {   // pitch grid
+            const pc = m % 12, y = Math.round(V.yOf(m)) + 0.5;
+            ctx.strokeStyle = pc === 0 ? 'rgba(255,255,255,0.32)' : NATURAL[pc] ? 'rgba(255,255,255,0.13)' : 'rgba(255,255,255,0.05)';
+            ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(xb, y); ctx.stroke();
+          }
+        } else {
+          for (let k = 0; k < G.pts.length; k++) {   // tuning grid: one line per step, the key root brighter
+            const m = G.pts[k];
+            if (m < mLo - 0.01 || m > mHi + 0.01) continue;
+            const y = Math.round(V.yOf(m)) + 0.5;
+            ctx.strokeStyle = G.cls[k] === 0 ? 'rgba(255,255,255,0.32)' : G.scaleCls.has(G.cls[k]) ? 'rgba(255,255,255,0.11)' : 'rgba(255,255,255,0.045)';
+            ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(xb, y); ctx.stroke();
+          }
         }
-      } else {
-        for (let k = 0; k < G.pts.length; k++) {   // tuning grid: one line per step, the key root brighter
-          const m = G.pts[k];
-          if (m < mLo - 0.01 || m > mHi + 0.01) continue;
-          const y = Math.round(V.yOf(m)) + 0.5;
-          ctx.strokeStyle = G.cls[k] === 0 ? 'rgba(255,255,255,0.32)' : G.scaleCls.has(G.cls[k]) ? 'rgba(255,255,255,0.11)' : 'rgba(255,255,255,0.045)';
-          ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(xb, y); ctx.stroke();
+        const notesMode = SS.layers[A].mode === 'notes', step = notesMode ? (SS.grid === 16 ? 1 : 2) : 4;
+        const beats = new Set(md.tsOf(SS).beats);
+        for (let k = Math.max(1, b0 * SPB); k < (b1 + 1) * SPB; k += 1) {   // bar / beat / grid lines (beats follow the time signature)
+          const isBeat = beats.has(k % SPB);
+          if (k % step && !isBeat) continue;
+          const x = Math.round(k * u) + 0.5;
+          ctx.strokeStyle = k % SPB === 0 ? 'rgba(255,255,255,0.4)' : isBeat ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.045)';
+          ctx.beginPath(); ctx.moveTo(x, Y0); ctx.lineTo(x, Y0 + MH); ctx.stroke();
         }
-      }
-      const notesMode = S.layers[A].mode === 'notes', step = notesMode ? (S.grid === 16 ? 1 : 2) : 4;
-      const beats = new Set(md.tsOf(S).beats);
-      for (let k = Math.max(1, b0 * SPB); k < (b1 + 1) * SPB; k += 1) {   // bar / beat / grid lines (beats follow the time signature)
-        const isBeat = beats.has(k % SPB);
-        if (k % step && !isBeat) continue;
-        const x = Math.round(k * u) + 0.5;
-        ctx.strokeStyle = k % SPB === 0 ? 'rgba(255,255,255,0.4)' : isBeat ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.045)';
-        ctx.beginPath(); ctx.moveTo(x, Y0); ctx.lineTo(x, Y0 + MH); ctx.stroke();
+        ctx.restore();
       }
       ctx.globalAlpha = 1;
       ctx.lineJoin = ctx.lineCap = 'round';
+      const layersOf = (c) => {   // the layer stack of every visible section
+        for (const it of vis) {
+          c.save(); c.translate(it.ox, 0);
+          if (song) { c.beginPath(); c.rect(0, HDR, it.n * u, MH + PT + PB); c.clip(); }
+          drawLayers(c, it.S, A, it.play, pos, it.xa, it.xb, u);
+          c.restore();
+        }
+      };
       if (playing) {   // the layer stack rarely changes between playback frames: rasterize it once, blit it until it does
-        const key = layersKey(S, A, playing, pos, xa, xb, u);
+        const key = vis.map((it) => it.ox + ':' + layersKey(it.S, A, it.play, pos, it.xa, it.xb, u)).join('|');
         if (key !== lkKey || lc.width !== cv.width || lc.height !== cv.height) {
           if (lc.width !== cv.width || lc.height !== cv.height) { lc.width = cv.width; lc.height = cv.height; } else lx.clearRect(0, 0, lc.width, lc.height);
           lx.setTransform(dpr, 0, 0, dpr, 0, 0); lx.translate(X0 - scrollX, 0);
-          lx.save(); lx.beginPath(); lx.rect(xa, HDR, GW, MH + PT + PB); lx.clip();
-          drawLayers(lx, S, A, playing, pos, xa, xb, u);
+          lx.save(); lx.beginPath(); lx.rect(xa0, HDR, GW, MH + PT + PB); lx.clip();
+          layersOf(lx);
           lx.restore(); lkKey = key;
         }
         ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(lc, 0, 0); ctx.restore();
-      } else { lkKey = ''; drawLayers(ctx, S, A, playing, pos, xa, xb, u); }
-      M.emit('draw', ctx, V);   // overlays (content coords, scroll + strip offset already applied, clipped to the map)
+      } else { lkKey = ''; layersOf(ctx); }
+      ctx.save(); ctx.translate(song ? live.a * u : 0, 0);
+      M.emit('draw', ctx, V);   // overlays (content coords of the shown section, scroll + strip offset already applied, clipped to the map)
       const tool = M.tools && M.tools.current;
       if (tool && tool.draw) { try { tool.draw(ctx, V); } catch (err) { console.error('[melody] tool draw', err); } }
+      if (M.tools && M.tools.drawHints) { try { M.tools.drawHints(ctx); } catch (err) { console.error('[melody] hints draw', err); } }
+      ctx.restore();
+      const px = playing ? V.playX() : 0;
       if (playing) {   // playhead dots on every sounding stroke
-        const x = phase * CW, i = Math.min(tot * 3 - 1, Math.floor(pos * 3));
+        const i = Math.min(live.n * 3 - 1, Math.floor(pos * 3));
         S.layers.forEach((l) => {
           for (const q of md.lineAt(l, i)) {
             ctx.fillStyle = l.color; ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5;
-            ctx.beginPath(); ctx.arc(x, V.yOf(q.m), 6, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+            ctx.beginPath(); ctx.arc(px, V.yOf(q.m), 6, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
           }
         });
       }
       ctx.restore();
-      const lr = !V.regionPreview && md.regionOf(S);
-      if (lr) {   // ✕ that clears the loop region (top-right of its last bar)
-        const cx = lr[1] * BW - 11;
-        ctx.fillStyle = '#6fa3ff'; ctx.beginPath(); ctx.arc(cx, RL + 11, 7.5, 0, 2 * Math.PI); ctx.fill();
-        ctx.strokeStyle = '#07101f'; ctx.lineWidth = 1.6;
-        ctx.beginPath(); ctx.moveTo(cx - 3, RL + 8); ctx.lineTo(cx + 3, RL + 14); ctx.moveTo(cx + 3, RL + 8); ctx.lineTo(cx - 3, RL + 14); ctx.stroke();
+      for (const it of vis) {
+        const lr = !(it.isLive && V.regionPreview) && md.regionOf(it.S);
+        if (lr) {   // ✕ that clears the loop region (top-right of its last bar)
+          const cx = it.ox + lr[1] * md.spb(it.S) * u - 11;
+          ctx.fillStyle = '#6fa3ff'; ctx.beginPath(); ctx.arc(cx, RL + 11, 7.5, 0, 2 * Math.PI); ctx.fill();
+          ctx.strokeStyle = '#07101f'; ctx.lineWidth = 1.6;
+          ctx.beginPath(); ctx.moveTo(cx - 3, RL + 8); ctx.lineTo(cx + 3, RL + 14); ctx.moveTo(cx + 3, RL + 8); ctx.lineTo(cx - 3, RL + 14); ctx.stroke();
+        }
       }
       if (!playing && E.cue != null) {   // stopped with a cue: Play starts here
-        const x = E.cue * u;
+        const x = (song ? live.a * u : 0) + E.cue * u;
         ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
         ctx.beginPath(); ctx.moveTo(x, Y0); ctx.lineTo(x, Y0 + MH); ctx.stroke(); ctx.restore();
         ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(x - 5, HDR - 7); ctx.lineTo(x + 5, HDR - 7); ctx.lineTo(x, HDR); ctx.fill();
       }
+      if (song) {   // section boundaries: a rule in the section's colour from the ruler down, over everything
+        for (const it of vis) {
+          if (!it.a) continue;
+          const x = Math.round(it.a * u);
+          ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fillRect(x - 1, 0, 2, Y0 + MH);
+          ctx.fillStyle = S.sections[it.k].color; ctx.fillRect(x - 1, 0, 2, RL);
+        }
+      }
       if (playing) {   // playback cursor
-        const x = phase * CW;
         ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, Y0 + MH); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, Y0 + MH); ctx.stroke();
       }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.fillStyle = '#0d1019'; ctx.fillRect(0, 0, X0, HDR);   // corner over the piano strip (header scrolls under it)

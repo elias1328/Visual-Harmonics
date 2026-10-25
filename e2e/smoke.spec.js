@@ -17,7 +17,8 @@ const BENIGN = [
   /Failed to load resource.*favicon/i,
 ];
 // Benign by URL: the local-only sample pack is gitignored, so a fresh clone answers 404 for its manifest.
-const BENIGN_URLS = [/\/assets\/samples-private\/manifest\.json$/];
+// Benign by URL: the live gallery DB answers 404 for create_share until docs/gallery.sql's 2026-10 migration has been run (Share then gives the long link).
+const BENIGN_URLS = [/\/assets\/samples-private\/manifest\.json$/, /\/rest\/v1\/rpc\/create_share$/];
 
 // Collect a page's uncaught errors and unexpected console errors / warnings into errs.
 function watch(page, errs = []) {

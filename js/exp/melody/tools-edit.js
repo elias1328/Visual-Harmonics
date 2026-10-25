@@ -176,7 +176,7 @@
     function validateSel() {
       if (M.song !== lastS) { lastS = M.song; sel.notes.clear(); sel.line.clear(); syncBar(); return; }
       const l = lay(), ns = new Set(l.notes);
-      sel.notes.forEach((n) => { if (!ns.has(n)) sel.notes.delete(n); });
+      sel.notes.forEach((n) => { if (!ns.has(n)) { sel.notes.delete(n); delete n.sel; } });
       [...sel.line.keys()].forEach((k) => {
         const st = strokeOf(l, k);
         if (!st) { sel.line.delete(k); return; }
@@ -371,6 +371,7 @@
     let lt = null, ltHover = null;
     function endM(p, i) {
       let m = p.midi;
+      if (p.exact) return clamp(m, LO, HI);   // Song view: the stroke continues from the pitch the previous section ended on
       if (p.e && p.e.shiftKey) m = md.gridSnap(M.song, m);
       else if (M.song.snap) m = M.bands.snap(m, md.regionAt(M.song, i / SPS));
       return clamp(m, LO, HI);
@@ -639,7 +640,7 @@
 
     // ---------- overlay: selection highlight + vibrato waves ----------
     M.on('draw', (ctx) => {
-      const S = M.song, u = V.U(), w = lu(), sec16 = md.secPer16(S), xa = V.scrollX, xb = V.scrollX + V.GW, px1 = V.PPS();
+      const S = M.song, u = V.U(), w = lu(), sec16 = md.secPer16(S), xa = V.scrollX - V.origin, xb = xa + V.GW, px1 = V.PPS();
       ctx.save();
       ctx.lineJoin = ctx.lineCap = 'round';
       // selected line samples: white halo

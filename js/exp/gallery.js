@@ -44,6 +44,24 @@
     const meta = r.meta && typeof r.meta === 'object' && !Array.isArray(r.meta) ? r.meta : {};
     return { id: r.id, title, author, created: isFinite(t) ? t : 0, meta, likes: Math.max(0, Number(r.likes) | 0) };
   }
+  // ---- short links + owner keys (docs/gallery.sql, "2026-10 migration") ----
+  const SHORT_RE = /^[0-9A-Za-z]{8}$/, CODE_RE = /^[zj][A-Za-z0-9_-]+$/, SECRET_RE = /^[0-9a-f]{32}$/;
+  const hex = (u8) => Array.from(u8, (b) => (b < 16 ? '0' : '') + b.toString(16)).join('');
+  const subtle = () => { const c = globalThis.crypto; return c && c.subtle && c.getRandomValues ? c : null; };
+  // A new owner secret: 128 random bits as 32 hex characters.
+  function newSecret() { const c = subtle(); if (!c) throw new Error('no crypto'); return hex(c.getRandomValues(new Uint8Array(16))); }
+  // SHA-256 of the secret (UTF-8) as 64 hex characters: the only thing the server gets at publish time.
+  async function sha256Hex(secret) { const c = subtle(); if (!c) throw new Error('no crypto'); return hex(new Uint8Array(await c.subtle.digest('SHA-256', new TextEncoder().encode(String(secret))))); }
+  // The saved owner list -> [{ id, secret, title, date }], malformed entries dropped, newest last, duplicates by id merged.
+  function cleanKeys(v) {
+    const out = new Map();
+    (Array.isArray(v) ? v : []).forEach((k) => {
+      if (!k || typeof k !== 'object' || typeof k.id !== 'string' || !ID_RE.test(k.id) || typeof k.secret !== 'string' || !SECRET_RE.test(k.secret)) return;
+      out.set(k.id.toLowerCase(), { id: k.id.toLowerCase(), secret: k.secret.toLowerCase(), title: String(k.title == null ? '' : k.title).slice(0, TITLE_MAX), date: Number(k.date) || 0 });
+    });
+    return [...out.values()].slice(-200);
+  }
+  const idsPath = (ids) => '/rest/v1/songs?select=' + LIST_SELECT + '&id=in.(' + ids.filter((i) => ID_RE.test(i)).map(encodeURIComponent).join(',') + ')&order=created_at.desc&limit=100';
   // Client-side check of the publish form. Returns { title, author, error }.
   function checkPublish(title, author) {
     const t = String(title == null ? '' : title).trim(), a = String(author == null ? '' : author).trim() || 'Anonymous';
@@ -150,7 +168,7 @@
     return Object.assign({}, base, { preview: { v: 2, c: 0, r: [], l: [] } });
   }
 
-  const pure = { PAGE, TITLE_MAX, AUTHOR_MAX, META_MAX, META_JSONB_MAX, cleanSearch, listPath, codePath, cleanRow, checkPublish, downsample, jsonbBytes, buildMeta, metaFits };
+  const pure = { PAGE, TITLE_MAX, AUTHOR_MAX, META_MAX, META_JSONB_MAX, cleanSearch, listPath, codePath, cleanRow, checkPublish, newSecret, sha256Hex, cleanKeys, idsPath, SHORT_RE, downsample, jsonbBytes, buildMeta, metaFits };
   if (typeof module === 'object' && module.exports) module.exports = pure;
   const doc = root.document;
   if (!doc || !VH.registerExperiment) { VH.gallery = pure; return; }
@@ -166,6 +184,7 @@
     const headers = { apikey: c.key, Authorization: 'Bearer ' + c.key };
     if (o.body !== undefined) headers['Content-Type'] = 'application/json';
     if (o.prefer) headers.Prefer = o.prefer;
+    if (o.mig && nomig()) { const e = new Error('Needs the 2026-10 gallery update.'); e.kind = 'nomig'; throw e; }
     const ac = typeof AbortController === 'function' ? new AbortController() : null;
     const tm = ac ? setTimeout(() => ac.abort(), 15000) : 0;
     let res;
@@ -182,6 +201,9 @@
       const code = data && data.code, msg = data && typeof data.message === 'string' ? data.message : '';
       const e = new Error('The gallery had a problem (' + res.status + ').');
       e.status = res.status; e.code = code; e.kind = 'server';
+      if (o.mig && (code === 'PGRST202' || code === 'PGRST204' || code === '42883' || code === '42703' || res.status === 404)) {   // function / column missing: migration not run yet
+        S().set('gallery.nomig', Date.now()); e.kind = 'nomig'; e.message = 'Needs the 2026-10 gallery update.'; throw e;
+      }
       if (code === 'PGRST205' || code === '42P01' || (res.status === 404 && !code)) { e.kind = 'setup'; e.message = 'The gallery is being set up.'; }
       else if (code === 'P0001' && msg) { e.kind = 'busy'; e.message = msg.slice(0, 160); }
       else if (code === '23514') e.message = 'The server didn’t accept this song (too long?).';
@@ -196,7 +218,25 @@
       if (typeof c !== 'string' || !/^[zj][A-Za-z0-9_-]+$/.test(c)) { const e = new Error('That song is no longer available.'); e.kind = 'server'; throw e; }
       return c;
     }),
-    post: (row) => request('/rest/v1/songs', { method: 'POST', body: row, prefer: 'return=representation' }).then((rows) => cleanRow(Array.isArray(rows) ? rows[0] : rows)),
+    // owner_hash needs the migration: without it (or when the server doesn't know the column) the song is posted unowned.
+    post: async (row) => {
+      const send = (b, mig) => request('/rest/v1/songs', { method: 'POST', body: b, prefer: 'return=representation', mig }).then((rows) => cleanRow(Array.isArray(rows) ? rows[0] : rows));
+      const bare = Object.assign({}, row); delete bare.owner_hash;
+      if (!row.owner_hash || nomig()) return Object.assign(await send(bare), { owned: false });
+      try { return Object.assign(await send(row, true), { owned: true }); } catch (e) { if (e.kind !== 'nomig') throw e; }
+      return Object.assign(await send(bare), { owned: false });
+    },
+    byIds: (ids) => request(idsPath(ids)).then((rows) => (Array.isArray(rows) ? rows.map(cleanRow).filter(Boolean) : [])),
+    createShare: (code) => request('/rest/v1/rpc/create_share', { method: 'POST', body: { data: code }, mig: true }).then((id) => {
+      if (typeof id !== 'string' || !SHORT_RE.test(id)) { const e = new Error('Short links are unavailable.'); e.kind = 'nomig'; throw e; }
+      return id;
+    }),
+    getShare: (id) => request('/rest/v1/rpc/get_share', { method: 'POST', body: { id: String(id) } }).then((c) => {
+      if (typeof c !== 'string' || !CODE_RE.test(c)) { const e = new Error('That short link is no longer available.'); e.kind = 'server'; throw e; }
+      return c;
+    }),
+    remove: (id, secret) => request('/rest/v1/rpc/delete_own_song', { method: 'POST', body: { song_id: id, secret }, mig: true }),
+    update: (id, secret, title, data, meta) => request('/rest/v1/rpc/update_own_song', { method: 'POST', body: { song_id: id, secret, title, data, meta }, mig: true }),
     like: (id) => request('/rest/v1/rpc/like_song', { method: 'POST', body: { song_id: id } }),
     report: (id) => request('/rest/v1/rpc/report_song', { method: 'POST', body: { song_id: id } }),
   };
@@ -206,6 +246,11 @@
   const marks = (k) => { const v = S().get('gallery.' + k, []); return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []; };
   const hasMark = (k, id) => marks(k).includes(id);
   const addMark = (k, id) => { const v = marks(k); if (!v.includes(id)) { v.push(id); S().set('gallery.' + k, v.slice(-500)); } };
+  // The 2026-10 SQL migration hasn't been run on the server (a call came back "no such function / column"): skip the
+  // new features for an hour so nothing keeps failing. Short links fall back to long ones, "My songs" hides its buttons.
+  const nomig = () => { const t = S().get('gallery.nomig', 0), n = Date.now(); return typeof t === 'number' && t <= n && n - t < 36e5; };
+  const keys = () => cleanKeys(S().get('gallery.keys', []));
+  const saveKeys = (ks) => S().set('gallery.keys', cleanKeys(ks));
   const track = (n) => { try { if (VH.track) VH.track(n); } catch (_) { /* ignore */ } };
 
   // ===================== preview drawing =====================
@@ -367,8 +412,14 @@
       try {
         const code = await (M.shareCode ? M.shareCode() : VH.store.encodeShare(JSON.parse(VH.melody.song())));
         if (typeof code !== 'string' || code.length > 60000) throw Object.assign(new Error('This song is too long for the gallery. Try fewer sections or layers.'), { kind: 'local' });
-        const row = await api.post({ title: v.title, author: v.author, code, meta });
-        if (row) addMark('mine', row.id);
+        // Ownership: a random secret stays in this browser; the server only gets its SHA-256 (owner_hash).
+        let secret = '', owner_hash;
+        try { secret = newSecret(); owner_hash = await sha256Hex(secret); } catch (_) { secret = ''; owner_hash = undefined; }
+        const row = await api.post({ title: v.title, author: v.author, code, meta, owner_hash });
+        if (row) {
+          addMark('mine', row.id);
+          if (row.owned && secret) saveKeys(keys().concat([{ id: row.id, secret, title: v.title, date: Date.now() }]));
+        }
         track('gallery-publish');
         dlg.close();
         const msg = 'Published “' + v.title + '” to the gallery';
@@ -417,17 +468,27 @@
     });
     const search = h('input', 'gl-search'); search.type = 'search'; search.placeholder = 'Search titles and names'; search.maxLength = TITLE_MAX;
     search.setAttribute('aria-label', 'Search songs');
-    ctl.append(sortBox, search);
+    const scopeBox = h('div', 'gl-sort gl-scope'); scopeBox.setAttribute('role', 'group'); scopeBox.setAttribute('aria-label', 'Show');
+    const scopeBtn = {};
+    [['all', 'All songs'], ['mine', 'My songs']].forEach(([id, label]) => {
+      const b = h('button', 'vh-btn'); b.type = 'button'; b.textContent = label; b.dataset.scope = id;
+      b.addEventListener('click', () => { if ((id === 'mine') !== st.mine) { st.mine = id === 'mine'; syncScope(); load(true); } });
+      scopeBox.append(b); scopeBtn[id] = b;
+    });
+    ctl.append(scopeBox, sortBox, search);
     head.append(h1, sub, ctl);
     const grid = h('div', 'gl-grid'); grid.setAttribute('aria-live', 'polite');
     const status = h('div', 'gl-status'); status.hidden = true;
     const more = h('button', 'vh-btn gl-more-btn'); more.type = 'button'; more.textContent = 'Load more'; more.hidden = true;
-    wrap.append(head, grid, status, more);
+    const mineBar = h('div', 'gl-mine'); mineBar.hidden = true;
+    wrap.append(head, mineBar, grid, status, more);
     el.append(wrap);
 
-    const st = { sort: S().get('gallery.sort', 'new') === 'top' ? 'top' : 'new', q: '', offset: 0, seq: 0, rows: [], busy: false, timers: new Set() };
+    const st = { sort: S().get('gallery.sort', 'new') === 'top' ? 'top' : 'new', q: '', mine: false, offset: 0, seq: 0, rows: [], busy: false, timers: new Set() };
     const syncSort = () => { for (const k in sortBtn) sortBtn[k].setAttribute('aria-pressed', String(k === st.sort)); };
     syncSort();
+    const syncScope = () => { for (const k in scopeBtn) scopeBtn[k].setAttribute('aria-pressed', String((k === 'mine') === st.mine)); sortBox.hidden = search.hidden = st.mine; mineBar.hidden = !st.mine; };
+    syncScope();
     const later = (f, ms) => { const t = setTimeout(() => { st.timers.delete(t); f(); }, ms); st.timers.add(t); return t; };
     let searchT = 0;
     search.addEventListener('input', () => {
@@ -457,6 +518,7 @@
       for (let i = 0; i < n; i++) { const s = h('div', 'gl-card gl-skel'); s.setAttribute('aria-hidden', 'true'); s.append(h('div', 'gl-skel-art'), h('div', 'gl-skel-line'), h('div', 'gl-skel-line short')); grid.append(s); }
     }
     async function load(reset) {
+      if (st.mine) return loadMine();
       const my = ++st.seq;
       if (reset) { st.offset = 0; st.rows = []; grid.textContent = ''; }
       setStatus(null);
@@ -485,8 +547,146 @@
       if (!st.rows.length) setStatus('empty', st.q ? 'No songs match “' + st.q + '”' : 'No songs yet', st.q ? 'Try another word.' : 'Be the first: make something in Melody, then Share › Publish to gallery.', false);
     }
 
+    // ---- My songs: the songs this browser published (owner secrets in vh:gallery.keys) ----
+    function drawMineBar() {
+      mineBar.textContent = '';
+      const p = h('p', 'gl-mine-note'); p.textContent = 'Only this browser can edit these. Clearing site data loses that.';
+      const exp = h('button', 'vh-btn gl-mine-exp'); exp.type = 'button'; exp.textContent = 'Copy my song keys';
+      const imp = h('button', 'vh-btn gl-mine-imp'); imp.type = 'button'; imp.textContent = 'Import keys…';
+      exp.addEventListener('click', async () => {
+        let ok = false;
+        try { await navigator.clipboard.writeText(JSON.stringify(keys())); ok = true; } catch (_) { ok = false; }
+        if (ok) { exp.textContent = 'Copied. Keep it private'; later(() => { exp.textContent = 'Copy my song keys'; }, 3000); } else openKeys(JSON.stringify(keys()), false);
+      });
+      imp.addEventListener('click', () => openKeys('', true));
+      mineBar.append(p, exp, imp);
+    }
+    function openKeys(text, importing) {   // a tiny dialog: show the JSON to copy by hand, or paste keys from another browser
+      const dlg = ui.modal('gl-keys', importing ? 'Import song keys' : 'My song keys');
+      const p = h('p', 'vh-desc'); p.textContent = importing ? 'Paste the keys you copied in your other browser. Anyone with them can edit or remove those songs.' : 'Select all and copy. Anyone with these keys can edit or remove your songs, so keep them private.';
+      const ta = h('textarea', 'gl-keys-ta'); ta.rows = 6; ta.value = text; ta.readOnly = !importing; ta.spellcheck = false; ta.setAttribute('aria-label', 'Song keys');
+      const err = h('p', 'gl-err'); err.hidden = true;
+      dlg.body.append(p, ta, err);
+      const close = h('button', 'vh-btn'); close.type = 'button'; close.textContent = importing ? 'Cancel' : 'Done'; close.addEventListener('click', () => dlg.close());
+      dlg.foot.append(close);
+      if (importing) {
+        const go = h('button', 'vh-btn gl-primary gl-keys-go'); go.type = 'button'; go.textContent = 'Import';
+        go.addEventListener('click', () => {
+          let v = null; try { v = JSON.parse(ta.value); } catch (_) { v = null; }
+          const add = cleanKeys(v);
+          if (!add.length) { err.textContent = 'No song keys found in that text.'; err.hidden = false; return; }
+          saveKeys(keys().concat(add)); dlg.close(); load(true);
+        });
+        dlg.foot.append(go);
+      }
+      requestAnimationFrame(() => { ta.focus(); if (!importing) ta.select(); });
+    }
+    async function loadMine() {
+      const my = ++st.seq;
+      st.rows = []; grid.textContent = ''; setStatus(null); more.hidden = true; drawMineBar();
+      const ks = keys();
+      if (!ks.length) { setStatus('empty', 'Nothing published from this browser yet', 'Make a song in Melody, then Share › Publish to gallery. It will show up here, and you can update or remove it.', false); return; }
+      skeletons(Math.min(ks.length, 6));
+      grid.setAttribute('aria-busy', 'true');
+      let rows = [], error = null;
+      try { rows = await api.byIds(ks.map((k) => k.id).slice(-100)); } catch (e) { error = e; }
+      if (!G || my !== st.seq) return;
+      grid.querySelectorAll('.gl-skel').forEach((n) => n.remove());
+      grid.removeAttribute('aria-busy');
+      st.lastErr = error ? error.kind : '';
+      if (error) {
+        setStatus(error.kind === 'offline' ? 'offline' : 'error', error.kind === 'offline' ? 'You’re offline' : 'Couldn’t load your songs', error.kind === 'offline' ? 'The gallery needs a connection.' : error.message || 'Something went wrong.', true);
+        return;
+      }
+      const by = new Map(rows.map((r) => [r.id, r]));
+      ks.slice().reverse().forEach((k) => {
+        const r = by.get(k.id);
+        if (r) { st.rows.push(r); grid.append(card(r, k)); } else grid.append(goneCard(k));
+      });
+      requestAnimationFrame(() => st.rows.forEach((r) => { const c = grid.querySelector('[data-id="' + r.id + '"] canvas'); if (c) drawPreview(c, r.meta); }));
+    }
+    function goneCard(k) {   // published here, but removed or hidden in the gallery since
+      const c = h('article', 'gl-card gl-gone'); c.dataset.id = k.id;
+      const body = h('div', 'gl-body');
+      const t = h('h3', 'gl-title'); t.textContent = k.title || 'Untitled';
+      const p = h('p', 'vh-desc'); p.textContent = 'No longer in the gallery (removed or hidden).';
+      const b = h('button', 'vh-btn'); b.type = 'button'; b.textContent = 'Forget this key';
+      b.addEventListener('click', () => { saveKeys(keys().filter((x) => x.id !== k.id)); c.remove(); if (!grid.children.length) loadMine(); });
+      body.append(t, p, b); c.append(body);
+      return c;
+    }
+    // The song as it is now in Melody: { code, meta }. Uses the open Melody, else its autosave.
+    async function currentSong() {
+      const NS = VH.melody, md = NS && NS.model;
+      let M = NS && NS.ctx, code;
+      if (M && M.shareCode && M.song) code = await M.shareCode();
+      else {
+        const o = S().get('melody.song', null);
+        if (!o || !md) throw new Error('Open Melody and make a song first.');
+        const c = Object.assign({}, o);
+        if (c.track) { delete c.track; c.backing = Object.assign({}, c.backing, { on: true }); }
+        code = await S().encodeShare(c); M = { song: md.parse(o) };
+        if (!M.song) throw new Error('Open Melody and make a song first.');
+      }
+      if (typeof code !== 'string' || code.length > 60000) throw new Error('This song is too long for the gallery. Try fewer sections or layers.');
+      return { code, meta: buildMeta(songInfo(M)) };
+    }
+    // An inline confirm (optionally with a text field) inside the card; run(value) does the work and may throw.
+    function ask(c, text, o, run) {
+      if (c.querySelector('.gl-confirm')) return;
+      const box = h('div', 'gl-confirm'); box.setAttribute('role', 'alertdialog'); box.setAttribute('aria-label', text);
+      const p = h('p'); p.textContent = text; box.append(p);
+      let inp = null;
+      if (o.input != null) { inp = h('input', 'gl-ask-in'); inp.type = 'text'; inp.maxLength = TITLE_MAX; inp.value = o.input; inp.autocomplete = 'off'; inp.spellcheck = false; box.append(inp); }
+      const row = h('div', 'gl-confirm-row');
+      const no = h('button', 'vh-btn'); no.type = 'button'; no.textContent = 'Cancel';
+      const yes = h('button', 'vh-btn ' + (o.danger ? 'gl-danger' : 'gl-primary') + ' gl-ask-ok'); yes.type = 'button'; yes.textContent = o.ok;
+      row.append(no, yes); box.append(row);
+      c.querySelector('.gl-body').append(box);
+      (inp || yes).focus();
+      no.addEventListener('click', () => box.remove());
+      const go = async () => {
+        yes.disabled = no.disabled = true;
+        try { const msg = await run(inp ? inp.value : ''); box.remove(); if (msg) flash(c, msg); }
+        catch (e) {
+          box.remove();
+          if (e.kind === 'nomig') { if (G && st.mine) loadMine(); return; }
+          flash(c, e.kind === 'offline' ? 'Offline: nothing changed' : e.message || 'Something went wrong');
+        }
+      };
+      yes.addEventListener('click', go);
+      if (inp) inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+    }
+    const must = (ok, what) => { if (ok !== true) { const e = new Error('This browser can’t ' + what + ' this song any more.'); e.kind = 'server'; throw e; } };
+    function ownActions(r, k, c, act, open) {
+      act.append(open);
+      if (nomig()) { const n = h('small', 'gl-mine-off'); n.textContent = 'Editing isn’t available yet'; act.append(n); return; }
+      const mk = (cls, label) => { const b = h('button', 'vh-btn ' + cls); b.type = 'button'; b.textContent = label; act.append(b); return b; };
+      mk('gl-upd', 'Update with current song').addEventListener('click', () => ask(c, 'Replace “' + r.title + '” in the gallery with the song that is in Melody now? The old version is overwritten.', { ok: 'Update' }, async () => {
+        const cur = await currentSong();
+        must(await api.update(r.id, k.secret, r.title, cur.code, cur.meta), 'update');
+        r.meta = cur.meta; const cv = c.querySelector('canvas.gl-prev'); if (cv) { cv._meta = cur.meta; drawPreview(cv, cur.meta); }
+        return 'Updated';
+      }));
+      mk('gl-ren', 'Rename').addEventListener('click', () => ask(c, 'New title', { ok: 'Rename', input: r.title }, async (val) => {
+        const v = checkPublish(val, '');
+        if (v.error) throw new Error(v.error);
+        const code = await api.code(r.id);
+        must(await api.update(r.id, k.secret, v.title, code, r.meta), 'rename');
+        r.title = v.title; const t = c.querySelector('.gl-title'); if (t) { t.textContent = v.title; t.title = v.title; }
+        saveKeys(keys().map((x) => (x.id === r.id ? Object.assign({}, x, { title: v.title }) : x)));
+        return 'Renamed';
+      }));
+      mk('gl-rm gl-danger', 'Remove').addEventListener('click', () => ask(c, 'Remove “' + r.title + '” from the gallery for everyone? This can’t be undone.', { ok: 'Remove', danger: true }, async () => {
+        must(await api.remove(r.id, k.secret), 'remove');
+        saveKeys(keys().filter((x) => x.id !== r.id)); st.rows = st.rows.filter((x) => x.id !== r.id);
+        c.remove(); if (!grid.querySelector('.gl-card')) loadMine();
+      }));
+    }
+
+
     function chip(parent, text, title) { const c = h('span', 'gl-chip'); c.textContent = text; if (title) c.title = title; parent.append(c); }
-    function card(r) {
+    function card(r, own) {
       const m = r.meta, c = h('article', 'gl-card'); c.dataset.id = r.id;
       const cv = h('canvas', 'gl-prev'); cv._meta = m; cv.setAttribute('role', 'img'); cv.setAttribute('aria-label', 'Melody preview');
       const body = h('div', 'gl-body');
@@ -531,7 +731,7 @@
       menu.append(rep); mw.append(mb, menu);
       mb.addEventListener('click', () => { menu.hidden = !menu.hidden; if (!menu.hidden) rep.focus(); });
       rep.addEventListener('click', () => { menu.hidden = true; confirmReport(r, c); });
-      act.append(like, open, mw);
+      if (own) ownActions(r, own, c, act, open); else act.append(like, open, mw);
       body.append(tl, by, chips, act);
       c.append(cv, body);
       return c;

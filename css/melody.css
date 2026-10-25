@@ -206,19 +206,20 @@
 .mel-zoom-b:disabled { opacity: 0.35; cursor: default; }
 @media (max-width: 600px) { .mel-zoom-b { width: 30px; height: 30px; } }
 /* Tension dial (view.js): chip left of the zoom buttons + slider pop-over */
-.mel-tens-chip { position: absolute; z-index: 4; height: 26px; padding: 0 9px; border-radius: 7px; border: 1px solid rgba(255, 255, 255, 0.16);
+.mel-tens-chip, .mel-hint-chip { position: absolute; z-index: 4; height: 26px; padding: 0 9px; border-radius: 7px; border: 1px solid rgba(255, 255, 255, 0.16);
   background: rgba(11, 13, 18, 0.72); color: #dfe4f2; font: 600 12px/1 system-ui, sans-serif; cursor: pointer; white-space: nowrap; }
-.mel-tens-chip.on { border-color: var(--tens, #6fa3ff); color: var(--tens, #dfe4f2); }
-.mel-tens-chip:hover { border-color: var(--accent, #6fa3ff); }
-.mel-tens-chip:focus-visible, .mel-tens-range:focus-visible { outline: 2px solid var(--accent, #6fa3ff); outline-offset: 1px; }
+.mel-tens-chip.on, .mel-hint-chip.on { border-color: var(--tens, #6fa3ff); color: var(--tens, #dfe4f2); }
+.mel-tens-chip:hover, .mel-hint-chip:hover { border-color: var(--accent, #6fa3ff); }
+.mel-hint-chip:focus-visible, .mel-tens-chip:focus-visible, .mel-tens-range:focus-visible { outline: 2px solid var(--accent, #6fa3ff); outline-offset: 1px; }
 .mel-tens-pop { position: absolute; z-index: 6; width: min(250px, calc(100% - 24px)); padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.18);
   background: rgba(14, 17, 25, 0.96); color: #dfe4f2; box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5); font: 12px/1.35 system-ui, sans-serif; }
 .mel-tens-h { font-weight: 700; margin-bottom: 6px; }
 .mel-tens-range { width: 100%; margin: 0; accent-color: #ffb35c; }
 .mel-tens-ticks { display: flex; justify-content: space-between; font-size: 11px; opacity: 0.75; margin-bottom: 6px; }
 .mel-tens-d { font-size: 11px; opacity: 0.65; }
-@media (max-width: 600px) { .mel-tens-chip { height: 30px; } }
-.mel-look-chip { padding: 0 7px; }
+@media (max-width: 600px) { .mel-tens-chip, .mel-hint-chip { height: 30px; } }
+.mel-look-chip, .mel-hint-chip { padding: 0 7px; }
+.mel-hint-chip:not(.on) { opacity: 0.6; }
 .mel-look-pop { width: min(280px, calc(100% - 24px)); max-height: calc(100% - 90px); overflow-y: auto; box-sizing: border-box; }
 .mel-look-pop .vh-row { flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0; }
 .mel-look-pop .vh-btn { font-size: 12px; }
@@ -228,11 +229,13 @@
 .mel-arr { display: flex; align-items: center; gap: 6px; height: 28px; box-sizing: border-box; max-width: 100%; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
   padding-right: var(--mel-bar-reserve, 0px); }   /* room for the zoom / tension / look chips at the strip's right end */
 .mel-zoom.inbar { flex-direction: row; }
-.mel-chips-inbar .mel-zoom-b, .mel-chips-inbar .mel-tens-chip { height: 26px; }
+.mel-chips-inbar .mel-zoom-b, .mel-chips-inbar .mel-tens-chip, .mel-chips-inbar .mel-hint-chip { height: 26px; }
 .mel-chips-inbar .mel-zoom-b { width: 26px; }
 .mel-arr-mode { flex: none; display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .mel-arr-m { border: 0; background: transparent; color: var(--muted); font: 11px system-ui, sans-serif; padding: 4px 8px; cursor: pointer; }
 .mel-arr-m.on { background: rgba(111, 163, 255, 0.25); color: #fff; }
+.mel-arr-view { flex: none; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--muted); font: 11px system-ui, sans-serif; padding: 4px 8px; cursor: pointer; white-space: nowrap; }
+.mel-arr-view.on { background: rgba(111, 163, 255, 0.25); color: #fff; border-color: var(--accent); }
 .mel-arr-blocks { flex: none; display: flex; gap: 4px; touch-action: pan-x; }
 .mel-arr-b {
   --c: #6fa3ff; flex: none; display: flex; align-items: center; gap: 4px; height: 24px; max-width: 140px; padding: 0 9px;
@@ -311,3 +314,12 @@
 .mel-track-warn .vh-btn { margin-top: 4px; }
 .mel-track-local { font-style: italic; }
 .mel-track-ask .vh-modal-foot { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+
+/* Randomize dialog (generate.js) */
+.mel-rnd .mel-rnd-ck { display: flex; gap: 10px; align-items: flex-start; padding: 5px 0; cursor: pointer; }
+.mel-rnd .mel-rnd-ck input { width: 16px; height: 16px; margin-top: 2px; accent-color: var(--accent, #6fa3ff); flex: none; }
+.mel-rnd .mel-rnd-tx { display: flex; flex-direction: column; gap: 1px; font-size: 13px; }
+.mel-rnd .mel-rnd-ds { color: var(--muted, #7a8194); font-size: 12px; }
+.mel-rnd .vh-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0; }
+.mel-rnd .mel-rnd-seed { flex: 1; min-width: 0; height: 30px; box-sizing: border-box; padding: 0 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface-2, #1b2030); color: inherit; font: inherit; }
+.mel-rnd .vh-modal-foot, .mel-rnd .vh-modal-foot { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }

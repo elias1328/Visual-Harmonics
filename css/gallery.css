@@ -30,7 +30,7 @@
 .gl-by time { flex: none; }
 .gl-chips { display: flex; flex-wrap: wrap; gap: 5px; }
 .gl-chip { font-size: 11.5px; color: #b8bfd3; background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
-.gl-actions { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.gl-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
 .gl-like, .gl-dots {
   background: transparent; border: 1px solid var(--line); border-radius: 8px; color: #c8cde0; cursor: pointer; padding: 5px 9px;
   font: inherit; transition: border-color var(--ease), color var(--ease), background var(--ease);
@@ -89,3 +89,13 @@
   .gl-search { max-width: none; }
 }
 
+
+/* My songs (owner edit / remove) */
+.gl-scope { margin-right: 4px; }
+.gl-mine { max-width: 1080px; margin: 0 auto 14px; display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; }
+.gl-mine-note { flex: 1 1 260px; margin: 0; color: var(--muted); font-size: 13px; }
+.gl-mine .vh-btn { padding: 4px 12px; font-size: 12.5px; }
+.gl-mine-off { color: var(--muted); }
+.gl-ask-in, .gl-keys-ta { width: 100%; box-sizing: border-box; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; color: var(--text); font: inherit; margin: 6px 0; }
+.gl-keys-ta { font-family: ui-monospace, Consolas, monospace; font-size: 12px; resize: vertical; }
+.gl-gone { opacity: 0.8; }

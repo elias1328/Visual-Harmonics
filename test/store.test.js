@@ -58,3 +58,16 @@ test('every localStorage key the code uses in a tidied namespace is in VH.store.
   assert.deepStrictEqual(missing, []);
   assert.ok(used.has('melody.song') && used.has('babel.view'));
 });
+
+test('gallery.keys (owner secrets) is a known key and survives tidy()', () => {
+  assert.ok(S.KEYS.includes('gallery.keys'));
+  const m = new Map();   // store.js binds to `this`: run it in a vm context that has a localStorage
+  const localStorage = { get length() { return m.size; }, key: (i) => [...m.keys()][i] ?? null, getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) };
+  const vm = require('node:vm'), fs = require('node:fs'), path = require('node:path');
+  const ctx = vm.createContext({ localStorage, console });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'js', 'core', 'store.js'), 'utf8'), ctx);
+  const st = ctx.VH.store;
+  m.set('vh:gallery.keys', '[{"id":"x"}]'); m.set('vh:melody.oldkey', '1'); m.set('vh:melody.song', '{}');
+  assert.deepStrictEqual(Array.from(st.tidy()), ['vh:melody.oldkey']);
+  assert.ok(m.has('vh:gallery.keys') && m.has('vh:melody.song') && !m.has('vh:melody.oldkey'));
+});
