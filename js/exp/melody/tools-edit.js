@@ -943,10 +943,12 @@
 
     // ---------- keys ----------
     const KEYS = { p: 'pen', l: 'line', n: 'notes', v: 'select', e: 'erase' };
+    // A focused <select> (just used to pick an instrument...) is not a text field: its letter keys are the tool keys,
+    // handled with preventDefault, so they never browse its options by type-ahead (arrows still change it).
     function onKey(e) {
       if (!alive || e.defaultPrevented) return;
       const t = e.target, tag = t && t.tagName;
-      if (tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable) ||
+      if (tag === 'TEXTAREA' || (t && t.isContentEditable) ||
         (tag === 'INPUT' && !/^(range|checkbox|radio|button)$/.test(t.type))) return;
       const k = (e.key || '').toLowerCase();
       if ((e.ctrlKey || e.metaKey) && !e.altKey) {
@@ -960,7 +962,7 @@
       if (k === 'delete' || k === 'backspace') { if (hasSel()) { e.preventDefault(); delSel(); } return; }
       if (k === 'escape') { if (hasSel()) clearSel(); return; }
       if (e.shiftKey || e.repeat || !KEYS[k]) return;
-      if (t && t.closest && t.closest('.mel-pop')) return;
+      if (tag !== 'SELECT' && t && t.closest && t.closest('.mel-pop')) return;
       e.preventDefault(); pick(KEYS[k]);
     }
     document.addEventListener('keydown', onKey);

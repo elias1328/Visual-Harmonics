@@ -12,6 +12,8 @@
   const { chordMidis, layerGain, GAIN } = md;
   const MIN_GAP = 70;            // ms between re-triggers of a hit sound on a line
   const LOOKAHEAD = 0.08;        // s: notes are scheduled this far ahead (>= 30 ms, so humanize can move them earlier)
+  const BG_AHEAD = 1.5;          // s: extra look-ahead while the page is hidden (no rAF there; timers may fire only once a second)
+  const LATE = 0.15;             // s: after a stall, notes at most this late still start (later ones are dropped)
   const G_LINE = GAIN.LINE, G_NOTE = GAIN.NOTE, G_BACK = GAIN.BACK, G_PREVIEW = GAIN.PREVIEW_CHORD, G_PNOTE = GAIN.PREVIEW_NOTE;
   const LiveAC = window.AudioContext || window.webkitAudioContext;
 
@@ -34,6 +36,8 @@
     // current section on, switching sections at their ends (M.nextPass). E.pass = the arrangement item playing.
     const songMode = () => M.playMode === 'song';
     E.pass = -1;
+    // Extra look-ahead (s) for every scheduler (notes, drums, backing styles, automation, track) while the page is hidden.
+    Object.defineProperty(E, 'bgAhead', { get: () => (typeof document !== 'undefined' && document.hidden ? BG_AHEAD : 0) });
     // The live AudioContext, never an OfflineAudioContext (VH.audio.ctx returns the bound one inside withContext).
     function liveCtx() {
       const c = VH.audio.ctx;
@@ -66,8 +70,9 @@
         buses = makeBuses(actx, VH.audio.out);
         connectSum();
       }
-      while (buses.layers.length < S().layers.length) { const g = actx.createGain(); g.gain.value = 0; g.connect(buses.sum); buses.layers.push(g); }
-      applyMix(true);
+      let added = false;
+      while (buses.layers.length < S().layers.length) { const g = actx.createGain(); g.gain.value = 0; g.connect(buses.sum); buses.layers.push(g); added = true; }
+      if (added) applyMix(true);   // only new buses jump to their level; mix changes fade (applyMix(false), no clicks)
       return buses;
     }
     E.layerBus = (i) => { const b = ensureBuses(); return b ? b.layers[i] || null : null; };
@@ -196,8 +201,13 @@
     // ---------- transport ----------
     // Position: E.phase (0..1 of the song). cont = continuous play time in sixteenths since Play (never jumps: loops and
     // seeks don't reset it), so look-ahead schedulers can map "cont" to song positions with E.segments(). A loop region
-    // (song.loopRegion = [a, b) bars) loops only those bars; without one the whole song loops when song.loop is on.
+    // (song.loopRegion = [a, b) bars) loops only those bars. Without one, Section mode loops the section shown; Song mode
+    // plays the arrangement and starts over at its end when song.loop is on. In Song mode a region loops in the section
+    // where Play / a seek / the region itself was set (armK), so passing through other sections' regions never traps it.
     let cont = 0, seekId = 0, seekCont = 0, lastBar = -1, countIn = 0;
+    let lastCt = -1, lag = 0, stall = 0;   // audio clock at the last step; audio time not yet followed (s); clock frozen for (s)
+    let armK = -1;   // Song mode: the section whose loop region applies
+    E.armRegion = () => { armK = S().cur; };
     // ---------- count-in (Settings > Song > Count-in, VH.store 'melody.countIn'): one bar of clicks, accent on beat 1 ----------
     // x/4: a click per quarter; x/8: per eighth (accent on 1, the other beat starts medium). E.countLog = [[time, level]].
     E.countLog = [];
@@ -221,7 +231,7 @@
     Object.defineProperty(E, 'counting', { get: () => countIn > 0 });
     E.cue = null;   // start position (sixteenths) for the next Play, set by a seek while stopped; null = region start or 0
     function range() {
-      const s = S(), n = md.spb(s), tot = md.tot16(s), r = songMode() ? null : md.regionOf(s);
+      const s = S(), n = md.spb(s), tot = md.tot16(s), r = songMode() && s.cur !== armK ? null : md.regionOf(s);
       return r ? [r[0] * n, r[1] * n, true, tot] : [0, tot, false, tot];
     }
     E.loopRange = () => { const [a, b, on] = range(); return { a16: a, b16: b, on }; };
@@ -230,7 +240,7 @@
     // Song segments that continuous time [c0, c1) will play, from the current position and loop rules (assuming no
     // seek): [{ c, s, n }] = cont start, song start (sixteenths), length. Used by look-ahead schedulers.
     E.segments = function (c0, c1) {
-      const s = S(), [a, b, reg, tot] = range(), out = [];
+      const [a, b, reg, tot] = range(), out = [];
       let c = cont, p = E.pos16;
       // c0 may lie up to a frame in the past (events queued at a seek / Play): walk back within the current run
       const back = Math.min(cont - c0, 4), floor = reg && p >= a && p < b ? a : 0;
@@ -239,7 +249,7 @@
         const end = reg && p < b ? b : tot, cEnd = c + Math.max(0, end - p);
         const lo = Math.max(c, c0), hi = Math.min(cEnd, c1);
         if (hi > lo) out.push({ c: lo, s: p + (lo - c), n: hi - lo });
-        if (songMode() || (!reg && !s.loop)) break;   // Song mode: the next section's events follow its switch
+        if (songMode() && !reg) break;   // Song mode: the next section's events follow its switch
         c = cEnd; p = reg ? a : 0;
       }
       return out;
@@ -248,6 +258,7 @@
       VH.audio.ensure(); ensureBuses();
       const [a, , reg, tot] = range(), st = E.cue != null ? Math.max(0, Math.min(tot - 1e-6, E.cue)) : reg ? a : 0;
       E.phase = st / tot; prevPos = st; cont = 0; seekCont = 0; ahead = 0; seekId++; backingBar = -1; lastBar = -1; E.playing = true;
+      lastCt = -1; lag = 0; stall = 0; armK = S().cur;
       E.pass = songMode() ? md.arrangement(S()).findIndex((it) => it.k === S().cur) : -1;
       countIn = 0;
       if (VH.store.get('melody.countIn', false) === true) startCountIn();
@@ -264,13 +275,24 @@
       const tot = md.tot16(S());
       t16 = Math.max(0, Math.min(tot - 1e-6, +t16 || 0));
       if (!E.playing) { E.cue = t16; E.phase = t16 / tot; M.emit('seek', t16); M.requestRender(); return; }
-      E.phase = t16 / tot; prevPos = E.pos16; ahead = cont; seekCont = cont; backingBar = -1; seekId++;
+      E.phase = t16 / tot; prevPos = E.pos16; ahead = cont; seekCont = cont; backingBar = -1; seekId++; armK = S().cur;
       const c = liveCtx();   // notes scheduled ahead for the old position must not play
       if (c) noteV = noteV.filter((x) => { if (x.t0 > c.currentTime + 0.002) { cut(x, 0.01); return false; } return true; });
       M.emit('seek', t16);
     };
-    E.step = function (now, dt) {   // called once per animation frame
+    // Called once per animation frame (main.js; while the page is hidden, by a background timer). The transport follows
+    // the audio clock whenever it runs: frame time only smooths it (small drift is eased out, a gap such as a throttled
+    // background tick is taken at once), so the playhead never drifts from what is heard.
+    E.step = function (now, dt) {
       if (!E.playing) return;
+      const ac = liveCtx();
+      if (ac && ac.state === 'running') {
+        const ct = ac.currentTime;
+        stall = lastCt >= 0 && ct === lastCt ? stall + dt : 0;
+        if (stall > 1) lag = 0;   // a clock that doesn't move while 'running' (no output device): frame time only
+        else if (lastCt >= 0) { lag += ct - lastCt - dt; const d = Math.max(0, dt + (Math.abs(lag) > 0.05 ? lag : lag * 0.1)); lag -= d - dt; dt = d; }
+        lastCt = ct;
+      } else { lastCt = -1; lag = 0; stall = 0; }
       if (countIn > 0) {   // count-in: the clicks play, the song waits
         countIn -= dt;
         if (countIn > 0) return;
@@ -280,16 +302,13 @@
       let pos = E.phase * tot + adv;
       cont += adv;
       if (reg && prevPos < b && pos >= b) pos = a + (pos - b);   // loop the region
-      else if (pos >= tot && songMode()) {   // next pass of the arrangement (may switch the section shown)
+      else if (pos >= tot && songMode() && !reg) {   // next pass of the arrangement (may switch the section shown)
         const over = pos - tot;
         if (!M.nextPass()) { E.stop(); E.phase = 0; return; }
         s = S(); tot = md.tot16(s); pos = Math.min(over, tot - 1e-6);
         // schedulers restart at the new section's start (a moment ago): nothing at its downbeat is lost
         seekCont = cont - over; ahead = seekCont; seekId++; backingBar = -1; prevPos = 0;
-      } else if (pos >= tot) {
-        if (s.loop || reg) pos = (reg ? a : 0) + (pos - tot);
-        else { E.stop(); E.phase = E.cue != null ? E.cue / tot : 0; return; }
-      }
+      } else if (pos >= tot) pos = (reg ? a : 0) + (pos - tot);   // Section mode loops the section (or its region)
       E.phase = Math.max(0, Math.min(0.999999, pos / tot));
       tick(now);
     };
@@ -305,7 +324,7 @@
             if (n.s < g.s - 1e-6 || n.s >= g.s + g.n - 1e-6) continue;
             const when = now + (g.c + (n.s - g.s) - cont) * sec16, dur = n.d * sec16;
             const p = play(L, 'note', snd, n.m, G_NOTE, Math.max(now, when), n, null);
-            const t0 = Math.max(now, p.o.when != null ? p.o.when : when);
+            const t0 = p.v.t0 != null ? p.v.t0 : Math.max(now, p.o.when != null ? p.o.when : when);   // the voice's actual start
             p.v.stop(undefined, t0 + dur);
             noteV.push({ L, n, v: p.v, base: p.o.gain, m: p.o.midi, cents: 0, t0, t1: t0 + dur });
           }
@@ -327,9 +346,12 @@
       const info = { now, pos16: pos, prevPos16: prevPos, wrapped, bar: b, region: rg, lineIndex: i, phase: E.phase, pass: E.pass,
         cont16: cont, seekId, seekCont16: seekCont, loopA16: ra, loopB16: rb,
         ctxTime: actx ? actx.currentTime : 0, secPer16: sec16, timeOf: (t16) => (actx ? actx.currentTime + (t16 - pos) * sec16 : 0) };
-      if (ahead < cont) ahead = cont;   // fell behind (slow frame): never schedule into the past
+      // Fell behind (a stall): start late notes only up to LATE. Notes from the run start (Play, seek, a Song-mode pass:
+      // ahead = that moment, up to a step ago) are kept, so a note at time 0 / a section start always plays.
+      const late = (LATE + E.bgAhead) / sec16;
+      if (ahead < cont - late) ahead = cont - late;
       if (actx) {
-        const target = cont + LOOKAHEAD / sec16;
+        const target = cont + (LOOKAHEAD + E.bgAhead) / sec16;
         if (target > ahead) { scheduleNotes(s, ahead, target, actx, sec16); ahead = target; }
       }
       prevPos = pos;

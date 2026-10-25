@@ -399,6 +399,7 @@
       if (off >= buf.duration - 0.01) return null;
       const n = c.createBufferSource(), g = c.createGain();
       n.buffer = buf; n.connect(g); g.connect(bus);
+      if (off > 0.001) { g.gain.setValueAtTime(0, at); g.gain.linearRampToValueAtTime(1, at + 0.004); }   // entering mid-waveform: no click
       const x = { n, g, when: at, off, stopAt: Infinity };
       n.onended = () => { const k = srcs.indexOf(x); if (k >= 0) srcs.splice(k, 1); try { g.disconnect(); } catch (_) { /* ignore */ } };
       n.start(at, off);
@@ -413,7 +414,7 @@
       if (!tr || !cur || !cur.buf) { if (srcs.length) stopAll(0.03); return; }
       if (!ensureBus() || !t.ctxTime) return;
       let seg0 = null;
-      const sec16 = t.secPer16, now = bus.context.currentTime, segs = M.engine.segments(t.cont16, t.cont16 + LOOKAHEAD / sec16);
+      const sec16 = t.secPer16, now = bus.context.currentTime, segs = M.engine.segments(t.cont16, t.cont16 + (LOOKAHEAD + (M.engine.bgAhead || 0)) / sec16);
       segs.forEach((g, i) => {
         const w = t.ctxTime + (g.c - t.cont16) * sec16, Tg = timeAt(S, S.cur, g.s), next = segs[i + 1];
         const end = next ? w + g.n * sec16 : Infinity;
@@ -428,7 +429,7 @@
           x = startSrc(at, Tg + (at - w));
           bad = 0;
         }
-        if (x && end < Infinity && x.stopAt > end + 1e-4) stopSrc(x, end, 0);
+        if (x && end < Infinity && x.stopAt > end + 1e-4) stopSrc(x, end, 0.004);   // a 4 ms crossfade with the next segment's source
         if (i === 0) seg0 = x;
       });
       // drift log (tests): where the source sounding the playhead is vs where the playhead is (start-time maths)

@@ -68,7 +68,7 @@
     broken: { pattern: 'bc' },
   };
   const STYLE_CHOICES = {   // [value, label]
-    arp: { rate: [['1/4', '1/4'], ['1/8', '1/8'], ['1/8t', '1/8 T'], ['1/16', '1/16']],
+    arp: { rate: [['1/4', '1/4'], ['1/8', '1/8'], ['1/8t', '1/8 T'], ['1/16', '1/16'], ['1/16t', '1/16 T'], ['1/32', '1/32']],
       pattern: [['up', 'Up'], ['down', 'Down'], ['updown', 'Up-down'], ['random', 'Random'], ['played', 'As played']],
       oct: [[1, '1'], [2, '2'], [3, '3']] },
     strum: { dir: [['down', 'Down'], ['up', 'Up'], ['alt', 'Alternate']] },
@@ -76,7 +76,7 @@
     broken: { pattern: [['bc', 'Bass-chord'], ['bcc', 'Bass-chord-chord'], ['alberti', 'Alberti']] },
   };
   const STYLE_NUM = { gate: [0.25, 1], speed: [10, 80] };
-  const STEP16 = { '1/2': 8, '1/4': 4, '1/8': 2, '1/8t': 4 / 3, '1/16': 1 };   // sixteenths per note
+  const STEP16 = { '1/2': 8, '1/4': 4, '1/8': 2, '1/8t': 4 / 3, '1/16': 1, '1/16t': 2 / 3, '1/32': 0.5 };   // sixteenths per note
   const fit = (s, n) => (String(s || '') + '.'.repeat(n)).slice(0, n).replace(/[^xo.]/g, '.');
   const copy = (o) => JSON.parse(JSON.stringify(o));
   const DEF_PAT = Object.assign({}, DRUM_PRESETS[1][2]);
@@ -351,7 +351,7 @@
   // Returns { srcs, t, end } so a caller can cancel hits that have not started yet.
   function drumHit(c, dest, kind, t, vel, kit) {
     const srcs = [], nodes = [], brush = kit === 'brush';
-    t = Math.max(t, c.currentTime);
+    t = VH.audio.isLive && VH.audio.isLive(c) ? VH.audio.startAt(c, t) : Math.max(t, c.currentTime);   // live: never a late (clicking) attack
     let end = t;
     const node = (x) => { nodes.push(x); return x; };
     const env = (peak, att, dec) => {
@@ -706,7 +706,7 @@
 .mel-style .vh-btn { padding: 4px 9px; font-size: 12px; }
 .mel-style-desc { margin-top: 6px; }
 .mel-style-opts .mel-so { border-left: 2px solid var(--line); padding: 2px 0 2px 10px; margin: 8px 0 2px; }
-.mel-so-row { align-items: center; margin: 6px 0; }
+.mel-so-row { align-items: center; margin: 6px 0; flex-wrap: wrap; }
 .mel-so-row .vh-btn { padding: 4px 9px; font-size: 12px; min-width: 38px; }
 .mel-so-row .vh-select { flex: 1; min-width: 0; }
 .mel-so .vh-ctl { margin: 6px 0; }
@@ -832,7 +832,7 @@
         sched.anchor = t.ctxTime - cont * sec; sched.sec = sec;
         if (seek) sched.upTo = cont;
       }
-      const horizon = cont + LA / sec;
+      const horizon = cont + (LA + (E.bgAhead || 0)) / sec;   // longer while the page is hidden (engine.bgAhead)
       if (horizon > sched.upTo) { scheduleRange(sched.upTo, horizon); sched.upTo = horizon; }
       sched.lastCont = cont;
       const now = c.currentTime;

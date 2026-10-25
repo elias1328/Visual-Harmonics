@@ -727,19 +727,27 @@
   }
 
   // ---------- local-only banner (file://: sampled instruments need a server) ----------
-  function initBanner() {
+  // The one-line note under the header (#banner): text + the VH.store key that remembers its dismissal. One at a time.
+  function showBanner(text, key) {
     const b = doc.getElementById('banner');
-    if (!b || !VH.sounds || !VH.sounds.ready) return;
+    if (!b || !b.hidden || (VH.store && VH.store.get(key, false))) return;
+    b.querySelector('span').textContent = text;
+    b.hidden = false; doc.body.classList.add('vh-has-banner');
+    b.querySelector('button').addEventListener('click', () => {
+      b.hidden = true; doc.body.classList.remove('vh-has-banner');
+      if (VH.store) VH.store.set(key, true);   // (VH.store wraps localStorage in try/catch, memory fallback)
+    }, { once: true });
+  }
+  function initBanner() {
+    // Phones and tablets (most visitors): a friendly hint until dismissed. Never blocks the page.
+    let small = false;
+    try { small = !!(root.matchMedia && root.matchMedia('(max-width: 820px), (pointer: coarse)').matches); } catch (_) { /* old browser */ }
+    if (small) showBanner('Best on a computer — bigger screen, keyboard shortcuts. You can still play around here.', 'ui.phoneNotice');
+    if (!VH.sounds || !VH.sounds.ready) return;
     VH.sounds.ready.then(() => {
       // only ever on file:// (never on http/https), and only when the sample library really could not load
       if (root.location.protocol !== 'file:' || VH.sounds.status.samples === 'ok') return;
-      if (VH.store && VH.store.get('ui.banner.file.dismissed', false)) return;
-      b.querySelector('span').textContent = 'Sampled instruments need a local server: double-click start.bat';
-      b.hidden = false; doc.body.classList.add('vh-has-banner');
-      b.querySelector('button').addEventListener('click', () => {
-        b.hidden = true; doc.body.classList.remove('vh-has-banner');
-        if (VH.store) VH.store.set('ui.banner.file.dismissed', true);
-      }, { once: true });
+      showBanner('Sampled instruments need a local server: double-click start.bat', 'ui.banner.file.dismissed');
     });
   }
 

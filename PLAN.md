@@ -60,7 +60,7 @@ Load order (index.html): config, harmony, store, analyze, synth, audio, sounds, 
 ## 5. Share and Gallery data flow
 
 1. **Share link:** Melody serializes the song (own editor synths travel in portable form via `VH.sounds.portable`; imported audio and the backing track do not) → `VH.store.encodeShare` → `#melody/s=<code>`. Opening the link decodes, installs missing synths and loads the song as one undo step.
-2. **Publish:** Melody's Publish dialog (`VH.gallery.openPublish`) sends `{ title, author, code, meta }` to Supabase `songs` (meta = a small, downsampled preview for the card). Row-level security and RPCs (`like_song`, `report_song`) are in `docs/gallery.sql`; the browser holds only the public anon key.
+2. **Publish:** Melody's Publish dialog (`VH.gallery.openPublish`) sends `{ title, author, code, meta }` to Supabase `songs` (meta = a small preview for the card: since v 2 a fixed grid of columns over the whole song, one char per column per lane, so long songs fit the same jsonb budget; v 1 rows with point lists still draw). Row-level security and RPCs (`like_song`, `report_song`) are in `docs/gallery.sql`; the browser holds only the public anon key.
 3. **Browse and open:** the Gallery lists rows (`select=id,created_at,title,author,meta,likes`, new or top, search) and draws previews from `meta`. Opening a song fetches its `code`, pushes `{ type: 'song', code, title, author, from: 'gallery' }` to `vh:melody.inbox` and routes to `#melody`, which consumes the inbox.
 4. Likes, reports and "mine" are remembered locally (`gallery.liked` / `gallery.reported` / `gallery.mine`).
 

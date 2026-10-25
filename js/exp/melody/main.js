@@ -291,7 +291,7 @@
     M.setLoopRegion = (r) => {
       const v = r ? md.regionOf({ loopRegion: r, bars: S.bars }) : null, had = md.regionOf(S);
       if (JSON.stringify(v) === JSON.stringify(had)) return;
-      S.loopRegion = v; M.engine.cue = null;
+      S.loopRegion = v; M.engine.cue = null; M.engine.armRegion();   // (Song mode too: it loops here)
       M.commit(v ? 'Loop bars ' + (v[0] + 1) + (v[1] - v[0] > 1 ? '–' + v[1] : '') : 'Clear loop region');
       const n = md.spb(S);
       if (v && M.engine.playing) { const p = M.engine.pos16; if (p < v[0] * n || p >= v[1] * n) M.engine.seek(v[0] * n); }
@@ -553,11 +553,17 @@
         if (!alive) return false;
         const ns = obj && parse(obj);
         if (!ns) { M.toast(o.failToast || 'That share link couldn’t be read'); return false; }
+        // A listener starts at the top: section 1 at time 0, no loop region, no selection (a new song object), and a
+        // song of several sections plays through (Song mode). The sender's view (cur, regions) is ignored, so old links too.
+        md.selectSection(ns, 0);
+        ns.loopRegion = null; ns.sections.forEach((x) => { if (x.data) x.data.loopRegion = null; });
         if (M.engine.playing) M.engine.stop();
         S = ns; active = 0;
-        M.engine.stopAll();
+        M.engine.stopAll(); M.engine.cue = null; M.engine.phase = 0;
         if (o.undoable === false) { lastSnap = snap(); afterChange(); }
         else if (!M.commit(o.label || 'Load shared song', { keepHash: !!o.keepHash })) afterChange();
+        if (S.sections.length > 1 && M.playMode !== 'song') M.setPlayMode('song');
+        M.view.setScroll(0); M.emit('section', S.cur);
         M.toast(o.toast || 'Loaded a shared song · Ctrl+Z goes back');
         checkMissing();
         M.emit('layer', active);
@@ -595,11 +601,12 @@
         if (k === 'y') { e.preventDefault(); M.redo(); return; }
       }
       if (e.key === 'Escape') { if (M.cancelPlacing(true)) return; M.ui.closeFloats(); return; }
+      // A focused <select> is not a text field: shortcut keys act (no type-ahead through its options; see tools-edit.js).
       const editable = tag === 'TEXTAREA' || (t && t.isContentEditable) || (tag === 'INPUT' && !/^(range|checkbox|radio|button)$/.test(t.type));
-      if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.repeat && !editable && tag !== 'SELECT' && (e.key === 's' || e.key === 'S')) {
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.repeat && !editable && (e.key === 's' || e.key === 'S')) {
         e.preventDefault(); M.ui.toggleSnap(); return;
       }
-      if (e.code !== 'Space' || e.repeat || typing || tag === 'SELECT' || (t && t.closest && t.closest('.mel-pop, .mel-float'))) return;
+      if (e.code !== 'Space' || e.repeat || typing || (tag !== 'SELECT' && t && t.closest && t.closest('.mel-pop, .mel-float'))) return;
       e.preventDefault();
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       M.engine.toggle();
@@ -612,15 +619,42 @@
     M.on('play', () => M.view.setScroll(M.engine.phase * M.view.CW - M.view.VW * 0.2));
     function frame(now) {
       raf = requestAnimationFrame(frame);
-      const dt = Math.min(0.1, (now - lastT) / 1000); lastT = now;
+      const dt = Math.max(0, Math.min(0.1, (now - lastT) / 1000)); lastT = now;
       if (M.bands.dirty) { M.bands.computeBg(); dirty = true; }
-      if (M.engine.playing) {
+      if (M.engine.playing && !document.hidden) {   // hidden: the background ticker steps (see below)
         M.engine.step(now, dt);
         if (M.engine.playing) M.view.follow(M.engine.phase);
         dirty = true;
       }
       if (dirty) { dirty = false; M.view.draw(); }
     }
+
+    // ---------- background ticks ----------
+    // A hidden tab gets no rAF and throttles page timers (>= 1 s), which used to freeze the transport while held voices
+    // sounded on. While playing hidden, a Worker timer (unthrottled; a page interval if Workers can't start) steps the
+    // engine, and every scheduler looks engine.bgAhead further ahead. The transport follows the audio clock (engine.step).
+    let bg = null, bgLast = 0;
+    function bgStep() {
+      if (!alive || !document.hidden || !M.engine.playing) return;
+      const now = performance.now(), dt = Math.min(2, Math.max(0, (now - bgLast) / 1000)); bgLast = now;
+      M.engine.step(now, dt);
+    }
+    function ticker(ms, fn) {
+      let w = null, id = 0, url = '', off = false;
+      const fallback = () => { if (w) { w.terminate(); w = null; } if (!id && !off) id = setInterval(fn, ms); };
+      try {
+        url = URL.createObjectURL(new Blob(['let t=0;onmessage=(e)=>{clearInterval(t);if(e.data>0)t=setInterval(()=>postMessage(0),e.data);};'], { type: 'text/javascript' }));
+        w = new Worker(url); w.onmessage = fn; w.onerror = fallback; w.postMessage(ms);
+      } catch (_) { fallback(); }
+      return () => { off = true; if (w) w.terminate(); w = null; clearInterval(id); id = 0; if (url) URL.revokeObjectURL(url); };
+    }
+    function syncBg() {
+      const want = alive && document.hidden && M.engine.playing;
+      if (want && !bg) { bgLast = performance.now(); bg = ticker(25, bgStep); } else if (!want && bg) { bg(); bg = null; }
+    }
+    document.addEventListener('visibilitychange', syncBg);
+    M.on('play', syncBg); M.on('stop', syncBg);
+    cleanups.push(() => { document.removeEventListener('visibilitychange', syncBg); if (bg) { bg(); bg = null; } });
 
     // ---------- start ----------
     cleanups.push(VH.sounds.onChange(() => M.soundsChanged()));

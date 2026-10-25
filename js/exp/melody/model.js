@@ -80,7 +80,7 @@
   // in time (polyphonic within the layer); each one may hold several runs. Ids are stable (vibrato is keyed by them).
   // layer.line is a legacy accessor (not enumerable, not serialized): stroke #1's samples (created when missing);
   // assigning an array replaces all strokes with that one.
-  const MAX_STROKES = 8;
+  const MAX_STROKES = 64;   // per layer (8 before; older songs hold fewer, so they parse unchanged)
   function withLegacyLine(l, len) {
     Object.defineProperty(l, 'line', {
       configurable: true, enumerable: false,
@@ -432,7 +432,9 @@
     const v4 = o.v >= 4, bars = barsIn(o.bars, v4), ts = TS[o.ts] ? o.ts : '4/4', v1 = !(o.v >= 2);
     const bpm = typeof o.bpm === 'number' ? o.bpm : typeof o.tempo === 'number' && o.tempo > 0 ? 240 / o.tempo : 120;
     const S = { key: num(o.key, 0, 11, 0) | 0, mode: modeIn(o.mode, 'major'), tuning: HM.tuningById(o.tuning).id, bars, ts,
-      bpm: o.track ? Math.round(num(bpm, BPM_MIN, BPM_MAX, 120) * 100) / 100 : Math.round(num(bpm, BPM_MIN, BPM_MAX, 120)),   // a backing track keeps its detected (fractional) tempo grid: o.grid === 16 ? 16 : 8, loop: o.loop !== false, snap: !!o.snap,
+      // a backing track keeps its detected (fractional) tempo
+      bpm: o.track ? Math.round(num(bpm, BPM_MIN, BPM_MAX, 120) * 100) / 100 : Math.round(num(bpm, BPM_MIN, BPM_MAX, 120)),
+      grid: o.grid === 16 ? 16 : 8, loop: o.loop !== false, snap: !!o.snap,
       master: num(o.master, 0, VOL_MAX, 1), bandsOthers: !!o.bandsOthers, fx: plain(o.fx), drums: plain(o.drums), ext: plain(o.ext) };
     S.chords = parseChords(o.chords, v4, bars, ts);
     const src = (v1 ? o.layers.slice(0, 3) : o.layers.slice(0, MAX_LAYERS)).filter((l) => l && typeof l === 'object');

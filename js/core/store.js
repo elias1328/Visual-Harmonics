@@ -90,7 +90,8 @@
     'melody.song', 'melody.sound', 'melody.bpm', 'melody.countIn', 'melody.inbox', 'melody.look', 'melody.playMode',
     'melody.pureIntonation', 'melody.autofit', 'melody.showAuto', 'melody.showScale', 'melody.tones', 'melody.tutorial',
     'melody.kits', 'melody.view', 'melody.gen.density', 'melody.gen.range',
-    'spiral.prefs', 'spiral.sound'];
+    'spiral.prefs', 'spiral.sound',
+    'ui.phoneNotice'];   // (ui.* is never tidied; listed so the dismissal is a known key)
   const TIDY_NS = /^(babel|melody|spiral|lab)\./;   // other namespaces (ui.*, gallery.*) use dynamic keys: left alone
   function tidy() {
     const s = ls(), gone = [];

@@ -81,9 +81,26 @@
   }
   const metaFits = (m, max) => utf8(JSON.stringify(m)) <= (max || META_MAX) && jsonbBytes(m) <= META_JSONB_MAX;
   const finite = (x) => typeof x === 'number' && isFinite(x);
-  // info = { bpm, key: 'C', scale, sections, regions: [t 0..1], layers: [{ color, runs: [[[t, midi], ...]], notes: [[t0, t1, midi]] }] }
-  // -> meta { bpm, key, scale, sections, layers: [colors], preview: { r: [t], l: [{ s: [[[t, m]...]...], n: [[t0, t1, m]...] }] } }
-  // downsampled harder until it fits META_MAX bytes of JSON (and the server's jsonb limit).
+  // info = { bpm, key: 'C', scale, sections, regions: [t 0..1], secs: [t 0..1] (section starts), layers: [{ color,
+  //   runs: [[[t, midi], ...]], notes: [[t0, t1, midi]] }] }
+  // -> meta { bpm, key, scale, sections, layers: [colors], preview }. The preview (v 2) is a fixed grid of c columns over
+  // the WHOLE song, so its size doesn't grow with the song: { v: 2, c, lo, hi, r: [t], l: [{ s: [lane], n: [lane] }] }.
+  // A lane is a string with one char per column: the pitch level (GRID index 0..63 from lo to hi) or '.' (nothing;
+  // trailing ones trimmed). Overlapping strokes / notes take further lanes. r = tint boundaries: the chord regions, or the
+  // section starts once there are too many regions. The grid gets coarser until it fits META_MAX bytes of JSON and the
+  // server's jsonb limit. (v 1 rows, point lists in l[].s / l[].n, are still drawn.)
+  const GRID = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_', LV = GRID.length - 1;
+  // Lane strings for items [{ a, z (columns, inclusive), cols: [[col, level]] }]: each takes the first lane free over
+  // its span; items needing more than maxLanes lanes are left out.
+  function lanes(items, c, maxLanes) {
+    const ls = [];
+    for (const it of items) {
+      let L = ls.find((x) => { for (let j = it.a; j <= it.z; j++) if (x[j] !== '.') return false; return true; });
+      if (!L) { if (ls.length >= maxLanes) continue; L = new Array(c).fill('.'); ls.push(L); }
+      for (const [j, v] of it.cols) L[j] = GRID[v];
+    }
+    return ls.map((x) => x.join('').replace(/\.+$/, '')).filter(Boolean);
+  }
   function buildMeta(info, maxBytes) {
     info = info || {};
     const layers = (Array.isArray(info.layers) ? info.layers : []).slice(0, 8);
@@ -94,25 +111,43 @@
       sections: Math.max(1, Math.min(99, info.sections | 0 || 1)),
       layers: layers.map((l) => (l && /^#[0-9a-f]{6}$/i.test(l.color) ? l.color.toLowerCase() : '#6fa3ff')),
     };
-    const regions = (Array.isArray(info.regions) ? info.regions : []).filter((t) => finite(t) && t > 0 && t < 1).map(r3);
+    const ts = (a) => (Array.isArray(a) ? a : []).filter((t) => finite(t) && t > 0 && t < 1).map(r3);
+    const regions = ts(info.regions), secs = ts(info.secs);
     const okPt = (p) => Array.isArray(p) && finite(p[0]) && finite(p[1]);
     const okNote = (n) => Array.isArray(n) && finite(n[0]) && finite(n[1]) && finite(n[2]);
-    const STEPS = [[80, 64, 48], [64, 48, 48], [48, 40, 40], [36, 32, 32], [28, 24, 32], [20, 16, 24], [14, 12, 16], [10, 8, 16], [7, 6, 12], [5, 4, 8], [3, 3, 0], [2, 2, 0]];
-    for (const [per, notes, regs] of STEPS) {
-      for (const maxStrokes of [16, 8, 4, 2]) {
-        const meta = Object.assign({}, base, { preview: {
-          r: regions.slice(0, regs),
-          l: layers.map((l) => ({
-            s: (Array.isArray(l && l.runs) ? l.runs : []).slice(0, maxStrokes)
-              .map((run) => downsample((Array.isArray(run) ? run : []).filter(okPt), per).map((p) => [r3(p[0]), r1(p[1])]))
-              .filter((run) => run.length),
-            n: downsample((Array.isArray(l && l.notes) ? l.notes : []).filter(okNote), notes).map((n) => [r3(n[0]), r3(n[1]), r1(n[2])]),
-          })),
-        } });
+    const L = layers.map((l) => ({
+      runs: (Array.isArray(l && l.runs) ? l.runs : []).map((run) => (Array.isArray(run) ? run.filter(okPt) : [])).filter((run) => run.length),
+      notes: (Array.isArray(l && l.notes) ? l.notes : []).filter(okNote),
+    }));
+    let lo = Infinity, hi = -Infinity;
+    const see = (m) => { lo = Math.min(lo, m); hi = Math.max(hi, m); };
+    L.forEach((l) => { l.runs.forEach((run) => run.forEach((p) => see(p[1]))); l.notes.forEach((n) => see(n[2])); });
+    if (!(hi >= lo)) return Object.assign({}, base, { preview: { v: 2, c: 0, r: [], l: [] } });
+    lo = r1(lo); hi = Math.max(r1(hi), lo + 1);
+    const lvl = (m) => Math.max(0, Math.min(LV, Math.round((m - lo) / (hi - lo) * LV)));
+    for (const c of [192, 144, 112, 96, 80, 64, 48, 40, 32, 24, 16]) {
+      const col = (t) => Math.max(0, Math.min(c - 1, Math.floor(t * c)));
+      // a run: the mean pitch of its points in each column it touches; a note: its pitch over its columns
+      const lineItems = (l) => l.runs.map((run) => {
+        const acc = new Map();
+        run.forEach((p) => { const j = col(p[0]), a = acc.get(j) || [0, 0]; a[0] += p[1]; a[1]++; acc.set(j, a); });
+        const cols = [...acc].sort((x, y) => x[0] - y[0]).map(([j, a]) => [j, lvl(a[0] / a[1])]);
+        return { a: cols[0][0], z: cols[cols.length - 1][0], cols };
+      }).sort((x, y) => x.a - y.a);
+      const noteItems = (l) => l.notes.map((n) => {
+        const a = col(n[0]), z = Math.max(a, col(n[1] - 1e-9)), v = lvl(n[2]), cols = [];
+        for (let j = a; j <= z; j++) cols.push([j, v]);
+        return { a, z, cols };
+      }).sort((x, y) => x.a - y.a);
+      const li = L.map(lineItems), ni = L.map(noteItems);
+      for (const [nl, nr] of [[3, 48], [2, 32], [1, 24], [1, 12], [1, 0]]) {
+        const r = regions.length <= nr ? regions : secs.length <= nr ? secs : downsample(secs.length ? secs : regions, nr);
+        const meta = Object.assign({}, base, { preview: { v: 2, c, lo, hi, r: nr ? r : [],
+          l: L.map((_, i) => ({ s: lanes(li[i], c, nl), n: lanes(ni[i], c, nl) })) } });
         if (metaFits(meta, maxBytes)) return meta;
       }
     }
-    return Object.assign({}, base, { preview: { r: [], l: [] } });
+    return Object.assign({}, base, { preview: { v: 2, c: 0, r: [], l: [] } });
   }
 
   const pure = { PAGE, TITLE_MAX, AUTHOR_MAX, META_MAX, META_JSONB_MAX, cleanSearch, listPath, codePath, cleanRow, checkPublish, downsample, jsonbBytes, buildMeta, metaFits };
@@ -189,6 +224,7 @@
     g.strokeStyle = 'rgba(159, 255, 255, 0.08)'; g.lineWidth = 1;
     for (let i = 1; i + 1 < regs.length; i++) { const x = Math.round(regs[i] * w) + 0.5; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, hh); g.stroke(); }
     const L = Array.isArray(pv.l) ? pv.l : [];
+    if (pv.v === 2) { drawGrid(g, w, hh, pv, L, cols); return; }
     let lo = Infinity, hi = -Infinity;
     const see = (m) => { if (finite(m)) { lo = Math.min(lo, m); hi = Math.max(hi, m); } };
     L.forEach((l) => {
@@ -196,16 +232,12 @@
       (Array.isArray(l.s) ? l.s : []).forEach((run) => Array.isArray(run) && run.forEach((p) => Array.isArray(p) && see(p[1])));
       (Array.isArray(l.n) ? l.n : []).forEach((n) => Array.isArray(n) && see(n[2]));
     });
-    if (!(hi >= lo)) {   // nothing drawn: a calm placeholder wave
-      g.strokeStyle = 'rgba(111, 163, 255, 0.35)'; g.lineWidth = 1.5; g.beginPath();
-      for (let x = 0; x <= w; x += 4) { const y = hh / 2 + Math.sin(x / 24) * hh * 0.12; if (x) g.lineTo(x, y); else g.moveTo(x, y); }
-      g.stroke(); return;
-    }
+    if (!(hi >= lo)) { placeholder(g, w, hh); return; }
     const mid = (lo + hi) / 2, span = Math.max(12, hi - lo + 4), pad = 8;
     const Y = (m) => pad + (1 - ((m - mid) / span + 0.5)) * (hh - 2 * pad);
     L.forEach((l, i) => {
       if (!l || typeof l !== 'object') return;
-      const c = typeof cols[i] === 'string' && /^#[0-9a-f]{6}$/i.test(cols[i]) ? cols[i] : '#ffc93c';
+      const c = colorOf(cols, i);
       g.strokeStyle = c; g.fillStyle = c; g.lineWidth = 1.8; g.lineCap = 'round'; g.lineJoin = 'round';
       (Array.isArray(l.s) ? l.s : []).forEach((run) => {
         if (!Array.isArray(run)) return;
@@ -224,6 +256,48 @@
     });
   }
 
+  // v 2 preview (buildMeta): lanes of grid columns. Lines: polylines through the column centres (a lone column: a short
+  // dash); notes: a bar per run of equal columns.
+  const colorOf = (cols, i) => (typeof cols[i] === 'string' && /^#[0-9a-f]{6}$/i.test(cols[i]) ? cols[i] : '#ffc93c');
+  function drawGrid(g, w, hh, pv, L, cols) {
+    const c = pv.c | 0, lo = +pv.lo, hi = +pv.hi, str = (x) => (typeof x === 'string' ? x : '');
+    const has = c > 0 && finite(lo) && finite(hi) && hi > lo && L.some((l) => l && ((Array.isArray(l.s) && l.s.some(str)) || (Array.isArray(l.n) && l.n.some(str))));
+    if (!has) { placeholder(g, w, hh); return; }
+    const mid = (lo + hi) / 2, span = Math.max(12, hi - lo + 4), pad = 8, cw = w / c;
+    const Y = (k) => { const m = lo + (k / LV) * (hi - lo); return pad + (1 - ((m - mid) / span + 0.5)) * (hh - 2 * pad); };
+    const lv = (ch) => GRID.indexOf(ch);
+    L.forEach((l, i) => {
+      if (!l || typeof l !== 'object') return;
+      const col = colorOf(cols, i);
+      g.strokeStyle = col; g.fillStyle = col; g.lineWidth = 1.8; g.lineCap = 'round'; g.lineJoin = 'round';
+      (Array.isArray(l.s) ? l.s : []).forEach((lane) => {
+        lane = str(lane).slice(0, c);
+        for (let j = 0; j < lane.length; j++) {
+          if (lv(lane[j]) < 0) continue;
+          let k = j; while (k + 1 < lane.length && lv(lane[k + 1]) >= 0) k++;
+          g.beginPath();
+          if (k === j) { g.moveTo(j * cw + 1, Y(lv(lane[j]))); g.lineTo((j + 1) * cw - 1, Y(lv(lane[j]))); }
+          else for (let q = j; q <= k; q++) { const x = (q + 0.5) * cw, y = Y(lv(lane[q])); if (q > j) g.lineTo(x, y); else g.moveTo(x, y); }
+          g.stroke(); j = k;
+        }
+      });
+      (Array.isArray(l.n) ? l.n : []).forEach((lane) => {
+        lane = str(lane).slice(0, c);
+        for (let j = 0; j < lane.length; j++) {
+          const v = lv(lane[j]);
+          if (v < 0) continue;
+          let k = j; while (k + 1 < lane.length && lane[k + 1] === lane[j]) k++;
+          g.fillRect(j * cw, Y(v) - 1.75, Math.max(2, (k - j + 1) * cw - 1), 3.5); j = k;
+        }
+      });
+    });
+  }
+  function placeholder(g, w, hh) {   // nothing drawn: a calm wave
+    g.strokeStyle = 'rgba(111, 163, 255, 0.35)'; g.lineWidth = 1.5; g.beginPath();
+    for (let x = 0; x <= w; x += 4) { const y = hh / 2 + Math.sin(x / 24) * hh * 0.12; if (x) g.lineTo(x, y); else g.moveTo(x, y); }
+    g.stroke();
+  }
+
   // ===================== Melody -> song info (for meta) =====================
   function songInfo(M) {
     const md = VH.melody && VH.melody.model, S0 = M.song;
@@ -235,6 +309,7 @@
     return {
       bpm: S0.bpm, key: keyName, scale, sections: (S0.sections || []).length || 1,
       regions: (F.chords || []).map((e) => e.at / tot),
+      secs: ((F.flat && F.flat.bars) || []).filter((x, i, a) => i && x.sec !== a[i - 1].sec).map((x) => x.a / tot),
       layers: F.layers.map((l) => ({
         color: l.color,
         runs: md.lineRuns(l).map((r) => { const pts = []; for (let i = r.a; i <= r.b; i++) pts.push([i / (tot * 3), r.st.v[i]]); return pts; }),

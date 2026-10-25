@@ -4,6 +4,7 @@
 // trigger(sound, freq, durSec, opts) -> one-shot; returns the same handle, so stop(rel) cuts it early.
 // opts: { gain = 0.3, loud (false = skip the sound's loudness match), dest (AudioNode; its context is used), when (absolute ctx time), tone: { bright: -1..1 } }
 // withContext(ctx, fn): voice/trigger called synchronously inside fn target ctx (e.g. an OfflineAudioContext).
+// startAt(ctx, when): the time a voice asked for `when` really starts (live: never before a safe lead); isLive(ctx).
 (function (root) {
   'use strict';
   const VH = root.VH = root.VH || {};
@@ -82,6 +83,12 @@
       ensure();
     };
     ['pointerdown', 'pointerup', 'touchend', 'mousedown', 'keydown', 'click'].forEach((t) => root.addEventListener(t, unlock, true));
+    // Back from a background tab: a context the browser suspended / interrupted meanwhile resumes (where allowed
+    // without a gesture; otherwise the next gesture does it).
+    root.document.addEventListener('visibilitychange', () => {
+      if (root.document.hidden || !ctx || ctx.state === 'running' || ctx.state === 'closed') return;
+      const p = ctx.resume(); if (p && p.catch) p.catch(() => {});
+    });
   }
   function outsOf(c) {
     if (c === ctx) return { master, limiter, glue };
@@ -194,7 +201,17 @@
     else if (s <= 0 && t < t0 + a + d) param.exponentialRampToValueAtTime(peak * Math.pow(0.0005 / peak, (t - t0 - a) / d), t);
   }
   const toneFor = (sound, o) => (VH.sounds && VH.sounds.toneOf ? VH.sounds.toneOf(sound, o.tone) : o.tone);
-  const startAt = (c, when) => (when != null && isFinite(when) && when > c.currentTime ? when : c.currentTime + 0.005);
+  // Start time of a voice. The live audio thread renders ahead of currentTime (up to a device buffer, ~baseLatency), so
+  // events for a time it already rendered arrive late: the source starts at once but the 0 -> 1 attack ramp is partly
+  // over by then, i.e. the note begins with a jump (a click). So a live start is never earlier than a safe lead.
+  // Offline contexts render in step with their events (unchanged: when, or 5 ms after currentTime).
+  const leadOf = (c) => Math.min(0.05, Math.max(0.012, (c.baseLatency || 0) * 1.5 + 0.004));
+  function startAt(c, when) {
+    const ok = when != null && isFinite(when);
+    if (c !== ctx) return ok && when > c.currentTime ? when : c.currentTime + 0.005;
+    const e = c.currentTime + leadOf(c);
+    return ok && when > e ? when : e;
+  }
 
   function synthVoice(sound, freq, gain, T, o) {
     const c = T.c, s = sound.synth || {}, nyq = c.sampleRate / 2 - 1, t0 = startAt(c, o.when), main = c === ctx;
@@ -422,9 +439,9 @@
     function stopLayers(t) {
       for (const L of [layer].concat(fading)) if (L) { try { L.src.stop(t); } catch (_) { /* ignore */ } }
     }
-    function begin(buf) {
+    function begin(buf) {   // decoded later than t0 (first use of a zone): start at a safe time, never in the past
       if (ended || layer) return;
-      const t = Math.max(t0, c.currentTime);
+      const t = startAt(c, t0);
       if (relInfo && t >= relInfo.t) { ended = true; live.delete(v); return; }   // cut before it could start
       layer = mkLayer(zone, buf, t, 0, f, false);
       env.gain.setValueAtTime(0, t); env.gain.linearRampToValueAtTime(1, t + 0.005);
@@ -456,7 +473,8 @@
         const t = Math.max(c.currentTime, at || 0);
         if (!layer || ended || t >= stopT) { if (!layer) f = nf; return; }   // glides until the release begins
         const tc = Math.max(0.001, glideSec / 3), m = hzToMidi(nf);
-        layer.src.playbackRate.setTargetAtTime(nf / layer.rootF, t, tc);
+        // before the source starts, its setValueAtTime(rate, start) would override an earlier target: glide from the start
+        layer.src.playbackRate.setTargetAtTime(nf / layer.rootF, Math.max(t, layer.t), tc);
         for (const L of fading) L.src.playbackRate.setTargetAtTime(nf / L.rootF, t, tc);
         if (Math.abs(m - zone.rootMidi) > ZONE_DRIFT && t - lastXf > XF) {
           const z = nearestZone(sound, nf);
@@ -503,7 +521,8 @@
   function stopAll(rel = 0.05) { [...live].forEach((v) => v.stop(rel)); }
 
   VH.audio = {
-    ensure, voice, trigger, stopAll, load, decode, render, withContext, midiToHz, hzToMidi,
+    ensure, voice, trigger, stopAll, load, decode, render, withContext, midiToHz, hzToMidi, startAt,
+    isLive: (c) => !!c && c === ctx,
     // For experiments with their own synth (babel): register a handle with stop() so it is counted/stopped.
     track, retire,
     get ctx() { return (bound && bound.ctx) || ctx; },

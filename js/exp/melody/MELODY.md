@@ -53,7 +53,7 @@ VH.melody.parts.push((M) => {
              lines: [{ id 's1'|'s2'|.., v: Float32Array(tot16*3) of midi or NaN }]   (line strokes, 3 samples per sixteenth; see below),
              notes: [{ s: start sixteenth, d: length in sixteenths, m: midi (float) }] }, ...]   (1..8 layers),
   backing: { sound, vol 0..1, on, style: 'drone'|'strum'|'arp'|'pulse'|'broken',
-             styleOpts?: { arp: { rate, pattern, oct, gate }, strum: { speed, dir }, pulse: { rate, gate }, broken: { pattern } } },
+             styleOpts?: { arp: { rate ('1/4'|'1/8'|'1/8t'|'1/16'|'1/16t'|'1/32'), pattern, oct, gate }, strum: { speed, dir }, pulse: { rate, gate }, broken: { pattern } } },
   master: 0..1, bandsOthers: bool,
   fx: {}, drums: {}, ext: {},     // free-form JSON for parts: sound.js owns fx + drums; others use ext.<partName>
   loopRegion?: [a, b] | null,     // loop only bars a..b-1 (whole bars). Serialized only when set; part of undo, autosave, share
@@ -66,7 +66,7 @@ VH.melody.parts.push((M) => {
   Serialized (since schema `v: 3`) as `lines: [{ id, segs }]`. Songs saved before strokes (v1 / v2, one `line` of segments) parse
   into stroke `s1` (`S.migratedLines` > 0; the autosave is written back as v3), their vibrato `{ l }` into `{ s: { s1 } }`.
   Helpers on `M.model`: `strokes(l)`, `addStroke(l, len)`, `nextStrokeId(l)`, `pruneStrokes(l)`, `lineAt(l, i)` -> `[{ id, m }]`,
-  `hasLine(l)`, `lineRuns(l)`, `MAX_STROKES` = 8. `layer.line` is a legacy accessor (not serialized): stroke #1's samples;
+  `hasLine(l)`, `lineRuns(l)`, `MAX_STROKES` = 64. `layer.line` is a legacy accessor (not serialized): stroke #1's samples;
   assigning an array replaces all strokes with one. New code reads `lines`.
 - **Layer ids** are stable. They are unique within the song and kept by undo/redo, autosave and share links. `M.addLayer` takes `max + 1`.
   - Songs saved before ids existed get `l1..lN` in layer order when parsed (`S.migratedIds` > 0 then). An old autosave is saved back in the new format.
@@ -150,7 +150,7 @@ VH.melody.parts.push((M) => {
   `M.recolorSection(k, color)`, `M.setRepeat(k, 1..8)`, `M.setTimeSig(ts)` (content keeps its place in each bar; emits
   `'timeSig'` before its commit so parts adapt, e.g. the drum steps), `M.setBars(1..16)`. `M.selectSection(k)` shows a
   section (no undo step). Undo / redo restore the section shown with the snapshot.
-- Playback: `M.playMode` 'section' (loop the shown section / its loop region) | 'song' (`M.setPlayMode`, VH.store
+- Playback: `M.playMode` 'section' (always loops the shown section / its loop region; `song.loop` only decides whether Song mode starts over at the end) | 'song' (`M.setPlayMode`, VH.store
   `melody.playMode`): Play runs the arrangement from the shown section; at a section end `M.nextPass()` switches the
   section shown and the engine restarts its schedulers at the new downbeat (`engine.pass` = the arrangement item).
 - Count-in (Settings > Song > Count-in, VH.store `melody.countIn`): Play first clicks one bar (x/4 quarters, x/8 eighths,
@@ -197,7 +197,7 @@ Sounds:
 
 - **Sharing + loading** (main.js): `M.shareCode()` returns a Promise of the share-link code (`VH.store.encodeShare(serialize(S, true))`; own sounds
   add `ext.snd`). View preferences (Map look, scale tint) are never part of it. `M.share()` copies `<url>#melody/s=<code>` (local hosts use the public URL).
-  `M.loadSong(code, { undoable = true, label, toast, failToast, keepHash })` returns Promise<boolean>: it decodes + parses a code, replaces the song (one undo
+  `M.loadSong(code, { undoable = true, label, toast, failToast, keepHash })` returns Promise<boolean>: it decodes + parses a code (the sender's view is ignored: it opens on section 1 at time 0, every loop region cleared, Song mode when there are several sections), replaces the song (one undo
   step unless `undoable: false`), resolves missing sounds as links do, and toasts; false (with `failToast`) when unreadable.
   `M.publish()` opens the Gallery's publish dialog for this song (`VH.gallery.openPublish(M)`), or returns null when the gallery is not loaded.
 
@@ -239,6 +239,12 @@ loop region / song loop from the current position. When `seekId` changes, drop w
 Playback is frame-driven. To place a hit precisely, schedule it with `when: t.timeOf(step)` for steps where `prevPos16 < step <= pos16`. Mind `wrapped`.
 
 The engine schedules layer **notes** `engine.LOOKAHEAD` = 80 ms ahead on the audio clock, so `voiceOpts` may move them earlier by up to that much. Line voices start in the frame they begin.
+Notes from the run start (Play, a seek, a Song-mode pass) are scheduled even though that moment lies up to a step in the past, so a note at time 0 / a section start always plays.
+
+**Background tabs.** The transport follows the audio clock (`engine.step` eases frame time onto `AudioContext.currentTime`).
+While the page is hidden there is no rAF: a Worker timer (main.js; a page interval if Workers can't start) steps the
+engine, and every look-ahead scheduler adds `engine.bgAhead` (1.5 s while hidden, else 0) to its window, so throttled
+ticks never starve it. On return the core resumes a suspended / interrupted context (audio.js, `visibilitychange`).
 
 ## Audio: `M.engine`
 
@@ -266,7 +272,7 @@ backing voice ─► backingBus() ──┼─► sumBus() ─► [insert chain]
   - Use `M.backingSound()`.
   - `stop` must silence everything.
   - Pass `null` to restore the drone. `engine.restartBacking()` re-triggers the current bar.
-- Transport: `play()` starts at `engine.cue` (set by a seek while stopped), else the loop region's start, else 0. `seek(t16)` while playing jumps there and playback continues (notes queued for the old position are cut); while stopped it sets the cue (drawn as a dashed line). `loopRange()` -> `{ a16, b16, on }`. With a loop region, playback loops only those bars (regardless of `song.loop`); a seek outside it plays on to the region end (or the song end) and then returns to the region start.
+- Transport: `play()` starts at `engine.cue` (set by a seek while stopped), else the loop region's start, else 0. `seek(t16)` while playing jumps there and playback continues (notes queued for the old position are cut); while stopped it sets the cue (drawn as a dashed line). `loopRange()` -> `{ a16, b16, on }`. With a loop region, playback loops only those bars (regardless of `song.loop`, in Song mode too: there the region of the section where Play / a seek / the region was set loops, `engine.armRegion()`); a seek outside it plays on to the region end (or the song end) and then returns to the region start.
 - `engine.playing`, `phase`, `pos16`, `bar`, `ctx`, `play()`, `stop()`, `toggle()`, `seek(t16)`, `secPer16()`, `secPerBar()`, `playOf(sound)` ('glide' | 'hit'), `gainOf(i)`, `backingGain()`.
 - `engine.previewChord(bar)` and `engine.previewNote(i, midi, dur)` are for gesture handlers only. `engine.stopAll()`, `engine.stopLayer(i)`.
 - Line playback: one voice per **stroke** (overlapping strokes sound together; `engine.lineVoices()` counts the live ones). 'glide' sounds play legato within a stroke's run (`setFreq`). 'hit' sounds re-trigger only when a stroke crosses a semitone, at least `engine.MIN_GAP` = 70 ms apart on the audio clock (per stroke).

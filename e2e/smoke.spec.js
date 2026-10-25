@@ -677,3 +677,165 @@ test.describe('13 storage housekeeping', () => {
     for (const k of r.second) expect(r.left).not.toContain(k);
   });
 });
+
+// =====================================================================================================================
+test.describe('14 playback + editing regressions', () => {
+  // Log every voice the page starts: { hz, t0, ct } (the engine looks VH.audio.voice up per call).
+  const spyVoices = (page) => page.evaluate(() => {
+    const orig = VH.audio.voice; window.__v = [];
+    VH.audio.voice = function (s, hz) { const v = orig.apply(this, arguments); window.__v.push({ hz, t0: v.t0, ct: VH.audio.ctx ? VH.audio.ctx.currentTime : 0 }); return v; };
+  });
+  const voicesAt = (page, midi) => page.evaluate((m) => window.__v.filter((x) => Math.abs(x.hz - VH.audio.midiToHz(m)) < 0.01).length, midi);
+
+  test('a note at time 0 plays, in section 1 and at a later section start (Song mode)', async ({ page }) => {
+    await open(page);
+    if (!(await audioOr(page, 'note voices'))) return;
+    await page.evaluate(() => {
+      const M = VH.melody.ctx;
+      M.setBars(1); M.song.bpm = 200; M.song.loop = false;
+      M.song.layers[0].mode = 'notes'; M.song.layers[0].notes = [{ s: 0, d: 2, m: 72 }]; M.commit('note A');
+      M.addSection(false); M.song.layers[0].notes = [{ s: 0, d: 2, m: 74 }]; M.commit('note B');
+      M.selectSection(0); M.setPlayMode('song');
+    });
+    await spyVoices(page);
+    await dockBtn(page, 'Play').click();
+    await expect.poll(() => voicesAt(page, 72), { timeout: 5000 }).toBeGreaterThan(0);
+    await expect.poll(() => voicesAt(page, 74), { timeout: 5000 }).toBeGreaterThan(0);
+    await page.keyboard.press('Space');
+  });
+
+  test('a loop region over part of the section repeats only those bars; Section mode loops without one', async ({ page }) => {
+    await open(page);
+    await page.evaluate(() => { const M = VH.melody.ctx; M.setPlayMode('section'); M.song.bpm = 200; M.setLoopRegion([1, 2]); });
+    await dockBtn(page, 'Play').click();
+    const pos = [];
+    for (let i = 0; i < 30; i++) { await page.waitForTimeout(100); pos.push(await page.evaluate(() => VH.melody.ctx.engine.pos16)); }
+    expect(pos.every((p) => p >= 16 && p < 32), pos.join(',')).toBe(true);
+    expect(pos.some((p, i) => i && p < pos[i - 1]), 'wrapped: ' + pos.join(',')).toBe(true);
+    // no region and Loop off: Section mode still loops the section (Loop is about the end of the song in Song mode)
+    await page.evaluate(() => { const M = VH.melody.ctx; M.setLoopRegion(null); M.song.loop = false; M.setBars(1); M.engine.seek(12); });
+    await page.waitForTimeout(1500);
+    expect(await page.evaluate(() => VH.melody.ctx.engine.playing)).toBe(true);
+    await page.keyboard.press('Space');
+  });
+
+  test('undo / redo keep Snap, the tool, the look and the zoom', async ({ page }) => {
+    await open(page);
+    const prefs = () => page.evaluate(() => { const M = VH.melody.ctx; return { snap: M.song.snap, tool: M.tools.current.id, look: localStorage.getItem('vh:melody.look'), span: M.view.span }; });
+    await page.locator('body').focus();
+    await page.keyboard.press('s');   // snap on
+    await page.keyboard.press('=');   // zoom in
+    await page.keyboard.press('v');   // Select tool
+    const p0 = await prefs();
+    expect(p0.snap).toBe(true);
+    await page.evaluate(() => { const M = VH.melody.ctx; M.song.layers[0].notes.push({ s: 0, d: 2, m: 60 }); M.commit('edit'); });
+    await page.keyboard.press('Control+z');
+    await page.keyboard.press('Control+y');
+    await page.keyboard.press('Control+z');
+    expect(await prefs()).toEqual(p0);
+    await page.keyboard.press('s');   // off, then an edit + undo: stays off
+    await page.evaluate(() => { const M = VH.melody.ctx; M.song.layers[0].notes.push({ s: 2, d: 2, m: 62 }); M.commit('edit 2'); });
+    await page.keyboard.press('Control+z');
+    expect((await prefs()).snap).toBe(false);
+  });
+
+  test('hidden tab: a Worker tick keeps scheduling ahead, in step with the audio clock', async ({ page }) => {
+    await open(page);
+    if (!(await audioOr(page, 'background scheduling'))) return;
+    await page.evaluate(() => {
+      const M = VH.melody.ctx; M.setBars(4); M.song.bpm = 120;
+      M.song.layers[0].mode = 'notes'; M.song.layers[0].notes = Array.from({ length: 16 }, (_, k) => ({ s: k * 4, d: 2, m: 60 + (k % 5) })); M.commit('notes');
+    });
+    await dockBtn(page, 'Play').click();
+    await page.waitForTimeout(600);
+    await spyVoices(page);
+    // background: rAF no longer steps the engine (main.js skips it while hidden) and page timers fire at most once a second
+    await page.evaluate(() => {
+      const si = window.setInterval, st = window.setTimeout;
+      window.setInterval = (f, ms, ...a) => si(f, Math.max(1000, ms || 0), ...a);
+      window.setTimeout = (f, ms, ...a) => st(f, Math.max(1000, ms || 0), ...a);
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.__bg = { c0: VH.melody.ctx.engine.cont16, t0: VH.audio.ctx.currentTime };
+    });
+    await page.waitForTimeout(2000);
+    const r = await page.evaluate(() => {
+      const E = VH.melody.ctx.engine, sec = E.secPer16(), now = VH.audio.ctx.currentTime;
+      return { bgAhead: E.bgAhead, moved: (E.cont16 - window.__bg.c0) * sec, audio: now - window.__bg.t0,
+        ahead: Math.max(...window.__v.map((x) => x.t0 - x.ct)), n: window.__v.length };
+    });
+    expect(r.bgAhead).toBe(1.5);
+    expect(r.n, 'notes scheduled while hidden').toBeGreaterThan(2);
+    expect(r.ahead, 'scheduled well ahead').toBeGreaterThan(0.5);
+    expect(Math.abs(r.moved - r.audio), JSON.stringify(r)).toBeLessThan(0.15);
+    await page.evaluate(() => { delete document.hidden; delete document.visibilityState; document.dispatchEvent(new Event('visibilitychange')); });
+    await page.waitForTimeout(500);
+    expect(await page.evaluate(() => VH.melody.ctx.engine.playing)).toBe(true);
+    await page.keyboard.press('Space');
+  });
+
+  test('a tool key right after picking an instrument in a select switches the tool, not the select', async ({ page }) => {
+    await open(page);
+    const sel = page.locator('.vh-dock select').first();
+    const vals = await sel.locator('option').evaluateAll((os) => os.map((o) => o.value).filter((v) => !/^__/.test(v)));
+    const cur = await sel.inputValue(), v = vals.find((x) => x !== cur);
+    await sel.selectOption(v);
+    await sel.focus();
+    await page.keyboard.press('v');
+    await expect.poll(() => page.evaluate(() => VH.melody.ctx.tools.current.id)).toBe('select');
+    await page.keyboard.press('p');
+    await expect.poll(() => page.evaluate(() => VH.melody.ctx.tools.current.id)).toBe('pen');
+    expect(await sel.inputValue()).toBe(v);
+  });
+
+  test('a share link made on the last section with a loop region opens at section 1, time 0, no loop', async ({ page, browser }) => {
+    await open(page);
+    const code = await page.evaluate(async () => {
+      const M = VH.melody.ctx;
+      M.addSection(false); M.addSection(false);
+      M.setLoopRegion([1, 2]); M.engine.seek(20);
+      return M.shareCode();
+    });
+    const ctx2 = await browser.newContext(), p2 = await ctx2.newPage();
+    const errs = watch(p2);
+    await open(p2, '#melody/s=' + code);
+    await expect.poll(() => p2.evaluate(() => VH.melody.ctx.song.sections.length)).toBe(3);
+    const st = await p2.evaluate(() => {
+      const M = VH.melody.ctx, S = M.song;
+      return { cur: S.cur, phase: M.engine.phase, cue: M.engine.cue, region: S.loopRegion, others: S.sections.map((x) => x.data && x.data.loopRegion).filter(Boolean), mode: M.playMode };
+    });
+    expect(st).toEqual({ cur: 0, phase: 0, cue: null, region: null, others: [], mode: 'song' });
+    expect(errs).toEqual([]);
+    await ctx2.close();
+  });
+
+  test('backing arpeggio: 1/16 T and 1/32 rates; the default stays 1/8', async ({ page }) => {
+    await open(page);
+    const r = await page.evaluate(() => {
+      const snd = VH.melody.sound, ev = (rate) => snd.backingEvents('arp', [60, 64, 67], 0.1, rate ? { rate } : {}, 0, { ts: '4/4' }).length;
+      return { choices: snd.STYLE_CHOICES.arp.rate.map((x) => x[0]), def: snd.STYLE_DEF.arp.rate, n8: ev(null), n16t: ev('1/16t'), n32: ev('1/32') };
+    });
+    expect(r.choices).toEqual(expect.arrayContaining(['1/16t', '1/32']));
+    expect([r.def, r.n8, r.n16t, r.n32]).toEqual(['1/8', 8, 24, 32]);
+  });
+
+  test('phone notice: shown on a small screen until dismissed, never at desktop size', async ({ page, browser }) => {
+    await open(page);
+    await expect(page.locator('#banner')).toBeHidden();
+    expect(await page.evaluate(() => VH.store.KEYS.includes('ui.phoneNotice'))).toBe(true);
+    const ctx2 = await browser.newContext({ viewport: { width: 390, height: 844 } }), p2 = await ctx2.newPage();
+    const errs = watch(p2);
+    await open(p2);
+    const ban = p2.locator('#banner');
+    await expect(ban).toBeVisible();
+    await expect(ban).toContainText('Best on a computer');
+    await ban.locator('.vh-banner-x').click();
+    await expect(ban).toBeHidden();
+    await p2.reload();
+    await p2.waitForFunction(() => window.VH && VH.app && VH.app.current);
+    await expect(p2.locator('#banner')).toBeHidden();
+    expect(errs).toEqual([]);
+    await ctx2.close();
+  });
+});

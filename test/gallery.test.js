@@ -71,17 +71,21 @@ function bigSong(nLayers, strokes, ptsPer, notes) {
   };
 }
 
-test('buildMeta: small song keeps up to 80 points per stroke', () => {
+test('buildMeta: a small song gets the finest whole-song grid', () => {
   const m = G.buildMeta(bigSong(1, 1, 300, 4));
   assert.strictEqual(m.bpm, 112);
   assert.strictEqual(m.key, 'F#');
   assert.strictEqual(m.scale, 'dorian');
   assert.strictEqual(m.sections, 4);
   assert.deepStrictEqual(m.layers, ['#ffc93c']);
-  assert.ok(m.preview.l[0].s[0].length <= 80 && m.preview.l[0].s[0].length >= 20, 'pts ' + m.preview.l[0].s[0].length);
-  assert.strictEqual(m.preview.l[0].n.length, 4);
-  const p = m.preview.l[0].s[0][3];
-  assert.ok(p[0] >= 0 && p[0] <= 1 && Math.round(p[0] * 1000) === p[0] * 1000);
+  const pv = m.preview;
+  assert.strictEqual(pv.v, 2);
+  assert.strictEqual(pv.c, 192);
+  assert.strictEqual(pv.l[0].s.length, 1, 'one stroke, one lane');
+  assert.ok(pv.l[0].s[0].length > 180 && /^[A-Za-z0-9_-]+$/.test(pv.l[0].s[0]), 'the stroke spans the song: ' + pv.l[0].s[0]);
+  assert.strictEqual(pv.l[0].n.length, 1, 'notes in one lane');
+  assert.strictEqual(pv.l[0].n[0].replace(/\./g, '').length, 96, 'the 4 notes (each half of its quarter) are spread over the song');
+  assert.ok(pv.lo <= 45 && pv.hi >= 65, pv.lo + '..' + pv.hi);
   assert.ok(Buffer.byteLength(JSON.stringify(m)) <= 3500);
 });
 
@@ -95,6 +99,13 @@ test('buildMeta: huge songs are downsampled under the caps (JSON text and jsonb 
     assert.strictEqual(m.layers[2], L > 2 ? '#6fa3ff' : m.layers[2]);   // invalid colour replaced
     assert.ok(m.preview.l.some((l) => l.s.length || l.n.length), 'still has a preview');
   }
+  // a long song keeps its whole length (not just its first strokes): 10 sections of strokes reach the last column
+  const long = G.buildMeta(Object.assign(bigSong(4, 60, 200, 200), { regions: Array.from({ length: 159 }, (_, i) => (i + 1) / 160), secs: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9] }));
+  assert.strictEqual(long.preview.v, 2);
+  const c = long.preview.c, reach = Math.max(...long.preview.l.map((l) => Math.max(...l.s.map((x) => x.length))));
+  assert.ok(c >= 48 && reach >= c - 1, 'grid ' + c + ', lanes reach ' + reach);
+  assert.deepStrictEqual(long.preview.r, [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9], 'too many regions: tint the sections');
+  assert.ok(Buffer.byteLength(JSON.stringify(long)) <= 3500 && G.jsonbBytes(long) <= G.META_JSONB_MAX);
   // a custom tighter cap downsamples harder
   const small = G.buildMeta(bigSong(2, 2, 500, 50), 600);
   assert.ok(Buffer.byteLength(JSON.stringify(small)) <= 600);
@@ -104,7 +115,8 @@ test('buildMeta ignores junk input', () => {
   const m = G.buildMeta({ bpm: NaN, layers: [null, { runs: [[[NaN, 1], [0.5, 60]], 'x'], notes: [[0, 1]] }], regions: [0, 2, 0.5, 'a'] });
   assert.strictEqual(m.bpm, 0);
   assert.deepStrictEqual(m.preview.r, [0.5]);
-  assert.deepStrictEqual(m.preview.l[1].s, [[[0.5, 60]]]);
+  assert.strictEqual(m.preview.l[1].s.length, 1);   // the one good point, in the middle column
+  assert.strictEqual(m.preview.l[1].s[0].length, m.preview.c / 2 + 1);
   assert.deepStrictEqual(m.preview.l[1].n, []);
-  assert.deepStrictEqual(G.buildMeta(undefined).preview, { r: [], l: [] });
+  assert.deepStrictEqual(G.buildMeta(undefined).preview, { v: 2, c: 0, r: [], l: [] });
 });

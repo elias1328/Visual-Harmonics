@@ -1434,7 +1434,7 @@
       if (sch.anchor == null || sec !== sch.sec || Math.abs(sch.anchor + cont * sec - t.ctxTime) > 0.025 || cont < sch.lastCont - 0.01) {
         sch.anchor = t.ctxTime - cont * sec; sch.sec = sec;
       }
-      const horizon = cont + LA / sec, now = c.currentTime;
+      const horizon = cont + (LA + (E.bgAhead || 0)) / sec, now = c.currentTime;
       if (horizon > sch.upTo) {
         for (const g of E.segments(sch.upTo, horizon)) {
           for (const x of list) {

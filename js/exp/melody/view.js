@@ -487,7 +487,7 @@
     const onKey = (e) => {
       if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented || !cv.isConnected) return;
       const t = e.target, tag = t && t.tagName;
-      if (tag === 'TEXTAREA' || tag === 'SELECT' || (tag === 'INPUT' && !/^(range|checkbox|radio|button)$/.test(t.type)) || (t && t.isContentEditable)) return;
+      if (tag === 'TEXTAREA' || (tag === 'INPUT' && !/^(range|checkbox|radio|button)$/.test(t.type)) || (t && t.isContentEditable)) return;   // a <select> is no text field
       if (e.key === '+' || e.key === '=') { e.preventDefault(); V.zoomAt(1 / 1.4); } else if (e.key === '-' || e.key === '_') { e.preventDefault(); V.zoomAt(1.4); }
     };
     document.addEventListener('keydown', onKey);
