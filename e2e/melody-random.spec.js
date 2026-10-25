@@ -134,17 +134,19 @@ test.describe('Layer arpeggio', () => {
   test('live: Up 1/16 on a one-bar note starts 16 voices, stepping the chord', async ({ page }) => {
     await open(page);
     if (!(await hasAudio(page))) return;
-    await load(page, base1({ layers: [Object.assign(base1().layers[0], { arp: { pat: 'up', rate: '1/16', oct: 1, from: 'chord' } })] }));
+    // 2 octaves: the pool is C E G C E G C (7 notes), so exactly 16 steps per pass show as step 17 restarting on C (60), not continuing on G (67).
+    // Counted by index, not wall-clock windows: where the audio clock starts late (Firefox) the transport leads by ~0.1 s and clamps the first starts.
+    await load(page, base1({ layers: [Object.assign(base1().layers[0], { arp: { pat: 'up', rate: '1/16', oct: 2, from: 'chord' } })] }));
     await spy(page);
     await page.evaluate(() => VH.melody.ctx.engine.play());
-    await page.waitForTimeout(2300);
+    await page.waitForTimeout(2600);
     await page.evaluate(() => VH.melody.ctx.engine.stop());
     const v = (await page.evaluate(() => window.__v)).filter((x) => x.id === 'pluck');
-    const t0 = v[0].when;
-    const pass = v.filter((x) => x.when < t0 + 1.94);
-    expect(pass.length).toBe(16);
-    expect(pass.slice(0, 4).map((x) => Math.round(x.m))).toEqual([60, 64, 67, 72]);
-    for (let i = 1; i < 16; i++) expect(Math.abs(pass[i].when - pass[i - 1].when - 0.125)).toBeLessThan(0.045);   // humanize moves a step by up to 15 ms
+    expect(v.length).toBeGreaterThanOrEqual(17);
+    const pool = [60, 64, 67, 72, 76, 79, 84];
+    expect(v.slice(0, 16).map((x) => Math.round(x.m))).toEqual(Array.from({ length: 16 }, (_, i) => pool[i % 7]));
+    expect(Math.round(v[16].m)).toBe(60);
+    for (let i = 5; i < 16; i++) expect(Math.abs(v[i].when - v[i - 1].when - 0.125)).toBeLessThan(0.045);   // humanize moves a step by up to 15 ms
   });
 
   test('live: a line arp follows the line', async ({ page }) => {
@@ -160,12 +162,12 @@ test.describe('Layer arpeggio', () => {
     await page.waitForTimeout(2200);
     await page.evaluate(() => VH.melody.ctx.engine.stop());
     const v = (await page.evaluate(() => window.__v)).filter((x) => x.id === 'pluck');
-    const t0 = v[0].when, pass = v.filter((x) => x.when < t0 + 1.94);
-    expect(pass.length).toBeGreaterThanOrEqual(8);
-    const half = (a, b) => pass.filter((x) => x.when - t0 >= a && x.when - t0 < b).map((x) => x.m);
-    const lo = half(0, 0.6), hi = half(1.2, 1.99);
+    // the first pass = the first 8 steps (one bar at 1/8), by index
+    expect(v.length).toBeGreaterThanOrEqual(8);
+    const lo = v.slice(0, 4).map((x) => x.m), hi = v.slice(4, 8).map((x) => x.m);
     expect(Math.min(...hi)).toBeGreaterThan(Math.min(...lo) + 4);
-    expect(Math.max(...hi)).toBeGreaterThan(Math.max(...lo) + 4);
+    const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+    expect(mean(hi)).toBeGreaterThan(mean(lo) + 4);
   });
 
   test('bands mode: live voices and MIDI use bright bands above the note', async ({ page }) => {
